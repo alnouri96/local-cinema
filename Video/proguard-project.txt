@@ -123,3 +123,14 @@
 
 # Preserve JNI class and method names for the embedded TV torrent engine.
 -keep class org.libtorrent4j.swig.** { *; }
+
+# NewPipe's interpreter runs Rhino without the optional desktop JDK classes.
+-keep class org.schabi.newpipe.extractor.timeago.patterns.** { *; }
+-keep class org.mozilla.javascript.** { *; }
+-keep class org.mozilla.classfile.ClassFileWriter
+-dontwarn java.beans.BeanDescriptor
+-dontwarn java.beans.BeanInfo
+-dontwarn java.beans.IntrospectionException
+-dontwarn java.beans.Introspector
+-dontwarn java.beans.PropertyDescriptor
+-dontwarn jdk.dynalink.**

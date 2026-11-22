@@ -144,7 +144,7 @@ final class CinemaAddonPicker {
                     chosen.season(), chosen.episode(), chosen.title());
             var available = new java.util.concurrent.atomic.AtomicReference<List<StremioAddons.Stream>>(List.of());
             var sheet = new java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<List<StremioAddons.Stream>>>();
-            StremioAddons.resolveStreams(app, chosen.type(), chosen.id(), chosen.season(), chosen.episode(), null,
+            StremioAddons.resolveStreams(app, chosen.type(), chosen.id(), chosen.season(), chosen.episode(), chosen.only(),
                     batch -> {
                         available.set(batch);
                         handler.post(() -> {

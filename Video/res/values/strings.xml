@@ -1316,4 +1316,92 @@
     <string name="cinema_source_code">Source code</string>
     <string name="cinema_third_party_licenses">Third-party licenses</string>
     <string name="cinema_project_link_unavailable">This device could not open the link.</string>
+
+    <string name="addon_tile_state">%1$s · %2$s</string>
+    <string name="cinema_photo_use_selection">Use selected photos</string>
+    <string name="cinema_photo_copy">Copy</string>
+    <string name="cinema_photo_paste">Paste</string>
+    <string name="cinema_photo_delete">Delete saved photos</string>
+    <string name="cinema_photo_selection">Selected: %1$d · Copied: %2$d</string>
+    <string name="cinema_photo_gallery">Local Cinema Art Gallery</string>
+    <string name="cinema_photo_current_folder">Current folder</string>
+    <string name="cinema_photo_delete_confirm">Delete %1$d selected photos from the gallery?</string>
+    <string name="cinema_photo_transfer_result">Completed %1$d of %2$d photos</string>
+    <string name="cinema_photo_marked">✓ %1$s</string>
+    <string name="cinema_ambient_title">Art &amp; Screensaver</string>
+    <string name="cinema_ambient_description">Display your photos or play ambient videos.</string>
+    <string name="cinema_art_mode">Art Mode</string>
+    <string name="cinema_art_settings">Art Mode settings</string>
+    <string name="cinema_art_choose_images">Choose photos</string>
+    <string name="cinema_art_unavailable">Photos unavailable · Choose photos</string>
+    <string name="cinema_art_frame">Matte</string>
+    <string name="cinema_art_tone">Color tone</string>
+    <string name="cinema_art_brightness">Brightness</string>
+    <string name="cinema_art_interval">Slideshow interval</string>
+    <string name="cinema_art_shift">Pixel Shift</string>
+    <string name="cinema_art_sleep">Sleep Timer</string>
+    <string name="cinema_art_clock">Show clock</string>
+    <string name="cinema_ambient_youtube">YouTube 4K Screensaver</string>
+    <string name="cinema_ambient_playback_settings">Quality &amp; Playback Settings</string>
+    <string name="cinema_ambient_quality">Internal player quality</string>
+    <string name="cinema_ambient_player">Preferred player</string>
+    <string name="cinema_ambient_fire">Fireplace 4K</string>
+    <string name="cinema_ambient_rain">Night rain 4K</string>
+    <string name="cinema_ambient_beach">Beach and waves 4K</string>
+    <string name="cinema_ambient_forest">Nature and forests 4K</string>
+    <string name="cinema_ambient_aquarium">Aquarium 4K</string>
+    <string name="cinema_ambient_space">Space 4K</string>
+    <string name="cinema_ambient_search">Search YouTube</string>
+    <string name="cinema_ambient_search_action">Search</string>
+    <string name="cinema_ambient_favorites">Favorites</string>
+    <string name="cinema_ambient_favorite">Add to favorites</string>
+    <string name="cinema_ambient_unfavorite">Remove from favorites</string>
+    <string name="cinema_ambient_empty_favorites">No favorites yet</string>
+    <string name="cinema_ambient_empty_results">No matching videos</string>
+    <string name="cinema_ambient_search_retry">Could not load videos. Press OK to retry.</string>
+    <string name="cinema_ambient_playback_error">This video could not play. Press Back to return.</string>
+    <string-array name="cinema_art_frames">
+        <item>Classic White</item>
+        <item>Warm Ivory</item>
+        <item>Museum Black</item>
+        <item>Full Bleed</item>
+    </string-array>
+    <string-array name="cinema_art_tones">
+        <item>Natural</item>
+        <item>Warm Gallery</item>
+        <item>Paper Matte</item>
+        <item>Night Dim</item>
+    </string-array>
+    <string-array name="cinema_art_intervals">
+        <item>30 seconds</item>
+        <item>1 minute</item>
+        <item>5 minutes</item>
+        <item>15 minutes</item>
+        <item>30 minutes</item>
+    </string-array>
+    <string-array name="cinema_art_sleep_times">
+        <item>Off</item>
+        <item>15 minutes</item>
+        <item>30 minutes</item>
+        <item>1 hour</item>
+        <item>2 hours</item>
+    </string-array>
+    <string-array name="cinema_ambient_qualities">
+        <item>Auto</item>
+        <item>4K (2160p)</item>
+        <item>2K (1440p)</item>
+        <item>Full HD (1080p)</item>
+        <item>HD (720p)</item>
+    </string-array>
+    <string-array name="cinema_ambient_players">
+        <item>SmartTube when available</item>
+        <item>Internal player (continuous loop)</item>
+    </string-array>
+    <string name="cinema_photo_choose_folder">Choose a folder</string>
+    <string name="cinema_photo_folder_unavailable">The system folder picker is unavailable.</string>
+    <string name="cinema_art_frame_size">Frame size</string>
+    <string name="cinema_art_appearance">Appearance</string>
+    <string name="cinema_art_display">Display options</string>
+    <string name="cinema_art_default_percent">%1$s · Default</string>
+    <string name="cinema_art_option_value">%1$s · %2$s</string>
 </resources>

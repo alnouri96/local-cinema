@@ -1844,14 +1844,16 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                 c.getString(com.archos.mediacenter.video.R.string.cinema_network_files),
                 c.getString(com.archos.mediacenter.video.R.string.cinema_link_phone_qr),
                 CinemaUi.label(c, "إدارة الريموت", "Remote Manager"),
-                c.getString(com.archos.mediacenter.video.R.string.addon_hub_title)
+                c.getString(com.archos.mediacenter.video.R.string.addon_hub_title),
+                c.getString(com.archos.mediacenter.video.R.string.cinema_ambient_title)
         };
         int[] icons = {
                 com.archos.mediacenter.video.R.drawable.cinema_folder,
                 com.archos.mediacenter.video.R.drawable.cinema_network,
                 com.archos.mediacenter.video.R.drawable.cinema_qr,
                 com.archos.mediacenter.video.R.drawable.cinema_ic_remote,
-                com.archos.mediacenter.video.R.drawable.cinema_addons
+                com.archos.mediacenter.video.R.drawable.cinema_addons,
+                com.archos.mediacenter.video.R.drawable.cinema_ambient_frame
         };
         tileNetworkLed = null;
         tileQrLed = null;
@@ -1893,7 +1895,7 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             caption.setPadding(dp(c, 4), 0, dp(c, 4), dp(c, 12));
             card.addView(caption, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
 
-            if (item != 0) {
+            if (item != 0 && item != 5) {
                 View led = new View(c);
                 GradientDrawable dotBg = new GradientDrawable();
                 dotBg.setShape(GradientDrawable.OVAL);
@@ -1918,6 +1920,7 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                 else if (item == 1) startActivity(new Intent(c, NetworkRootActivity.class));
                 else if (item == 2) CinemaPhoneLink.show(c);
                 else if (item == 4) startActivity(new Intent(c, CinemaAddonsActivity.class));
+                else if (item == 5) CinemaAmbientLauncherDialog.show(c);
                 else if (getActivity() != null) {
                     TvRemotePermissionKeeper.showRemoteManagerDialog(getActivity(), this::refreshTileStatusDots);
                 }
@@ -1992,6 +1995,7 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     private String otherTileDescription(Context c, int item, String fileHint) {
         if (item == 2) return CinemaPhoneLink.instructions(c);
         if (item == 4) return c.getString(com.archos.mediacenter.video.R.string.addon_hub_description);
+        if (item == 5) return c.getString(com.archos.mediacenter.video.R.string.cinema_ambient_description);
         if (item == 3) {
             return switch (TvRemotePermissionKeeper.evaluateRemoteLed(c)) {
                 case GREEN -> CinemaUi.label(c,

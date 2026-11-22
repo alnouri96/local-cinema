@@ -147,6 +147,8 @@
         <activity android:name=".leanback.cinema.CinemaDetailsActivity" android:exported="false" android:theme="@style/MyLeanbackTheme" />
         <activity android:name=".leanback.cinema.CinemaActorActivity" android:exported="false" android:theme="@style/MyLeanbackTheme" />
         <activity android:name=".leanback.cinema.CinemaTrailersActivity" android:exported="false" android:theme="@style/MyLeanbackTheme" />
+        <activity android:name=".leanback.cinema.CinemaArtModeActivity" android:exported="false" android:theme="@style/MyLeanbackTheme" />
+        <activity android:name=".leanback.cinema.CinemaAmbientYoutubeActivity" android:exported="false" android:theme="@style/MyLeanbackTheme" />
         <activity android:name=".leanback.cinema.CinemaFileBrowserActivity" android:exported="false" android:theme="@style/MyLeanbackTheme" />
         <activity android:name=".leanback.cinema.CinemaLocalMediaActivity" android:exported="false" android:theme="@style/MyLeanbackTheme" />
         <activity android:name=".leanback.cinema.CinemaHlsActivity" android:exported="false" android:theme="@style/MyLeanbackTheme" />

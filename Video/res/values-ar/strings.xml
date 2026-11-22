@@ -1272,4 +1272,92 @@
     <string name="cinema_source_code">الكود المصدري</string>
     <string name="cinema_third_party_licenses">تراخيص المكوّنات الخارجية</string>
     <string name="cinema_project_link_unavailable">تعذّر فتح الرابط على هذا الجهاز.</string>
+
+    <string name="addon_tile_state">%1$s · %2$s</string>
+    <string name="cinema_photo_use_selection">استخدام الصور المحددة</string>
+    <string name="cinema_photo_copy">نسخ</string>
+    <string name="cinema_photo_paste">لصق</string>
+    <string name="cinema_photo_delete">حذف الصور المحفوظة</string>
+    <string name="cinema_photo_selection">المحددة: %1$d · المنسوخة: %2$d</string>
+    <string name="cinema_photo_gallery">معرض Local Cinema الفني</string>
+    <string name="cinema_photo_current_folder">المجلد الحالي</string>
+    <string name="cinema_photo_delete_confirm">هل تريد حذف %1$d من الصور المحددة من المعرض؟</string>
+    <string name="cinema_photo_transfer_result">اكتملت العملية لـ %1$d من أصل %2$d صورة</string>
+    <string name="cinema_photo_marked">✓ %1$s</string>
+    <string name="cinema_ambient_title">الفن وشاشة التوقف</string>
+    <string name="cinema_ambient_description">اعرض صورك أو شغّل فيديوهات الأجواء الهادئة.</string>
+    <string name="cinema_art_mode">وضع الفن</string>
+    <string name="cinema_art_settings">إعدادات وضع الفن</string>
+    <string name="cinema_art_choose_images">اختيار الصور</string>
+    <string name="cinema_art_unavailable">الصور غير متاحة · اختيار الصور</string>
+    <string name="cinema_art_frame">الإطار الورقي</string>
+    <string name="cinema_art_tone">نغمة اللون</string>
+    <string name="cinema_art_brightness">السطوع</string>
+    <string name="cinema_art_interval">مدة عرض كل صورة</string>
+    <string name="cinema_art_shift">إزاحة البكسل</string>
+    <string name="cinema_art_sleep">مؤقت الإغلاق</string>
+    <string name="cinema_art_clock">إظهار الساعة</string>
+    <string name="cinema_ambient_youtube">شاشة توقف يوتيوب 4K</string>
+    <string name="cinema_ambient_playback_settings">إعدادات الدقة والتشغيل</string>
+    <string name="cinema_ambient_quality">دقة المشغّل الداخلي</string>
+    <string name="cinema_ambient_player">المشغّل المفضل</string>
+    <string name="cinema_ambient_fire">نار وحطب 4K</string>
+    <string name="cinema_ambient_rain">مطر ليلي 4K</string>
+    <string name="cinema_ambient_beach">أمواج وشاطئ 4K</string>
+    <string name="cinema_ambient_forest">طبيعة وغابات 4K</string>
+    <string name="cinema_ambient_aquarium">أكواريوم 4K</string>
+    <string name="cinema_ambient_space">فضاء 4K</string>
+    <string name="cinema_ambient_search">ابحث في يوتيوب</string>
+    <string name="cinema_ambient_search_action">بحث</string>
+    <string name="cinema_ambient_favorites">المفضلة</string>
+    <string name="cinema_ambient_favorite">إضافة إلى المفضلة</string>
+    <string name="cinema_ambient_unfavorite">إزالة من المفضلة</string>
+    <string name="cinema_ambient_empty_favorites">لا توجد فيديوهات في المفضلة بعد</string>
+    <string name="cinema_ambient_empty_results">لا توجد فيديوهات مطابقة</string>
+    <string name="cinema_ambient_search_retry">تعذّر تحميل الفيديوهات. اضغط «موافق» لإعادة المحاولة.</string>
+    <string name="cinema_ambient_playback_error">تعذّر تشغيل هذا الفيديو. اضغط «رجوع» للعودة.</string>
+    <string-array name="cinema_art_frames">
+        <item>أبيض كلاسيكي</item>
+        <item>عاجي دافئ</item>
+        <item>أسود متحفي</item>
+        <item>ملء الشاشة بلا إطار</item>
+    </string-array>
+    <string-array name="cinema_art_tones">
+        <item>طبيعي</item>
+        <item>معرض دافئ</item>
+        <item>ورقي مطفأ</item>
+        <item>ليلي خافت</item>
+    </string-array>
+    <string-array name="cinema_art_intervals">
+        <item>٣٠ ثانية</item>
+        <item>دقيقة واحدة</item>
+        <item>٥ دقائق</item>
+        <item>١٥ دقيقة</item>
+        <item>٣٠ دقيقة</item>
+    </string-array>
+    <string-array name="cinema_art_sleep_times">
+        <item>متوقف</item>
+        <item>١٥ دقيقة</item>
+        <item>٣٠ دقيقة</item>
+        <item>ساعة واحدة</item>
+        <item>ساعتان</item>
+    </string-array>
+    <string-array name="cinema_ambient_qualities">
+        <item>تلقائي</item>
+        <item>4K (2160p)</item>
+        <item>2K (1440p)</item>
+        <item>Full HD (1080p)</item>
+        <item>HD (720p)</item>
+    </string-array>
+    <string-array name="cinema_ambient_players">
+        <item>SmartTube عند توفره</item>
+        <item>المشغّل الداخلي (تكرار مستمر)</item>
+    </string-array>
+    <string name="cinema_photo_choose_folder">اختيار مجلد</string>
+    <string name="cinema_photo_folder_unavailable">أداة النظام لاختيار المجلدات غير متاحة.</string>
+    <string name="cinema_art_frame_size">حجم الإطار</string>
+    <string name="cinema_art_appearance">المظهر</string>
+    <string name="cinema_art_display">خيارات العرض</string>
+    <string name="cinema_art_default_percent">%1$s · الافتراضي</string>
+    <string name="cinema_art_option_value">%1$s · %2$s</string>
 </resources>

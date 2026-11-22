@@ -34,6 +34,24 @@ public final class StremioAddons {
     private static final int STREAMS = 1;
     private static final int SUBTITLES = 2;
     private static final int CATALOGS = 4;
+    private static final int META = 8;
+
+    public record BuiltIn(String id, String name, String manifestUrl, String logo,
+                          String artwork, int accent, int resources) {}
+
+    private static final List<BuiltIn> BUILT_INS = List.of(
+            new BuiltIn("com.esmaeli.persianstremio", "Persian Stremio", "https://pstream.ir/manifest.json",
+                    "https://raw.githubusercontent.com/MrMohebi/stremio-ir-providers/refs/heads/master/logo.png",
+                    "ic_addon_persian_stremio", 0xff244671, STREAMS | CATALOGS | META | SUBTITLES));
+
+    public static BuiltIn builtIn(Addon addon) {
+        return BUILT_INS.stream().filter(item -> item.manifestUrl().equalsIgnoreCase(addon.manifestUrl))
+                .findFirst().orElse(null);
+    }
+
+    private static boolean hasBuiltIns(Context context) {
+        return "com.meedx.localcinema.tv".equals(context.getPackageName());
+    }
     private static final String CURATED_URL = "https://meedx.pages.dev/api/addons.json";
 
     public static final class CuratedAddon {
@@ -62,6 +80,7 @@ public final class StremioAddons {
         public final boolean enabled;
         public final long updatedAt;
         public final int resources;
+        public final String logo;
 
         public Addon(String manifestUrl, String baseUrl, String id, String name, String description,
                      String version, boolean enabled, long updatedAt) {
@@ -70,7 +89,13 @@ public final class StremioAddons {
 
         Addon(String manifestUrl, String baseUrl, String id, String name, String description,
               String version, boolean enabled, long updatedAt, int resources) {
+            this(manifestUrl, baseUrl, id, name, description, version, enabled, updatedAt, resources, "");
+        }
+
+        Addon(String manifestUrl, String baseUrl, String id, String name, String description,
+              String version, boolean enabled, long updatedAt, int resources, String logo) {
             this.resources = resources;
+            this.logo = logo;
             this.manifestUrl = manifestUrl;
             this.baseUrl = baseUrl;
             this.id = id;
@@ -223,7 +248,7 @@ public final class StremioAddons {
         if (name == null || name.isBlank()) name = "External Addon";
         manifestRules.put(manifestUrl, manifest);
         return new Addon(manifestUrl, baseUrlFromManifest(manifestUrl), id, name, description,
-                version, true, System.currentTimeMillis(), resourceMask(manifest));
+                version, true, System.currentTimeMillis(), resourceMask(manifest), readLogo(manifestUrl, manifest));
     }
 
     public static void replaceManifest(Context context, Addon original, String url) throws Exception {
@@ -239,7 +264,7 @@ public final class StremioAddons {
             if (index < 0) throw new IOException("Add-on removed");
             installed.set(index, new Addon(replacement.manifestUrl, replacement.baseUrl,
                     replacement.id, replacement.name, replacement.description, replacement.version,
-                    installed.get(index).enabled, System.currentTimeMillis(), replacement.resources));
+                    installed.get(index).enabled, System.currentTimeMillis(), replacement.resources, replacement.logo));
             persist(context, installed);
         }
     }
@@ -283,9 +308,17 @@ public final class StremioAddons {
                         o.optString("description", ""),
                         o.optString("version", ""),
                         o.optBoolean("enabled", true),
-                        o.optLong("updatedAt", 0L), o.optInt("resources_mask", -1)));
+                        o.optLong("updatedAt", 0L), o.optInt("resources_mask", -1), o.optString("logo")));
             }
         } catch (Exception ignored) {}
+        if (hasBuiltIns(context)) {
+            for (BuiltIn item : BUILT_INS) {
+                if (out.stream().noneMatch(a -> item.manifestUrl().equalsIgnoreCase(a.manifestUrl))) {
+                    out.add(new Addon(item.manifestUrl(), baseUrlFromManifest(item.manifestUrl()), item.id(),
+                            item.name(), "", "", true, 0L, item.resources(), item.logo()));
+                }
+            }
+        }
         return out;
     }
 
@@ -309,7 +342,7 @@ public final class StremioAddons {
             Boolean enabled = updates.get(a.manifestUrl);
             if (enabled == null || a.enabled == enabled) continue;
             current.set(i, new Addon(a.manifestUrl, a.baseUrl, a.id, a.name, a.description,
-                    a.version, enabled, System.currentTimeMillis(), a.resources));
+                    a.version, enabled, System.currentTimeMillis(), a.resources, a.logo));
             changed = true;
         }
         if (changed) persist(context, current);
@@ -317,7 +350,7 @@ public final class StremioAddons {
 
     public static synchronized void remove(Context context, String manifestUrl) {
         List<Addon> current = new ArrayList<>(list(context));
-        current.removeIf(a -> a.manifestUrl.equalsIgnoreCase(manifestUrl));
+        current.removeIf(a -> a.manifestUrl.equalsIgnoreCase(manifestUrl) && (!hasBuiltIns(context) || builtIn(a) == null));
         persist(context, current);
     }
 
@@ -441,6 +474,7 @@ public final class StremioAddons {
     public static synchronized JSONArray exportJson(Context context) {
         JSONArray arr = new JSONArray();
         for (Addon a : list(context)) {
+            if (a.updatedAt == 0L && builtIn(a) != null) continue;
             try {
                 arr.put(new JSONObject()
                         .put("manifestUrl", a.manifestUrl)
@@ -450,7 +484,7 @@ public final class StremioAddons {
                         .put("description", a.description)
                         .put("version", a.version)
                         .put("enabled", a.enabled).put("resources_mask", a.resources)
-                        .put("updatedAt", a.updatedAt));
+                        .put("logo", a.logo).put("updatedAt", a.updatedAt));
             } catch (Exception ignored) {}
         }
         return arr;
@@ -480,7 +514,7 @@ public final class StremioAddons {
                         o.optString("description", ""),
                         o.optString("version", ""),
                         o.optBoolean("enabled", true),
-                        remoteTs > 0 ? remoteTs : System.currentTimeMillis(), o.optInt("resources_mask", -1)));
+                        remoteTs > 0 ? remoteTs : System.currentTimeMillis(), o.optInt("resources_mask", -1), o.optString("logo")));
                 changed = true;
             }
         }
@@ -505,7 +539,13 @@ public final class StremioAddons {
                     o.optString("description", ""),
                     o.optString("version", ""),
                     o.optBoolean("enabled", true),
-                    remoteTs > 0 ? remoteTs : System.currentTimeMillis(), o.optInt("resources_mask", -1)));
+                    remoteTs > 0 ? remoteTs : System.currentTimeMillis(), o.optInt("resources_mask", -1), o.optString("logo")));
+        }
+        if (hasBuiltIns(context)) {
+            for (Addon local : list(context)) {
+                if (builtIn(local) != null && next.stream().noneMatch(a -> a.manifestUrl.equalsIgnoreCase(local.manifestUrl)))
+                    next.add(local);
+            }
         }
         persist(context, next);
         return true;
@@ -523,14 +563,16 @@ public final class StremioAddons {
                         .put("description", a.description)
                         .put("version", a.version)
                         .put("enabled", a.enabled).put("resources_mask", a.resources)
-                        .put("updatedAt", a.updatedAt));
+                        .put("logo", a.logo).put("updatedAt", a.updatedAt));
             } catch (Exception ignored) {}
         }
         prefs(context).edit().putString(KEY_ADDONS, arr.toString()).commit();
     }
 
     public record Poster(String id, String type, String title, String image, String backdrop, String description, String year, double rating, String released, JSONArray genres, String imdb, long tmdb) {}
-    public record EpisodeChoice(int season, int episode, String title) {}
+    public record EpisodeChoice(int season, int episode, String title, String streamId) {
+        public EpisodeChoice(int season, int episode, String title) { this(season, episode, title, ""); }
+    }
     public record Capabilities(boolean stream, boolean subtitles, JSONArray catalogs) {}
 
     private static int resourceMask(JSONObject manifest) {
@@ -542,6 +584,7 @@ public final class StremioAddons {
             if ("stream".equals(name)) mask |= STREAMS;
             else if ("subtitles".equals(name)) mask |= SUBTITLES;
             else if ("catalog".equals(name)) mask |= CATALOGS;
+            else if ("meta".equals(name)) mask |= META;
         }
         return mask;
     }
@@ -557,8 +600,15 @@ public final class StremioAddons {
     }
 
     public static String manifestLogo(Addon addon) {
+        if (!addon.logo.isBlank()) return addon.logo;
         try {
-            String logo = new URL(new URL(addon.manifestUrl), new JSONObject(fetchText(addon.manifestUrl)).getString("logo")).toString();
+            return readLogo(addon.manifestUrl, new JSONObject(fetchText(addon.manifestUrl)));
+        } catch (Exception ignored) { return ""; }
+    }
+
+    private static String readLogo(String manifestUrl, JSONObject manifest) {
+        try {
+            String logo = new URL(new URL(manifestUrl), manifest.getString("logo")).toString();
             return logo.startsWith("https://") && isHttpUrl(logo) ? logo : "";
         } catch (Exception ignored) { return ""; }
     }
@@ -572,6 +622,7 @@ public final class StremioAddons {
         try {
             JSONObject manifest = new JSONObject(fetchText(addon.manifestUrl));
             int resources = resourceMask(manifest);
+            manifestRules.put(addon.manifestUrl, manifest);
             return new Capabilities((resources & STREAMS) != 0, (resources & SUBTITLES) != 0,
                     manifest.optJSONArray("catalogs"));
         } catch (Exception ignored) {
@@ -586,7 +637,7 @@ public final class StremioAddons {
         var searches = enabled.stream().<java.util.concurrent.Callable<Map<String, Poster>>>map(source -> () -> {
             var found = new LinkedHashMap<String, Poster>();
             var caps = capabilities(source);
-            if (caps.catalogs() != null) readAddonCatalog(found, source, caps, query);
+            if (caps.catalogs() != null) readAddonCatalog(found, source, caps, query, null);
             return found;
         }).collect(java.util.stream.Collectors.toList());
         parallel(searches, found -> found.forEach(posters::putIfAbsent));
@@ -595,7 +646,7 @@ public final class StremioAddons {
     public static List<Poster> browse(Context context, Addon addon, Capabilities capability, String query) {
         Map<String, Poster> posters = new LinkedHashMap<>();
         if (addon != null) {
-            readAddonCatalog(posters, addon, capability, query);
+            readAddonCatalog(posters, addon, capability, query, null);
         } else if (!query.isBlank()) {
             searchAddonCatalogs(context, query, posters);
             if (Thread.currentThread().isInterrupted()) return List.of();
@@ -808,15 +859,22 @@ public final class StremioAddons {
         }
     }
 
-    private static void readAddonCatalog(Map<String, Poster> posters, Addon addon, Capabilities capability, String query) {
+    public static List<Poster> browseCatalog(Addon addon, String catalogId, String query) {
+        var posters = new LinkedHashMap<String, Poster>();
+        readAddonCatalog(posters, addon, capabilities(addon), query, catalogId);
+        return new ArrayList<>(posters.values());
+    }
+
+    private static void readAddonCatalog(Map<String, Poster> posters, Addon addon, Capabilities capability,
+                                         String query, String catalogId) {
         if (addon != null && capability != null && capability.catalogs() != null) {
             JSONArray catalogs = capability.catalogs();
-            for (int i = 0; !Thread.currentThread().isInterrupted() && i < Math.min(catalogs.length(), 8); i++) {
+            for (int i = 0; !Thread.currentThread().isInterrupted() && i < (catalogId == null ? Math.min(catalogs.length(), 8) : catalogs.length()); i++) {
                 JSONObject catalog = catalogs.optJSONObject(i);
                 if (catalog == null) continue;
                 String id = catalog.optString("id");
                 String type = catalog.optString("type");
-                if (id.isBlank() || !supportedType(type)) continue;
+                if (id.isBlank() || (catalogId != null && !catalogId.equals(id)) || !(supportedType(type) || (catalogId != null && ("tv".equals(type) || "sport".equals(type))))) continue;
                 JSONArray extra = catalog.optJSONArray("extra");
                 boolean searchable = false;
                 boolean missingRequired = false;
@@ -960,7 +1018,7 @@ public final class StremioAddons {
             long key = ((long) season << 32) | episode;
             var existing = episodes.get(key);
             if (existing == null || (existing.title().isBlank() && !title.isBlank())) {
-                episodes.put(key, new EpisodeChoice(season, episode, title));
+                episodes.put(key, new EpisodeChoice(season, episode, title, row.optString("id")));
             }
         }
         return List.copyOf(episodes.values());
@@ -1009,11 +1067,15 @@ public final class StremioAddons {
                                                Addon only, java.util.function.Consumer<List<Stream>> partial) {
         if (context == null || id == null || id.isBlank() || id.length() > 200) return List.of();
         boolean series = "series".equalsIgnoreCase(mediaType) || "episode".equalsIgnoreCase(mediaType) || episode > 0;
-        String path = series ? "/stream/series/" + Uri.encode(id, ":") + ":" + Math.max(0, season) + ":" + Math.max(1, episode) + ".json"
-                : "/stream/movie/" + Uri.encode(id, ":") + ".json";
+        String type = series ? "series" : "tv".equals(mediaType) || "sport".equals(mediaType) ? mediaType : "movie";
+        String suffix = ":" + Math.max(0, season) + ":" + Math.max(1, episode);
+        boolean fullEpisodeId = only != null && (id.endsWith(suffix)
+                || (builtIn(only) != null && id.endsWith("___" + suffix.substring(1))));
+        String path = "/stream/" + type + "/" + Uri.encode(id, ":")
+                + (series && !fullEpisodeId ? suffix : "") + ".json";
         var addons = list(context).stream().filter(item -> item.enabled && mayStream(item)
                 && (only == null || only.manifestUrl.equals(item.manifestUrl))
-                && acceptsStream(item, series ? "series" : "movie", id))
+                && acceptsStream(item, type, id))
                 .collect(java.util.stream.Collectors.toList());
         var statuses = new java.util.concurrent.ConcurrentHashMap<String, StreamHealth>();
         var tasks = addons.stream().<java.util.concurrent.Callable<List<Stream>>>map(addon -> () -> {

@@ -156,8 +156,8 @@ android {
         // below version tracks the one from F-Droid or universal package when generated with ./gradlew -Puniversal
         // this is overridden when using split apk and normal split apk generation or oneapk amazon generation
         // amazon apk is generated with ./gradlew -Poneapk
-        versionCode = 15
-        versionName = '1.0.0-beta.15'
+        versionCode = 16
+        versionName = '1.0.0-beta.16'
         //archivesBaseName = "" + applicationId + "-" + versionCode + "-" + versionName
         project.extensions.getByType(BasePluginExtension).archivesName.set("Local-Cinema-" + versionCode + "-" + versionName)
         def archivesNameValue = project.extensions.getByType(BasePluginExtension).archivesName.get()
@@ -330,6 +330,7 @@ dependencies {
     ['arm', 'arm64', 'x86', 'x86_64'].each { abi ->
         runtimeOnly "org.libtorrent4j:libtorrent4j-android-${abi}:${torrentVersion}"
     }
+    implementation 'com.github.TeamNewPipe:NewPipeExtractor:v0.27.1'
     implementation 'androidx.media3:media3-exoplayer:1.11.1'
     implementation 'androidx.media3:media3-exoplayer-dash:1.11.1'
     implementation 'androidx.media3:media3-exoplayer-hls:1.11.1'
@@ -340,7 +341,8 @@ dependencies {
     implementation project(':MediaLib')
     implementation 'androidx.lifecycle:lifecycle-process:2.10.0'
     // needed for old Android versions when using java 17
-    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
+    // NewPipe uses the Charset overloads of URL encoder and decoder on pre-33 devices.
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs_nio:2.1.5'
     //debugImplementation 'com.squareup.leakcanary:leakcanary-android:2.14'
     implementation 'com.jakewharton.threetenabp:threetenabp:1.4.9'
     implementation 'com.squareup.picasso:picasso:2.8'

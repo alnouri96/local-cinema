@@ -3,7 +3,6 @@ package com.archos.mediacenter.video.leanback.cinema;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
@@ -19,14 +18,12 @@ import android.widget.TextView;
 import androidx.preference.PreferenceManager;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
-import com.archos.filecorelibrary.FileEditorFactory;
 import com.archos.mediacenter.filecoreextension.upnp2.RawListerFactoryWithUpnp;
 import com.archos.mediacenter.utils.ShortcutDbAdapter;
 import com.archos.mediacenter.video.R;
 import com.archos.mediacenter.video.leanback.LeanbackActivity;
 import com.squareup.picasso.Picasso;
 import java.io.File;
-import java.io.InputStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -35,6 +32,8 @@ import java.util.concurrent.Executors;
 import static com.archos.mediacenter.video.leanback.cinema.CinemaUi.*;
 
 public final class CinemaFileBrowserActivity extends LeanbackActivity {
+    static final String IMAGE_MODE = "cinema_image_mode";
+    static final String SELECTED_IMAGES = "cinema_selected_images";
     private record Entry(String name,Uri uri,boolean directory,long modified,long size) {
         String type(){
             int dot=name.lastIndexOf('.');
@@ -46,6 +45,20 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
 
     private final java.util.concurrent.ExecutorService folders=Executors.newSingleThreadExecutor();
     private final java.util.concurrent.ExecutorService images=Executors.newSingleThreadExecutor();
+    private final java.util.LinkedHashMap<Uri, CinemaArtStorage.Photo> marked = new java.util.LinkedHashMap<>();
+    private final android.util.LruCache<Uri, Bitmap> thumbnails = new android.util.LruCache<>(4 * 1024 * 1024) {
+        @Override protected int sizeOf(Uri uri, Bitmap bitmap) { return bitmap.getAllocationByteCount(); }
+    };
+    private List<CinemaArtStorage.Photo> clipboard = List.of();
+    private boolean imageMode, transferring;
+    private final androidx.activity.result.ActivityResultLauncher<Intent> folderPicker = registerForActivityResult(
+            new androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(), result -> {
+                if (result.getResultCode() == RESULT_OK && result.getData() != null
+                        && result.getData().getData() != null && !clipboard.isEmpty()) {
+                    transferPhotos(clipboard, result.getData().getData(), false);
+                }
+            });
+    private TextView selectionStatus;
     private final ArrayDeque<Entry> path=new ArrayDeque<>();
     private final ArrayList<Entry> entries=new ArrayList<>();
     private FrameLayout root,viewer;
@@ -59,14 +72,15 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
     private List<Entry> photos=List.of();
     private float zoom=1;
 
-    private String l(String ar,String en){return label(this,ar,en);}
-
     @Override public void onCreate(Bundle state){
         super.onCreate(state);
+        imageMode = getIntent().getBooleanExtra(IMAGE_MODE, false);
+        rootPermission();
         var prefs=PreferenceManager.getDefaultSharedPreferences(this);
         grid=prefs.getBoolean("cinema_files_grid",true);
         sort=prefs.getInt("cinema_files_sort",0);
         root=new FrameLayout(this);
+        root.setLayoutDirection(CinemaUi.arabic(this) ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
         root.setBackgroundColor(CinemaTokens.CANVAS);
         LinearLayout page=new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
@@ -90,9 +104,12 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
             layoutButton.setText(layoutLabel());
             updateLayout();
         });
-        control(tools,getString(com.archos.mediacenter.video.R.string.cinema_network_files),()->startActivity(new Intent(this,
-                com.archos.mediacenter.video.leanback.network.NetworkRootActivity.class)));
-        control(tools,getString(com.archos.mediacenter.video.R.string.cinema_system_video_picker),()->setResultAndFinish(null));
+        if (imageMode) addPhotoTools(page);
+        else {
+            control(tools,getString(R.string.cinema_network_files),()->startActivity(new Intent(this,
+                    com.archos.mediacenter.video.leanback.network.NetworkRootActivity.class)));
+            control(tools,getString(R.string.cinema_system_video_picker),()->setResultAndFinish(null));
+        }
         status=text(this,CinemaTokens.LABEL,false);
         page.addView(status);
         files=new RecyclerView(this);
@@ -107,6 +124,123 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
         load();
     }
 
+    private void rootPermission() {
+        if (!imageMode) return;
+        String permission = android.os.Build.VERSION.SDK_INT >= 33 ? android.Manifest.permission.READ_MEDIA_IMAGES
+                : android.os.Build.VERSION.SDK_INT < 29 ? android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+                : android.Manifest.permission.READ_EXTERNAL_STORAGE;
+        if (checkSelfPermission(permission) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            requestPermissions(new String[]{permission}, 17);
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grants) {
+        super.onRequestPermissionsResult(requestCode, permissions, grants);
+        if (requestCode == 17 && files != null) load();
+    }
+
+    private void addPhotoTools(LinearLayout page) {
+        var tools = new LinearLayout(this);
+        page.addView(tools, new LinearLayout.LayoutParams(-1, -2));
+        control(tools, getString(R.string.cinema_photo_use_selection), this::returnPhotos);
+        control(tools, getString(R.string.cinema_photo_copy), () -> {
+            if (transferring || marked.isEmpty()) return;
+            clipboard = List.copyOf(marked.values());
+            marked.clear();
+            adapter.notifyDataSetChanged();
+            showSelection();
+        });
+        control(tools, getString(R.string.cinema_photo_paste), this::pastePhotos);
+        control(tools, getString(R.string.cinema_photo_delete), this::deletePhotos);
+        selectionStatus = text(this, CinemaTokens.LABEL, false);
+        page.addView(selectionStatus);
+        showSelection();
+    }
+
+    private void showSelection() {
+        selectionStatus.setText(getString(R.string.cinema_photo_selection, marked.size(), clipboard.size()));
+    }
+
+    private void returnPhotos() {
+        if (marked.isEmpty() || transferring) return;
+        var paths = new ArrayList<String>();
+        for (Uri uri : marked.keySet()) paths.add(uri.toString());
+        setResult(RESULT_OK, new Intent().putStringArrayListExtra(SELECTED_IMAGES, paths));
+        finish();
+    }
+
+    private void pastePhotos() {
+        if (transferring || clipboard.isEmpty()) return;
+        var folder = path.peek();
+        var destinations = new ArrayList<String>();
+        destinations.add(getString(R.string.cinema_photo_gallery));
+        destinations.add(getString(R.string.cinema_photo_choose_folder));
+        if (folder != null && !CinemaArtStorage.GALLERY.equals(folder.uri()))
+            destinations.add(getString(R.string.cinema_photo_current_folder));
+        dialog(this).setTitle(R.string.cinema_photo_paste).setItems(destinations.toArray(new String[0]), (dialog, button) -> {
+            if (button == 1) {
+                try {
+                    folderPicker.launch(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION));
+                } catch (android.content.ActivityNotFoundException missing) {
+                    android.widget.Toast.makeText(this, R.string.cinema_photo_folder_unavailable,
+                            android.widget.Toast.LENGTH_SHORT).show();
+                }
+            } else transferPhotos(clipboard, button == 0 ? CinemaArtStorage.GALLERY : folder.uri(), false);
+        }).show();
+    }
+
+    private void deletePhotos() {
+        if (transferring || marked.isEmpty() || path.isEmpty()
+                || !CinemaArtStorage.GALLERY.equals(path.peek().uri())) return;
+        List<CinemaArtStorage.Photo> gallerySelection = entries.stream().filter(entry -> marked.containsKey(entry.uri()))
+                .map(entry -> marked.get(entry.uri())).collect(java.util.stream.Collectors.toList());
+        if (gallerySelection.isEmpty()) return;
+        dialog(this).setTitle(R.string.cinema_photo_delete)
+                .setMessage(getString(R.string.cinema_photo_delete_confirm, gallerySelection.size()))
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.cinema_photo_delete,
+                        (dialog, button) -> transferPhotos(gallerySelection, CinemaArtStorage.GALLERY, true)).show();
+    }
+
+    private void transferPhotos(List<CinemaArtStorage.Photo> sources, Uri target, boolean deleting) {
+        transferring = true;
+        var progress = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setMax(sources.size());
+        var modal = dialog(this).setTitle(deleting ? R.string.cinema_photo_delete : R.string.cinema_photo_paste)
+                .setView(progress).setCancelable(false).show();
+        folders.execute(() -> {
+            int completed = 0;
+            var finished = new ArrayList<Uri>();
+            for (var source : sources) {
+                if (Thread.currentThread().isInterrupted()) break;
+                try {
+                    if (deleting) {
+                        if (!CinemaArtStorage.delete(this, source.uri())) continue;
+                    } else CinemaArtStorage.copy(this, source, target);
+                    finished.add(source.uri());
+                    completed++;
+                } catch (Exception ignored) {
+                    // Leave completed copies and the clipboard available for recovery.
+                } finally {
+                    runOnUiThread(() -> progress.incrementProgressBy(1));
+                }
+            }
+            int successes = completed;
+            runOnUiThread(() -> {
+                if (isDestroyed() || isFinishing()) return;
+                if (deleting) marked.keySet().removeAll(finished);
+                else clipboard = sources.stream().filter(photo -> !finished.contains(photo.uri()))
+                        .collect(java.util.stream.Collectors.toList());
+                transferring = false;
+                modal.dismiss();
+                showSelection();
+                load();
+                android.widget.Toast.makeText(this, getString(R.string.cinema_photo_transfer_result,
+                        successes, sources.size()), android.widget.Toast.LENGTH_LONG).show();
+            });
+        });
+    }
+
     private TextView control(LinearLayout tools,String name,Runnable click){
         TextView button=text(this,CinemaTokens.LABEL,true);
         button.setText(name);
@@ -114,7 +248,8 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
         button.setGravity(Gravity.CENTER);
         focusable(button);
         var params=new LinearLayout.LayoutParams(-2,-2);
-        params.rightMargin=dp(this,8);
+        params.setMarginEnd(dp(this,8));
+        button.setMinHeight(dp(this,48));
         tools.addView(button,params);
         button.setOnClickListener(v->click.run());
         return button;
@@ -153,6 +288,8 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
             String error=null;
             try{
                 if(folder==null){
+                    if (imageMode) result.add(new Entry(getString(R.string.cinema_photo_gallery),
+                            CinemaArtStorage.GALLERY, true, 0, 0));
                     File storage=Environment.getExternalStorageDirectory();
                     result.add(new Entry(getString(com.archos.mediacenter.video.R.string.cinema_internal_storage),Uri.fromFile(storage),true,0,0));
                     if(android.os.Build.VERSION.SDK_INT>=30){
@@ -170,11 +307,15 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
                             result.add(new Entry(name==null?Uri.parse(source).getLastPathSegment():name,Uri.parse(source),true,0,0));
                         }
                     }
+                } else if (CinemaArtStorage.GALLERY.equals(folder.uri())) {
+                    for (var photo : CinemaArtStorage.gallery(this))
+                        result.add(new Entry(photo.name(), photo.uri(), false, photo.changed(), photo.size()));
                 }else{
                     for(var file:RawListerFactoryWithUpnp.getRawListerForUrl(folder.uri()).getFileList()){
                         String name=file.getName();
                         if(name==null||name.equals(".")||name.equals(".."))continue;
                         boolean directory=file.isDirectory();
+                        if (imageMode && !directory && CinemaArtStorage.mime(name).isEmpty()) continue;
                         result.add(new Entry(name,file.getUri(),directory,file.lastModified(),directory?0:file.getComputedLength()));
                     }
                 }
@@ -212,7 +353,7 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
         androidx.core.view.OneShotPreDrawListener.add(files,()->{
             if(token!=generation||viewer!=null)return;
             var holder=files.findViewHolderForAdapterPosition(target);
-            if(holder!=null)holder.itemView.requestFocus();
+            if(holder!=null)holder.itemView.requestFocusFromTouch();
         });
     }
 
@@ -221,6 +362,11 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
             path.push(entry);
             selected=null;
             load();
+        } else if (imageMode) {
+            if (marked.remove(entry.uri()) == null) marked.put(entry.uri(),
+                    new CinemaArtStorage.Photo(entry.name(), entry.uri(), entry.size(), entry.modified()));
+            showSelection();
+            adapter.notifyItemChanged(entries.indexOf(entry));
         }else if(entry.photo()){
             photos=entries.stream().filter(Entry::photo).collect(java.util.stream.Collectors.toList());
             photoIndex=photos.indexOf(entry);
@@ -267,13 +413,7 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
         images.execute(()->{
             Bitmap bitmap=null;
             try{
-                BitmapFactory.Options options=new BitmapFactory.Options();
-                options.inJustDecodeBounds=true;
-                try(InputStream input=openPhoto(entry.uri())){BitmapFactory.decodeStream(input,null,options);}
-                options.inSampleSize=1;
-                while(Math.max(options.outWidth,options.outHeight)/options.inSampleSize>4096)options.inSampleSize*=2;
-                options.inJustDecodeBounds=false;
-                try(InputStream input=openPhoto(entry.uri())){bitmap=BitmapFactory.decodeStream(input,null,options);}
+                bitmap = CinemaArtStorage.decode(this, entry.uri(), 3840);
             }catch(Exception ignored){ }
             Bitmap decoded=bitmap;
             runOnUiThread(()->{
@@ -284,10 +424,7 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
         });
     }
 
-    private InputStream openPhoto(Uri uri)throws Exception{
-        if("content".equals(uri.getScheme()))return getContentResolver().openInputStream(uri);
-        return FileEditorFactory.getFileEditorForUrl(uri,this).getInputStream();
-    }
+
 
     private void transformPhoto(float x,float y){
         picture.setScaleX(zoom);
@@ -321,7 +458,9 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
                     transformPhoto(picture.getTranslationX()+(key==KeyEvent.KEYCODE_DPAD_LEFT?step:key==KeyEvent.KEYCODE_DPAD_RIGHT?-step:0),
                             picture.getTranslationY()+(key==KeyEvent.KEYCODE_DPAD_UP?step:key==KeyEvent.KEYCODE_DPAD_DOWN?-step:0));
                 }else if(key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT){
-                    int next=photoIndex+(key==KeyEvent.KEYCODE_DPAD_LEFT?-1:1);
+                    int direction = key == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1;
+                    if (root.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL) direction = -direction;
+                    int next = photoIndex + direction;
                     if(next>=0&&next<photos.size()){photoIndex=next;loadPhoto();}
                 }
             }
@@ -370,21 +509,41 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
             row.addView(icon,new LinearLayout.LayoutParams(iconSize,iconSize));
             TextView name=text(CinemaFileBrowserActivity.this,CinemaTokens.LABEL,false);
             name.setMaxLines(tile?2:1);
-            name.setGravity(tile?Gravity.CENTER:Gravity.LEFT|Gravity.CENTER_VERTICAL);
+            name.setGravity(tile?Gravity.CENTER:Gravity.START|Gravity.CENTER_VERTICAL);
             name.setPadding(dp(CinemaFileBrowserActivity.this,8),dp(CinemaFileBrowserActivity.this,4),0,0);
             row.addView(name,new LinearLayout.LayoutParams(tile?-1:0,-2,tile?0:1));
             return new FileCard(row,icon,name);
         }
         @Override public void onBindViewHolder(FileCard card,int position){
             Entry entry=entries.get(position);
-            card.name.setText(entry.name());
-            card.itemView.setContentDescription(entry.name());
+            boolean checked = marked.containsKey(entry.uri());
+            card.name.setText(checked ? getString(R.string.cinema_photo_marked, entry.name()) : entry.name());
+            card.itemView.setContentDescription(card.name.getText());
+            card.itemView.setActivated(checked);
+            if (card.work != null) card.work.cancel(false);
+            card.uri = entry.uri();
             Picasso.get().cancelRequest(card.icon);
             int icon=entry.directory()?R.drawable.cinema_folder:entry.photo()?android.R.drawable.ic_menu_gallery:R.drawable.cinema_play_movie;
             card.icon.setImageResource(icon);
-            if(grid&&entry.photo()&&"file".equals(entry.uri().getScheme()))
-                Picasso.get().load(entry.uri()).resize(dp(CinemaFileBrowserActivity.this,54),dp(CinemaFileBrowserActivity.this,54))
-                        .centerCrop().placeholder(icon).error(icon).into(card.icon);
+            if (entry.photo()) {
+                Bitmap cached = thumbnails.get(entry.uri());
+                if (cached != null) card.icon.setImageBitmap(cached);
+                else if ("file".equals(entry.uri().getScheme()) || "content".equals(entry.uri().getScheme())) {
+                    int size = dp(CinemaFileBrowserActivity.this, grid ? 54 : 32);
+                    Picasso.get().load(entry.uri()).resize(size, size).centerInside().placeholder(icon).error(icon).into(card.icon);
+                } else if (imageMode) {
+                    card.work = images.submit(() -> {
+                        try {
+                            var thumbnail = CinemaArtStorage.decode(CinemaFileBrowserActivity.this, entry.uri(), 144);
+                            if (thumbnail == null) return;
+                            thumbnails.put(entry.uri(), thumbnail);
+                            runOnUiThread(() -> {
+                                if (entry.uri().equals(card.uri) && !isDestroyed()) card.icon.setImageBitmap(thumbnail);
+                            });
+                        } catch (Exception ignored) {}
+                    });
+                }
+            }
             card.itemView.setOnFocusChangeListener((view,focused)->{
                 card.name.setTextColor(focused?CinemaTokens.ON_FOCUS:CinemaTokens.TEXT);
                 if(focused)selected=entry.uri();
@@ -392,12 +551,18 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
             card.name.setTextColor(card.itemView.hasFocus()?CinemaTokens.ON_FOCUS:CinemaTokens.TEXT);
             card.itemView.setOnClickListener(v->open(entry));
         }
-        @Override public void onViewRecycled(FileCard card){Picasso.get().cancelRequest(card.icon);}
+        @Override public void onViewRecycled(FileCard card) {
+            Picasso.get().cancelRequest(card.icon);
+            if (card.work != null) card.work.cancel(false);
+            card.uri = null;
+        }
     }
 
     private static final class FileCard extends RecyclerView.ViewHolder{
         final ImageView icon;
         final TextView name;
+        Uri uri;
+        java.util.concurrent.Future<?> work;
         FileCard(View root,ImageView icon,TextView name){super(root);this.icon=icon;this.name=name;}
     }
 }

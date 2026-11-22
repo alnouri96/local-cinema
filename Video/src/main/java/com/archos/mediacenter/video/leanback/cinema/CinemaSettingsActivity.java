@@ -713,7 +713,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
         });
     }
 
-    private void addonsSettings() { new CinemaAddonSettings(this, io, mainHandler, () -> {}).show(); }
+    private void addonsSettings() { new CinemaAddonsManagerDialog(this, io, mainHandler, () -> {}).show(); }
     private void subtitleAddonsSettings() { addonSettings(true); }
 
     private void addonSettings(boolean subtitles) {
