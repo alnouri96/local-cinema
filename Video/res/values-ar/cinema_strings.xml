@@ -21,8 +21,8 @@
     <string name="cinema_cast_crew">الممثلون وطاقم العمل</string>
     <string name="cinema_ch_ch_to_zoom">القنوات + / − للتكبير</string>
     <string name="cinema_change_audio_track">تغيير مسار الصوت: </string>
-    <string name="cinema_choose_a_file_from_storage_or_your_network_to_play_manually">اختر ملفاً من التخزين أو الشبكة لتشغيله يدوياً</string>
-    <string name="cinema_choose_a_video">اختيار ملف فيديو</string>
+    <string name="cinema_choose_a_file_from_storage_or_your_network_to_play_manually">تصفح الفيديوهات والصور والمجلدات في التخزين الداخلي وUSB والشبكة</string>
+    <string name="cinema_choose_a_video">مستعرض الملفات</string>
     <string name="cinema_choose_from_episode_folder">اختيار ترجمة من مجلد الحلقة</string>
     <string name="cinema_choose_from_video_folder">اختيار ترجمة من مجلد الفيلم</string>
     <string name="cinema_choose_poster">اختيار بوستر</string>
@@ -46,7 +46,7 @@
     <string name="cinema_episode_details_tracks">تفاصيل الحلقة والمسارات</string>
     <string name="cinema_existing_player_setting">إعداد المشغّل الحالي</string>
     <string name="cinema_fetch_missing_posters">جلب البوسترات المفقودة</string>
-    <string name="cinema_file_browser">متصفح الملفات</string>
+    <string name="cinema_file_browser">مستعرض الملفات</string>
     <string name="cinema_file_information_unavailable">معلومات الملف غير متاحة</string>
     <string name="cinema_file_tracks_are_still_loading">جارٍ قراءة مسارات الملف</string>
     <string name="cinema_finding_posters">جارٍ البحث عن البوسترات</string>

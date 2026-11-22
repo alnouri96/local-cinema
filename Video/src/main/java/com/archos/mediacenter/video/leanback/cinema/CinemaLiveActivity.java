@@ -156,10 +156,10 @@ public final class CinemaLiveActivity extends FragmentActivity {
         root.addView(status, new LinearLayout.LayoutParams(-1, -2));
 
         grid = new RecyclerView(this);
-        grid.setClipToPadding(true);
-        grid.setClipChildren(true);
+        grid.setClipToPadding(false);
+        grid.setClipChildren(false);
         grid.setItemAnimator(null);
-        grid.setPadding(0, dp(3), 0, dp(3));
+        grid.setPadding(dp(6), dp(10), dp(6), dp(14));
         int width = getResources().getConfiguration().screenWidthDp;
         int columns = Math.max(2, Math.min(6, (width - 72) / 165));
         var layout = new GridLayoutManager(this, columns);
@@ -173,8 +173,8 @@ public final class CinemaLiveActivity extends FragmentActivity {
             }
         });
         var viewport = new android.widget.FrameLayout(this);
-        viewport.setClipChildren(true);
-        viewport.setClipToPadding(true);
+        viewport.setClipChildren(false);
+        viewport.setClipToPadding(false);
         viewport.addView(grid, new android.widget.FrameLayout.LayoutParams(-1, -1));
         root.addView(viewport, new LinearLayout.LayoutParams(-1, 0, 1f));
         root.setFocusableInTouchMode(true);

@@ -1360,4 +1360,49 @@
     <string name="cinema_art_display">خيارات العرض</string>
     <string name="cinema_art_default_percent">%1$s · الافتراضي</string>
     <string name="cinema_art_option_value">%1$s · %2$s</string>
+
+    <!-- Unified File Browser & Operations -->
+    <string name="cinema_usb_storage_label">قرص USB (%1$s)</string>
+    <string name="cinema_file_selected_count_title">تم تحديد %1$d عناصر</string>
+    <string name="cinema_file_select">تحديد</string>
+    <string name="cinema_file_deselect">إلغاء التحديد</string>
+    <string name="cinema_file_select_all">تحديد الكل</string>
+    <string name="cinema_file_clear_selection">مسح التحديد</string>
+    <string name="cinema_file_copy">نسخ</string>
+    <string name="cinema_file_move">نقل</string>
+    <string name="cinema_file_paste">لصق</string>
+    <string name="cinema_file_paste_here">لصق هنا</string>
+    <string name="cinema_file_delete">حذف</string>
+    <string name="cinema_file_deleting">جارٍ حذف الملفات…</string>
+    <string name="cinema_file_copying">جارٍ نسخ الملفات…</string>
+    <string name="cinema_file_moving">جارٍ نقل الملفات…</string>
+    <string name="cinema_file_delete_single_confirm">هل تريد حذف «%1$s»؟</string>
+    <string name="cinema_file_delete_multi_confirm">هل تريد حذف %1$d عناصر محددة؟</string>
+    <string name="cinema_file_delete_result">تم حذف %1$d من أصل %2$d عناصر</string>
+    <string name="cinema_file_copy_result">تم نسخ %1$d من أصل %2$d عناصر</string>
+    <string name="cinema_file_move_result">تم نقل %1$d من أصل %2$d عناصر</string>
+    <string name="cinema_file_clipboard_copy_status">جاهز للنسخ: %1$d عنصر — افتح المجلد واضغط لصق</string>
+    <string name="cinema_file_clipboard_move_status">جاهز للنقل: %1$d عنصر — افتح المجلد واضغط لصق</string>
+    <string name="cinema_file_selected_status">المحددة: %1$d عنصر</string>
+    <string name="cinema_file_select_mode_hint">وضع التحديد مفعّل — اضغط موافق لتحديد العناصر</string>
+    <string name="cinema_art_pick_hint">اختر صور وضع الفن — اضغط مطوّلاً على موافق لخيارات الملفات</string>
+    <string name="cinema_file_ready_to_copy">تم نسخ %1$d عنصر إلى الحافظة</string>
+    <string name="cinema_file_ready_to_move">تم تجهيز %1$d عنصر للنقل</string>
+    <string name="cinema_file_long_press_hint">اضغط مطوّلاً على موافق لخيارات التحديد والنسخ والنقل واللصق والحذف</string>
+    <string name="cinema_file_usb_permission_title">صلاحية الكتابة على USB</string>
+    <string name="cinema_file_usb_permission_message">امنح صلاحية الوصول للمجلد لإتمام اللصق على قرص USB الخارجي.</string>
+
+    <!-- Add-ons Reorder -->
+    <string name="addon_reorder_action">⇅ ترتيب</string>
+    <string name="addon_reorder_done">✓ تم الترتيب</string>
+    <string name="addon_reorder_saved">تم حفظ ترتيب الإضافات</string>
+    <string name="addon_reorder_interactive">وضع الترتيب الحر</string>
+    <string name="addon_hub_reorder_hint">اضغط مطوّلاً على موافق على أي إضافة لتحريكها أو فتح إعداداتها</string>
+    <string name="addon_reorder_active_hint">استخدم الأسهم لتحريك الإضافة المحددة ثم اضغط موافق للحفظ</string>
+    <string name="addon_move_right">تحريك لليمين</string>
+    <string name="addon_move_left">تحريك لليسار</string>
+
+    <!-- YouTube 4K Ambient Screensaver -->
+    <string name="cinema_ambient_categories">التصنيفات</string>
+    <string name="cinema_ambient_subtitle_hint">اضغط موافق للتشغيل · اضغط مطوّلاً لإضافته أو إزالته من المفضلة</string>
 </resources>

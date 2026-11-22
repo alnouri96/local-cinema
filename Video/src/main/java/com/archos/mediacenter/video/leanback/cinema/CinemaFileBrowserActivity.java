@@ -2,135 +2,219 @@ package com.archos.mediacenter.video.leanback.cinema;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.webkit.MimeTypeMap;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.preference.PreferenceManager;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+
 import com.archos.mediacenter.filecoreextension.upnp2.RawListerFactoryWithUpnp;
-import com.archos.mediacenter.utils.ShortcutDbAdapter;
 import com.archos.mediacenter.video.R;
 import com.archos.mediacenter.video.leanback.LeanbackActivity;
 import com.squareup.picasso.Picasso;
-import java.io.File;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+
+import static com.archos.mediacenter.video.leanback.cinema.CinemaFileOperations.Item;
 import static com.archos.mediacenter.video.leanback.cinema.CinemaUi.*;
 
+/**
+ * Unified File Browser supporting internal storage, USB drives, Art Gallery, and network shares.
+ * Serves both full browsing (videos, images, folders) from Home and images-only picking from Art Mode,
+ * with fast thumbnails and long-press file management (Select, Copy, Move, Paste, Delete).
+ */
 public final class CinemaFileBrowserActivity extends LeanbackActivity {
+    public static final String EXTRA_FILTER_MODE = "cinema_filter_mode";
+    public static final String FILTER_ALL = "all";
+    public static final String FILTER_IMAGES_ONLY = "images";
     static final String IMAGE_MODE = "cinema_image_mode";
     static final String SELECTED_IMAGES = "cinema_selected_images";
-    private record Entry(String name,Uri uri,boolean directory,long modified,long size) {
-        String type(){
-            int dot=name.lastIndexOf('.');
-            return dot<0?"":java.util.Objects.toString(MimeTypeMap.getSingleton()
-                    .getMimeTypeFromExtension(name.substring(dot+1).toLowerCase(java.util.Locale.ROOT)),"");
-        }
-        boolean photo(){return !directory&&type().startsWith("image/");}
-    }
 
-    private final java.util.concurrent.ExecutorService folders=Executors.newSingleThreadExecutor();
-    private final java.util.concurrent.ExecutorService images=Executors.newSingleThreadExecutor();
-    private final java.util.LinkedHashMap<Uri, CinemaArtStorage.Photo> marked = new java.util.LinkedHashMap<>();
-    private final android.util.LruCache<Uri, Bitmap> thumbnails = new android.util.LruCache<>(4 * 1024 * 1024) {
+    private final ExecutorService folders = Executors.newSingleThreadExecutor();
+    private final ExecutorService thumbs = Executors.newFixedThreadPool(2);
+    private final LinkedHashMap<Uri, Item> marked = new LinkedHashMap<>();
+    private final android.util.LruCache<Uri, Bitmap> thumbnails = new android.util.LruCache<>(6 * 1024 * 1024) {
         @Override protected int sizeOf(Uri uri, Bitmap bitmap) { return bitmap.getAllocationByteCount(); }
     };
-    private List<CinemaArtStorage.Photo> clipboard = List.of();
-    private boolean imageMode, transferring;
-    private final androidx.activity.result.ActivityResultLauncher<Intent> folderPicker = registerForActivityResult(
-            new androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(), result -> {
+
+    private List<Item> clipboard = List.of();
+    private boolean clipboardMove;
+    private boolean imagesOnly;
+    private boolean selectMode;
+    private boolean transferring;
+
+    private final ActivityResultLauncher<Intent> safFolderPicker = registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(), result -> {
                 if (result.getResultCode() == RESULT_OK && result.getData() != null
                         && result.getData().getData() != null && !clipboard.isEmpty()) {
-                    transferPhotos(clipboard, result.getData().getData(), false);
+                    Uri tree = result.getData().getData();
+                    try {
+                        getContentResolver().takePersistableUriPermission(tree,
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    } catch (Exception ignored) {}
+                    executeCopyOrMove(List.copyOf(clipboard), tree, clipboardMove);
                 }
             });
-    private TextView selectionStatus;
-    private final ArrayDeque<Entry> path=new ArrayDeque<>();
-    private final ArrayList<Entry> entries=new ArrayList<>();
-    private FrameLayout root,viewer;
+
+    private final ArrayDeque<Item> path = new ArrayDeque<>();
+    private final ArrayList<Item> entries = new ArrayList<>();
+    private FrameLayout root, viewer;
     private ImageView picture;
-    private TextView location,status,photoCaption,layoutButton;
+    private TextView location, status, photoCaption, layoutButton;
+    private LinearLayout actionStrip;
+    private TextView actionStripLabel, useSelectedBtn, pasteBtn, copyBtn, moveBtn, deleteBtn, cancelBarBtn;
     private RecyclerView files;
     private Files adapter;
-    private int generation,imageGeneration,sort,photoIndex;
+    private int generation, imageGeneration, sort, photoIndex;
     private boolean grid;
     private Uri selected;
-    private List<Entry> photos=List.of();
-    private float zoom=1;
+    private List<Item> photos = List.of();
+    private float zoom = 1;
 
-    @Override public void onCreate(Bundle state){
+    @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        imageMode = getIntent().getBooleanExtra(IMAGE_MODE, false);
-        rootPermission();
-        var prefs=PreferenceManager.getDefaultSharedPreferences(this);
-        grid=prefs.getBoolean("cinema_files_grid",true);
-        sort=prefs.getInt("cinema_files_sort",0);
-        root=new FrameLayout(this);
-        root.setLayoutDirection(CinemaUi.arabic(this) ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+        String filterMode = getIntent().getStringExtra(EXTRA_FILTER_MODE);
+        imagesOnly = getIntent().getBooleanExtra(IMAGE_MODE, false)
+                || FILTER_IMAGES_ONLY.equalsIgnoreCase(filterMode);
+        selectMode = imagesOnly;
+        requestStoragePermissions();
+
+        var prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        grid = prefs.getBoolean("cinema_files_grid", true);
+        sort = prefs.getInt("cinema_files_sort", 0);
+
+        boolean rtl = CinemaUi.arabic(this);
+        root = new FrameLayout(this);
+        root.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
         root.setBackgroundColor(CinemaTokens.CANVAS);
-        LinearLayout page=new LinearLayout(this);
+        root.setClipChildren(false);
+        root.setClipToPadding(false);
+
+        LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
-        int gutter=dp(this,CinemaTokens.UTILITY_GUTTER);
-        page.setPadding(gutter,dp(this,16),gutter,dp(this,16));
-        root.addView(page,new FrameLayout.LayoutParams(-1,-1));
+        page.setClipChildren(false);
+        page.setClipToPadding(false);
+        int gutter = dp(this, CinemaTokens.UTILITY_GUTTER);
+        page.setPaddingRelative(gutter, dp(this, 18), gutter, dp(this, 16));
+        root.addView(page, new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
 
-        LinearLayout tools=new LinearLayout(this);
+        // Top Header & Controls
+        LinearLayout tools = new LinearLayout(this);
         tools.setGravity(Gravity.CENTER_VERTICAL);
-        page.addView(tools,new LinearLayout.LayoutParams(-1,-2));
-        control(tools,getString(com.archos.mediacenter.video.R.string.cinema_back),this::onBackPressed);
-        location=text(this,CinemaTokens.ROW_TITLE,true);
+        tools.setClipChildren(false);
+        tools.setClipToPadding(false);
+        tools.setPadding(0, dp(this, 4), 0, dp(this, 6));
+        page.addView(tools, new LinearLayout.LayoutParams(-1, -2));
+
+        control(tools, getString(R.string.cinema_back), this::onBackPressed);
+        location = text(this, 24, true);
+        location.setTextColor(CinemaTokens.GOLD);
         location.setSingleLine();
-        location.setPadding(dp(this,12),0,dp(this,12),0);
-        tools.addView(location,new LinearLayout.LayoutParams(0,-2,1));
-        control(tools,getString(com.archos.mediacenter.video.R.string.cinema_sort),this::sortMenu);
-        layoutButton=control(tools,layoutLabel(),()->{
-            grid=!grid;
-            prefs.edit().putBoolean("cinema_files_grid",grid).apply();
+        location.setEllipsize(TextUtils.TruncateAt.END);
+        location.setPaddingRelative(dp(this, 14), 0, dp(this, 14), 0);
+        tools.addView(location, new LinearLayout.LayoutParams(0, -2, 1));
+
+        control(tools, getString(R.string.cinema_sort), this::sortMenu);
+        layoutButton = control(tools, layoutLabel(), () -> {
+            grid = !grid;
+            prefs.edit().putBoolean("cinema_files_grid", grid).apply();
             layoutButton.setText(layoutLabel());
             updateLayout();
         });
-        if (imageMode) addPhotoTools(page);
-        else {
-            control(tools,getString(R.string.cinema_network_files),()->startActivity(new Intent(this,
+        if (!imagesOnly) {
+            control(tools, getString(R.string.cinema_network_files), () -> startActivity(new Intent(this,
                     com.archos.mediacenter.video.leanback.network.NetworkRootActivity.class)));
-            control(tools,getString(R.string.cinema_system_video_picker),()->setResultAndFinish(null));
         }
-        status=text(this,CinemaTokens.LABEL,false);
+
+        // Unified Selection / Clipboard Action Strip (shown when selecting, image-picking, or clipboard active)
+        actionStrip = new LinearLayout(this);
+        actionStrip.setOrientation(LinearLayout.HORIZONTAL);
+        actionStrip.setGravity(Gravity.CENTER_VERTICAL);
+        actionStrip.setClipChildren(false);
+        actionStrip.setClipToPadding(false);
+        actionStrip.setPaddingRelative(dp(this, 14), dp(this, 8), dp(this, 14), dp(this, 8));
+        GradientDrawable stripBg = rounded(0xFF1F1D19, dp(this, 12), 0x66E5A93B);
+        actionStrip.setBackground(stripBg);
+        var stripLp = new LinearLayout.LayoutParams(-1, -2);
+        stripLp.topMargin = dp(this, 6);
+        stripLp.bottomMargin = dp(this, 4);
+        page.addView(actionStrip, stripLp);
+
+        actionStripLabel = text(this, 14, true);
+        actionStripLabel.setTextColor(CinemaTokens.GOLD);
+        actionStripLabel.setSingleLine();
+        actionStripLabel.setEllipsize(TextUtils.TruncateAt.END);
+        actionStrip.addView(actionStripLabel, new LinearLayout.LayoutParams(0, -2, 1));
+
+        useSelectedBtn = pillControl(actionStrip, getString(R.string.cinema_photo_use_selection), this::returnSelectedImages);
+        copyBtn = pillControl(actionStrip, getString(R.string.cinema_file_copy), () -> stageMarkedToClipboard(false));
+        moveBtn = pillControl(actionStrip, getString(R.string.cinema_file_move), () -> stageMarkedToClipboard(true));
+        deleteBtn = pillControl(actionStrip, getString(R.string.cinema_file_delete), () -> confirmDeleteItems(List.copyOf(marked.values())));
+        pasteBtn = pillControl(actionStrip, getString(R.string.cinema_file_paste), this::triggerPaste);
+        cancelBarBtn = pillControl(actionStrip, getString(android.R.string.cancel), this::clearSelectionAndClipboard);
+
+        status = text(this, CinemaTokens.LABEL, false);
+        status.setTextColor(CinemaTokens.SECONDARY);
+        status.setPaddingRelative(dp(this, 4), dp(this, 4), dp(this, 4), dp(this, 4));
         page.addView(status);
-        files=new RecyclerView(this);
+
+        files = new RecyclerView(this);
         files.setId(View.generateViewId());
+        files.setClipChildren(false);
         files.setClipToPadding(false);
-        files.setPadding(0,dp(this,8),0,dp(this,8));
+        files.setPadding(dp(this, 8), dp(this, 12), dp(this, 8), dp(this, 16));
         files.setItemAnimator(null);
-        adapter=new Files();
+        adapter = new Files();
         files.setAdapter(adapter);
-        page.addView(files,new LinearLayout.LayoutParams(-1,0,1));
+        page.addView(files, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        refreshActionStrip();
         updateLayout();
         load();
     }
 
-    private void rootPermission() {
-        if (!imageMode) return;
-        String permission = android.os.Build.VERSION.SDK_INT >= 33 ? android.Manifest.permission.READ_MEDIA_IMAGES
-                : android.os.Build.VERSION.SDK_INT < 29 ? android.Manifest.permission.WRITE_EXTERNAL_STORAGE
-                : android.Manifest.permission.READ_EXTERNAL_STORAGE;
-        if (checkSelfPermission(permission) != android.content.pm.PackageManager.PERMISSION_GRANTED)
-            requestPermissions(new String[]{permission}, 17);
+    private void requestStoragePermissions() {
+        List<String> needed = new ArrayList<>();
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (checkSelfPermission(android.Manifest.permission.READ_MEDIA_IMAGES) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                needed.add(android.Manifest.permission.READ_MEDIA_IMAGES);
+            if (!imagesOnly && checkSelfPermission(android.Manifest.permission.READ_MEDIA_VIDEO) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                needed.add(android.Manifest.permission.READ_MEDIA_VIDEO);
+        } else if (Build.VERSION.SDK_INT < 29) {
+            if (checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                needed.add(android.Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        } else {
+            if (checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                needed.add(android.Manifest.permission.READ_EXTERNAL_STORAGE);
+        }
+        if (!needed.isEmpty()) requestPermissions(needed.toArray(new String[0]), 17);
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grants) {
@@ -138,431 +222,754 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
         if (requestCode == 17 && files != null) load();
     }
 
-    private void addPhotoTools(LinearLayout page) {
-        var tools = new LinearLayout(this);
-        page.addView(tools, new LinearLayout.LayoutParams(-1, -2));
-        control(tools, getString(R.string.cinema_photo_use_selection), this::returnPhotos);
-        control(tools, getString(R.string.cinema_photo_copy), () -> {
-            if (transferring || marked.isEmpty()) return;
-            clipboard = List.copyOf(marked.values());
-            marked.clear();
-            adapter.notifyDataSetChanged();
-            showSelection();
-        });
-        control(tools, getString(R.string.cinema_photo_paste), this::pastePhotos);
-        control(tools, getString(R.string.cinema_photo_delete), this::deletePhotos);
-        selectionStatus = text(this, CinemaTokens.LABEL, false);
-        page.addView(selectionStatus);
-        showSelection();
+    private TextView control(LinearLayout tools, String name, Runnable click) {
+        TextView button = text(this, CinemaTokens.LABEL, true);
+        button.setText(name);
+        button.setPaddingRelative(dp(this, 14), 0, dp(this, 14), 0);
+        button.setGravity(Gravity.CENTER);
+        focusable(button);
+        var params = new LinearLayout.LayoutParams(-2, dp(this, 44));
+        params.setMarginEnd(dp(this, 8));
+        tools.addView(button, params);
+        button.setOnClickListener(v -> click.run());
+        return button;
     }
 
-    private void showSelection() {
-        selectionStatus.setText(getString(R.string.cinema_photo_selection, marked.size(), clipboard.size()));
+    private TextView pillControl(LinearLayout bar, String name, Runnable click) {
+        TextView btn = text(this, 13, true);
+        btn.setText(name);
+        btn.setGravity(Gravity.CENTER);
+        btn.setPaddingRelative(dp(this, 12), 0, dp(this, 12), 0);
+        focusable(btn);
+        btn.setMinimumHeight(dp(this, 38));
+        var lp = new LinearLayout.LayoutParams(-2, dp(this, 38));
+        lp.setMarginStart(dp(this, 8));
+        bar.addView(btn, lp);
+        btn.setOnClickListener(v -> click.run());
+        return btn;
     }
 
-    private void returnPhotos() {
+    private void refreshActionStrip() {
+        boolean hasMarked = !marked.isEmpty();
+        boolean hasClip = !clipboard.isEmpty();
+        boolean insideFolder = !path.isEmpty();
+        boolean showBar = imagesOnly || selectMode || hasMarked || hasClip;
+        actionStrip.setVisibility(showBar ? View.VISIBLE : View.GONE);
+        if (!showBar) return;
+
+        if (hasClip && !hasMarked) {
+            actionStripLabel.setText(getString(clipboardMove
+                    ? R.string.cinema_file_clipboard_move_status : R.string.cinema_file_clipboard_copy_status,
+                    clipboard.size()));
+        } else if (hasMarked) {
+            actionStripLabel.setText(getString(R.string.cinema_file_selected_status, marked.size()));
+        } else if (imagesOnly) {
+            actionStripLabel.setText(getString(R.string.cinema_art_pick_hint));
+        } else {
+            actionStripLabel.setText(getString(R.string.cinema_file_select_mode_hint));
+        }
+
+        useSelectedBtn.setVisibility(imagesOnly && hasMarked ? View.VISIBLE : View.GONE);
+        copyBtn.setVisibility(hasMarked ? View.VISIBLE : View.GONE);
+        moveBtn.setVisibility(hasMarked ? View.VISIBLE : View.GONE);
+        deleteBtn.setVisibility(hasMarked ? View.VISIBLE : View.GONE);
+        pasteBtn.setVisibility(hasClip ? View.VISIBLE : View.GONE);
+        cancelBarBtn.setVisibility((hasMarked || hasClip || (selectMode && !imagesOnly)) ? View.VISIBLE : View.GONE);
+    }
+
+    private void clearSelectionAndClipboard() {
+        marked.clear();
+        clipboard = List.of();
+        clipboardMove = false;
+        selectMode = imagesOnly;
+        adapter.notifyDataSetChanged();
+        refreshActionStrip();
+    }
+
+    private void stageMarkedToClipboard(boolean move) {
+        if (transferring || marked.isEmpty()) return;
+        clipboard = List.copyOf(marked.values());
+        clipboardMove = move;
+        marked.clear();
+        selectMode = imagesOnly;
+        adapter.notifyDataSetChanged();
+        refreshActionStrip();
+        Toast.makeText(this, getString(move ? R.string.cinema_file_ready_to_move : R.string.cinema_file_ready_to_copy,
+                clipboard.size()), Toast.LENGTH_SHORT).show();
+    }
+
+    private void stageItemsToClipboard(List<Item> items, boolean move) {
+        if (transferring || items.isEmpty()) return;
+        clipboard = List.copyOf(items);
+        clipboardMove = move;
+        marked.clear();
+        selectMode = imagesOnly;
+        adapter.notifyDataSetChanged();
+        refreshActionStrip();
+        Toast.makeText(this, getString(move ? R.string.cinema_file_ready_to_move : R.string.cinema_file_ready_to_copy,
+                clipboard.size()), Toast.LENGTH_SHORT).show();
+    }
+
+    private void returnSelectedImages() {
         if (marked.isEmpty() || transferring) return;
-        var paths = new ArrayList<String>();
+        ArrayList<String> paths = new ArrayList<>();
         for (Uri uri : marked.keySet()) paths.add(uri.toString());
         setResult(RESULT_OK, new Intent().putStringArrayListExtra(SELECTED_IMAGES, paths));
         finish();
     }
 
-    private void pastePhotos() {
+    private void triggerPaste() {
         if (transferring || clipboard.isEmpty()) return;
-        var folder = path.peek();
-        var destinations = new ArrayList<String>();
-        destinations.add(getString(R.string.cinema_photo_gallery));
-        destinations.add(getString(R.string.cinema_photo_choose_folder));
-        if (folder != null && !CinemaArtStorage.GALLERY.equals(folder.uri()))
-            destinations.add(getString(R.string.cinema_photo_current_folder));
-        dialog(this).setTitle(R.string.cinema_photo_paste).setItems(destinations.toArray(new String[0]), (dialog, button) -> {
-            if (button == 1) {
-                try {
-                    folderPicker.launch(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
-                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION));
-                } catch (android.content.ActivityNotFoundException missing) {
-                    android.widget.Toast.makeText(this, R.string.cinema_photo_folder_unavailable,
-                            android.widget.Toast.LENGTH_SHORT).show();
-                }
-            } else transferPhotos(clipboard, button == 0 ? CinemaArtStorage.GALLERY : folder.uri(), false);
-        }).show();
+        Item currentFolder = path.peek();
+        if (currentFolder != null) {
+            executeCopyOrMove(List.copyOf(clipboard), currentFolder.uri(), clipboardMove);
+            return;
+        }
+        // At root level, let user pick destination (Gallery or SAF Folder / USB)
+        var destinations = new String[]{
+                getString(R.string.cinema_photo_gallery),
+                getString(R.string.cinema_photo_choose_folder)
+        };
+        dialog(this).setTitle(R.string.cinema_file_paste).setItems(destinations, (d, which) -> {
+            if (which == 0) executeCopyOrMove(List.copyOf(clipboard), CinemaArtStorage.GALLERY, clipboardMove);
+            else launchSafFolderPicker();
+        }).setNegativeButton(android.R.string.cancel, null).show();
     }
 
-    private void deletePhotos() {
-        if (transferring || marked.isEmpty() || path.isEmpty()
-                || !CinemaArtStorage.GALLERY.equals(path.peek().uri())) return;
-        List<CinemaArtStorage.Photo> gallerySelection = entries.stream().filter(entry -> marked.containsKey(entry.uri()))
-                .map(entry -> marked.get(entry.uri())).collect(java.util.stream.Collectors.toList());
-        if (gallerySelection.isEmpty()) return;
-        dialog(this).setTitle(R.string.cinema_photo_delete)
-                .setMessage(getString(R.string.cinema_photo_delete_confirm, gallerySelection.size()))
+    private void launchSafFolderPicker() {
+        try {
+            safFolderPicker.launch(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION));
+        } catch (android.content.ActivityNotFoundException missing) {
+            Toast.makeText(this, R.string.cinema_photo_folder_unavailable, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void confirmDeleteItems(List<Item> targets) {
+        if (transferring || targets.isEmpty()) return;
+        String message = targets.size() == 1
+                ? getString(R.string.cinema_file_delete_single_confirm, targets.get(0).name())
+                : getString(R.string.cinema_file_delete_multi_confirm, targets.size());
+        showDialogWithButtonFocus(dialog(this)
+                .setTitle(R.string.cinema_file_delete)
+                .setMessage(message)
                 .setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton(R.string.cinema_photo_delete,
-                        (dialog, button) -> transferPhotos(gallerySelection, CinemaArtStorage.GALLERY, true)).show();
+                .setPositiveButton(R.string.cinema_file_delete, (d, w) -> executeDelete(targets)),
+                android.content.DialogInterface.BUTTON_POSITIVE);
     }
 
-    private void transferPhotos(List<CinemaArtStorage.Photo> sources, Uri target, boolean deleting) {
+    private void executeDelete(List<Item> targets) {
         transferring = true;
-        var progress = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        progress.setMax(sources.size());
-        var modal = dialog(this).setTitle(deleting ? R.string.cinema_photo_delete : R.string.cinema_photo_paste)
-                .setView(progress).setCancelable(false).show();
+        var panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(this, 20);
+        panel.setPadding(pad, dp(this, 10), pad, pad);
+        TextView detail = text(this, 14, false);
+        detail.setSingleLine();
+        detail.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+        panel.addView(detail);
+        ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setMax(targets.size());
+        progress.setProgressTintList(ColorStateList.valueOf(CinemaTokens.GOLD));
+        var barLp = new LinearLayout.LayoutParams(-1, dp(this, 16));
+        barLp.topMargin = dp(this, 10);
+        panel.addView(progress, barLp);
+
+        var modal = dialog(this).setTitle(R.string.cinema_file_deleting).setView(panel).setCancelable(false).show();
         folders.execute(() -> {
-            int completed = 0;
-            var finished = new ArrayList<Uri>();
-            for (var source : sources) {
+            int deleted = 0;
+            for (Item item : targets) {
                 if (Thread.currentThread().isInterrupted()) break;
+                runOnUiThread(() -> detail.setText(item.name()));
                 try {
-                    if (deleting) {
-                        if (!CinemaArtStorage.delete(this, source.uri())) continue;
-                    } else CinemaArtStorage.copy(this, source, target);
-                    finished.add(source.uri());
-                    completed++;
-                } catch (Exception ignored) {
-                    // Leave completed copies and the clipboard available for recovery.
-                } finally {
-                    runOnUiThread(() -> progress.incrementProgressBy(1));
-                }
+                    if (CinemaFileOperations.deleteItem(this, item)) {
+                        deleted++;
+                        marked.remove(item.uri());
+                    }
+                } catch (Exception ignored) {}
+                runOnUiThread(() -> progress.incrementProgressBy(1));
             }
-            int successes = completed;
+            int done = deleted;
             runOnUiThread(() -> {
                 if (isDestroyed() || isFinishing()) return;
-                if (deleting) marked.keySet().removeAll(finished);
-                else clipboard = sources.stream().filter(photo -> !finished.contains(photo.uri()))
-                        .collect(java.util.stream.Collectors.toList());
                 transferring = false;
                 modal.dismiss();
-                showSelection();
+                if (marked.isEmpty() && !imagesOnly) selectMode = false;
+                refreshActionStrip();
                 load();
-                android.widget.Toast.makeText(this, getString(R.string.cinema_photo_transfer_result,
-                        successes, sources.size()), android.widget.Toast.LENGTH_LONG).show();
+                Toast.makeText(this, getString(R.string.cinema_file_delete_result, done, targets.size()),
+                        Toast.LENGTH_LONG).show();
             });
         });
     }
 
-    private TextView control(LinearLayout tools,String name,Runnable click){
-        TextView button=text(this,CinemaTokens.LABEL,true);
-        button.setText(name);
-        button.setPadding(dp(this,12),0,dp(this,12),0);
-        button.setGravity(Gravity.CENTER);
-        focusable(button);
-        var params=new LinearLayout.LayoutParams(-2,-2);
-        params.setMarginEnd(dp(this,8));
-        button.setMinHeight(dp(this,48));
-        tools.addView(button,params);
-        button.setOnClickListener(v->click.run());
-        return button;
+    private void executeCopyOrMove(List<Item> sources, Uri destFolder, boolean move) {
+        transferring = true;
+        var panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(this, 20);
+        panel.setPadding(pad, dp(this, 10), pad, pad);
+        TextView detail = text(this, 14, false);
+        detail.setSingleLine();
+        detail.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+        panel.addView(detail);
+        ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setIndeterminate(true);
+        progress.setProgressTintList(ColorStateList.valueOf(CinemaTokens.GOLD));
+        progress.setIndeterminateTintList(ColorStateList.valueOf(CinemaTokens.GOLD));
+        var barLp = new LinearLayout.LayoutParams(-1, dp(this, 16));
+        barLp.topMargin = dp(this, 10);
+        panel.addView(progress, barLp);
+
+        int titleRes = move ? R.string.cinema_file_moving : R.string.cinema_file_copying;
+        var modal = dialog(this).setTitle(titleRes).setView(panel).setCancelable(false).show();
+        folders.execute(() -> {
+            int total = CinemaFileOperations.countUnits(this, sources);
+            int[] counter = {0};
+            int completedSources = 0;
+            boolean needsSafPermission = false;
+            runOnUiThread(() -> {
+                progress.setIndeterminate(false);
+                progress.setMax(total);
+            });
+            for (Item source : sources) {
+                if (Thread.currentThread().isInterrupted()) break;
+                try {
+                    CinemaFileOperations.copyOrMoveItem(this, source, destFolder, move, counter, total,
+                            (name, done, max) -> runOnUiThread(() -> {
+                                detail.setText(name + " (" + done + " / " + max + ")");
+                                progress.setProgress(done);
+                            }));
+                    completedSources++;
+                } catch (SecurityException usbDenied) {
+                    needsSafPermission = true;
+                    break;
+                } catch (Exception ignored) {}
+            }
+            int done = completedSources;
+            boolean askSaf = needsSafPermission;
+            runOnUiThread(() -> {
+                if (isDestroyed() || isFinishing()) return;
+                transferring = false;
+                modal.dismiss();
+                if (askSaf) {
+                    showDialogWithButtonFocus(dialog(this)
+                            .setTitle(R.string.cinema_file_usb_permission_title)
+                            .setMessage(R.string.cinema_file_usb_permission_message)
+                            .setNegativeButton(android.R.string.cancel, null)
+                            .setPositiveButton(R.string.cinema_photo_choose_folder, (d, w) -> launchSafFolderPicker()),
+                            android.content.DialogInterface.BUTTON_POSITIVE);
+                    return;
+                }
+                if (done == sources.size()) {
+                    clipboard = List.of();
+                    clipboardMove = false;
+                }
+                refreshActionStrip();
+                load();
+                Toast.makeText(this, getString(move ? R.string.cinema_file_move_result : R.string.cinema_file_copy_result,
+                        done, sources.size()), Toast.LENGTH_LONG).show();
+            });
+        });
     }
 
-    private String layoutLabel(){return grid?getString(com.archos.mediacenter.video.R.string.cinema_list_view):getString(com.archos.mediacenter.video.R.string.cinema_grid_view);}
+    private void showLongPressMenu(Item entry) {
+        if (transferring || path.isEmpty()) return;
+        boolean isMarked = marked.containsKey(entry.uri());
+        List<Item> activeTargets = !marked.isEmpty()
+                ? (isMarked ? List.copyOf(marked.values()) : mergeWithItem(marked, entry))
+                : List.of(entry);
 
-    private void updateLayout(){
-        int columns=Math.max(2,(getResources().getDisplayMetrics().widthPixels-dp(this,96))/dp(this,122));
-        files.setLayoutManager(new GridLayoutManager(this,grid?columns:1));
+        CinemaFileOperations.showItemActionSheet(this, entry, isMarked, marked.size(),
+                !clipboard.isEmpty(), !path.isEmpty(),
+                new CinemaFileOperations.SheetCallbacks() {
+                    @Override public void onToggleSelect() {
+                        selectMode = true;
+                        toggleMarked(entry);
+                    }
+                    @Override public void onSelectAll() {
+                        selectMode = true;
+                        for (Item item : entries) {
+                            if (imagesOnly && !item.isImage()) continue;
+                            marked.put(item.uri(), item);
+                        }
+                        adapter.notifyDataSetChanged();
+                        refreshActionStrip();
+                    }
+                    @Override public void onClearSelection() {
+                        marked.clear();
+                        if (!imagesOnly) selectMode = false;
+                        adapter.notifyDataSetChanged();
+                        refreshActionStrip();
+                    }
+                    @Override public void onCopy() {
+                        stageItemsToClipboard(activeTargets, false);
+                    }
+                    @Override public void onMove() {
+                        stageItemsToClipboard(activeTargets, true);
+                    }
+                    @Override public void onPaste() {
+                        triggerPaste();
+                    }
+                    @Override public void onDelete() {
+                        confirmDeleteItems(activeTargets);
+                    }
+                });
+    }
+
+    private static List<Item> mergeWithItem(LinkedHashMap<Uri, Item> existing, Item extra) {
+        var list = new ArrayList<>(existing.values());
+        if (!existing.containsKey(extra.uri())) list.add(extra);
+        return list;
+    }
+
+    private void toggleMarked(Item entry) {
+        if (marked.remove(entry.uri()) == null) marked.put(entry.uri(), entry);
+        if (marked.isEmpty() && !imagesOnly) selectMode = false;
+        int idx = entries.indexOf(entry);
+        if (idx >= 0) adapter.notifyItemChanged(idx);
+        else adapter.notifyDataSetChanged();
+        refreshActionStrip();
+    }
+
+    private String layoutLabel() {
+        return grid ? getString(R.string.cinema_list_view) : getString(R.string.cinema_grid_view);
+    }
+
+    private void updateLayout() {
+        int columns = Math.max(3, Math.min(6, (getResources().getDisplayMetrics().widthPixels - dp(this, 104)) / dp(this, 140)));
+        files.setLayoutManager(new GridLayoutManager(this, grid ? columns : 1));
         adapter.notifyDataSetChanged();
         focusEntry(generation);
     }
 
-    private void sortMenu(){
-        dialog(this).setTitle(getString(com.archos.mediacenter.video.R.string.cinema_sort_files)).setItems(new String[]{
-                getString(com.archos.mediacenter.video.R.string.cinema_name_a_z),getString(com.archos.mediacenter.video.R.string.cinema_name_z_a),
-                getString(com.archos.mediacenter.video.R.string.cinema_newest_first),getString(com.archos.mediacenter.video.R.string.cinema_oldest_first),getString(com.archos.mediacenter.video.R.string.cinema_largest_first)
-        },(d,which)->{
-            sort=which;
-            PreferenceManager.getDefaultSharedPreferences(this).edit().putInt("cinema_files_sort",sort).apply();
+    private void sortMenu() {
+        dialog(this).setTitle(getString(R.string.cinema_sort_files)).setItems(new String[]{
+                getString(R.string.cinema_name_a_z), getString(R.string.cinema_name_z_a),
+                getString(R.string.cinema_newest_first), getString(R.string.cinema_oldest_first),
+                getString(R.string.cinema_largest_first)
+        }, (d, which) -> {
+            sort = which;
+            PreferenceManager.getDefaultSharedPreferences(this).edit().putInt("cinema_files_sort", sort).apply();
             orderEntries();
             adapter.notifyDataSetChanged();
         }).show();
     }
 
-    private void load(){
-        int token=++generation;
-        Entry folder=path.peek();
-        location.setText(folder==null?getString(com.archos.mediacenter.video.R.string.cinema_file_browser):folder.name());
+    private void load() {
+        int token = ++generation;
+        Item folder = path.peek();
+        location.setText(folder == null ? getString(R.string.cinema_file_browser) : buildBreadcrumb());
         entries.clear();
         adapter.notifyDataSetChanged();
-        status.setText(getString(com.archos.mediacenter.video.R.string.cinema_loading_files));
-        folders.execute(()->{
-            List<Entry> result=new ArrayList<>();
-            String error=null;
-            try{
-                if(folder==null){
-                    if (imageMode) result.add(new Entry(getString(R.string.cinema_photo_gallery),
-                            CinemaArtStorage.GALLERY, true, 0, 0));
-                    File storage=Environment.getExternalStorageDirectory();
-                    result.add(new Entry(getString(com.archos.mediacenter.video.R.string.cinema_internal_storage),Uri.fromFile(storage),true,0,0));
-                    if(android.os.Build.VERSION.SDK_INT>=30){
-                        var manager=getSystemService(android.os.storage.StorageManager.class);
-                        if(manager!=null)for(var volume:manager.getStorageVolumes()){
-                            File directory=volume.getDirectory();
-                            if(!volume.isPrimary()&&directory!=null)
-                                result.add(new Entry(volume.getDescription(this),Uri.fromFile(directory),true,0,0));
-                        }
-                    }
-                    try(var cursor=ShortcutDbAdapter.VIDEO.queryAllShortcuts(this)){
-                        if(cursor!=null)while(cursor.moveToNext()){
-                            String source=cursor.getString(cursor.getColumnIndexOrThrow(ShortcutDbAdapter.KEY_PATH));
-                            String name=cursor.getString(cursor.getColumnIndexOrThrow(ShortcutDbAdapter.KEY_NAME));
-                            result.add(new Entry(name==null?Uri.parse(source).getLastPathSegment():name,Uri.parse(source),true,0,0));
-                        }
-                    }
+        status.setText(getString(R.string.cinema_loading_files));
+        folders.execute(() -> {
+            List<Item> result = new ArrayList<>();
+            String error = null;
+            try {
+                if (folder == null) {
+                    result.addAll(CinemaFileOperations.listRootSources(this, imagesOnly));
                 } else if (CinemaArtStorage.GALLERY.equals(folder.uri())) {
-                    for (var photo : CinemaArtStorage.gallery(this))
-                        result.add(new Entry(photo.name(), photo.uri(), false, photo.changed(), photo.size()));
-                }else{
-                    for(var file:RawListerFactoryWithUpnp.getRawListerForUrl(folder.uri()).getFileList()){
-                        String name=file.getName();
-                        if(name==null||name.equals(".")||name.equals(".."))continue;
-                        boolean directory=file.isDirectory();
-                        if (imageMode && !directory && CinemaArtStorage.mime(name).isEmpty()) continue;
-                        result.add(new Entry(name,file.getUri(),directory,file.lastModified(),directory?0:file.getComputedLength()));
+                    for (var photo : CinemaArtStorage.gallery(this)) {
+                        result.add(new Item(photo.name(), photo.uri(), false, photo.changed(), photo.size()));
+                    }
+                } else {
+                    for (var file : RawListerFactoryWithUpnp.getRawListerForUrl(folder.uri()).getFileList()) {
+                        String name = file.getName();
+                        if (name == null || ".".equals(name) || "..".equals(name)) continue;
+                        boolean directory = file.isDirectory();
+                        if (imagesOnly && !directory && !CinemaFileOperations.isImageName(name)) continue;
+                        result.add(new Item(name, file.getUri(), directory, file.lastModified(),
+                                directory ? 0 : file.getComputedLength()));
                     }
                 }
-            }catch(Exception failure){error=getString(com.archos.mediacenter.video.R.string.cinema_could_not_read_this_source_check_permissions_and_connection);}
-            String message=error;
-            runOnUiThread(()->{
-                if(isDestroyed()||token!=generation)return;
+            } catch (Exception failure) {
+                error = getString(R.string.cinema_could_not_read_this_source_check_permissions_and_connection);
+            }
+            String message = error;
+            runOnUiThread(() -> {
+                if (isDestroyed() || token != generation) return;
                 entries.addAll(result);
-                if(folder!=null)orderEntries();
+                if (folder != null) orderEntries();
                 adapter.notifyDataSetChanged();
-                status.setText(message!=null?message:entries.isEmpty()?getString(com.archos.mediacenter.video.R.string.cinema_empty_folder):"");
+                status.setText(message != null ? message
+                        : entries.isEmpty() ? getString(R.string.cinema_empty_folder)
+                        : (!path.isEmpty() ? getString(R.string.cinema_file_long_press_hint) : ""));
+                refreshActionStrip();
                 focusEntry(token);
             });
         });
     }
 
-    private void orderEntries(){
-        Comparator<Entry> name=Comparator.comparing(Entry::name,String.CASE_INSENSITIVE_ORDER);
-        Comparator<Entry> order=switch(sort){
-            case 1->name.reversed();
-            case 2->Comparator.comparingLong(Entry::modified).reversed();
-            case 3->Comparator.comparingLong(e->e.modified()>0?e.modified():Long.MAX_VALUE);
-            case 4->Comparator.comparingLong(Entry::size).reversed();
-            default->name;
-        };
-        entries.sort(Comparator.comparing(Entry::directory).reversed().thenComparing(order).thenComparing(name));
+    private String buildBreadcrumb() {
+        var names = new ArrayList<String>();
+        for (Item item : path) names.add(0, item.name());
+        return TextUtils.join("  ›  ", names);
     }
 
-    private void focusEntry(int token){
-        if(entries.isEmpty())return;
-        int position=0;
-        for(int n=0;n<entries.size();n++)if(entries.get(n).uri().equals(selected)){position=n;break;}
-        int target=position;
+    private void orderEntries() {
+        Comparator<Item> name = Comparator.comparing(Item::name, String.CASE_INSENSITIVE_ORDER);
+        Comparator<Item> order = switch (sort) {
+            case 1 -> name.reversed();
+            case 2 -> Comparator.comparingLong(Item::modified).reversed();
+            case 3 -> Comparator.comparingLong(e -> e.modified() > 0 ? e.modified() : Long.MAX_VALUE);
+            case 4 -> Comparator.comparingLong(Item::size).reversed();
+            default -> name;
+        };
+        entries.sort(Comparator.comparing(Item::directory).reversed().thenComparing(order).thenComparing(name));
+    }
+
+    private void focusEntry(int token) {
+        if (entries.isEmpty()) return;
+        int position = 0;
+        for (int n = 0; n < entries.size(); n++) {
+            if (entries.get(n).uri().equals(selected)) { position = n; break; }
+        }
+        int target = position;
         files.scrollToPosition(target);
-        androidx.core.view.OneShotPreDrawListener.add(files,()->{
-            if(token!=generation||viewer!=null)return;
-            var holder=files.findViewHolderForAdapterPosition(target);
-            if(holder!=null)holder.itemView.requestFocusFromTouch();
+        androidx.core.view.OneShotPreDrawListener.add(files, () -> {
+            if (token != generation || viewer != null) return;
+            var holder = files.findViewHolderForAdapterPosition(target);
+            if (holder != null) holder.itemView.requestFocusFromTouch();
         });
     }
 
-    private void open(Entry entry){
-        if(entry.directory()){
-            path.push(entry);
-            selected=null;
-            load();
-        } else if (imageMode) {
-            if (marked.remove(entry.uri()) == null) marked.put(entry.uri(),
-                    new CinemaArtStorage.Photo(entry.name(), entry.uri(), entry.size(), entry.modified()));
-            showSelection();
-            adapter.notifyItemChanged(entries.indexOf(entry));
-        }else if(entry.photo()){
-            photos=entries.stream().filter(Entry::photo).collect(java.util.stream.Collectors.toList());
-            photoIndex=photos.indexOf(entry);
+    private void open(Item entry) {
+        if (selectMode && !path.isEmpty() && (!entry.directory() || !imagesOnly)) {
+            if (entry.directory() && imagesOnly) {
+                enterDirectory(entry);
+            } else {
+                toggleMarked(entry);
+            }
+            return;
+        }
+        if (entry.directory()) {
+            enterDirectory(entry);
+        } else if (imagesOnly) {
+            toggleMarked(entry);
+        } else if (entry.isImage()) {
+            photos = entries.stream().filter(Item::isImage).collect(java.util.stream.Collectors.toList());
+            photoIndex = Math.max(0, photos.indexOf(entry));
             showViewer();
-        }else if(entry.type().startsWith("video/")||entry.name().matches("(?i).*\\.(mkv|avi|mp4|m4v|mov|ts|m2ts|webm|mpg|mpeg|wmv|vob|3gp|flv)$")){
+        } else if (entry.isVideo()) {
             setResultAndFinish(entry.uri());
-        }else{
-            android.widget.Toast.makeText(this,getString(com.archos.mediacenter.video.R.string.cinema_this_file_type_cannot_be_opened),android.widget.Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, getString(R.string.cinema_this_file_type_cannot_be_opened), Toast.LENGTH_SHORT).show();
         }
     }
 
-    private void setResultAndFinish(Uri uri){
-        Intent result=new Intent().setData(uri);
-        if(uri==null)result.putExtra("system_picker",true);
-        setResult(Activity.RESULT_OK,result);
+    private void enterDirectory(Item entry) {
+        path.push(entry);
+        selected = null;
+        if (!imagesOnly) {
+            marked.clear();
+            selectMode = false;
+        }
+        load();
+    }
+
+    private void setResultAndFinish(Uri uri) {
+        Intent result = new Intent().setData(uri);
+        if (uri == null) result.putExtra("system_picker", true);
+        setResult(Activity.RESULT_OK, result);
         finish();
     }
 
-    private void showViewer(){
-        viewer=new FrameLayout(this);
+    private void showViewer() {
+        viewer = new FrameLayout(this);
         viewer.setBackgroundColor(0xff000000);
-        picture=new ImageView(this);
+        picture = new ImageView(this);
         picture.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        viewer.addView(picture,new FrameLayout.LayoutParams(-1,-1));
-        photoCaption=text(this,CinemaTokens.LABEL,true);
+        viewer.addView(picture, new FrameLayout.LayoutParams(-1, -1));
+        photoCaption = text(this, CinemaTokens.LABEL, true);
         photoCaption.setBackgroundColor(0xaa000000);
-        photoCaption.setPadding(dp(this,16),dp(this,8),dp(this,16),dp(this,8));
-        viewer.addView(photoCaption,new FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM));
+        photoCaption.setPadding(dp(this, 16), dp(this, 8), dp(this, 16), dp(this, 8));
+        viewer.addView(photoCaption, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
         viewer.setFocusableInTouchMode(true);
-        root.addView(viewer,new FrameLayout.LayoutParams(-1,-1));
+        root.addView(viewer, new FrameLayout.LayoutParams(-1, -1));
         viewer.requestFocus();
         loadPhoto();
     }
 
-    private void loadPhoto(){
-        int token=++imageGeneration;
-        Entry entry=photos.get(photoIndex);
-        selected=entry.uri();
-        zoom=1;
+    private void loadPhoto() {
+        int token = ++imageGeneration;
+        Item entry = photos.get(photoIndex);
+        selected = entry.uri();
+        zoom = 1;
         picture.setImageDrawable(null);
-        transformPhoto(0,0);
-        photoCaption.setText(entry.name()+"   "+(photoIndex+1)+" / "+photos.size()+"   ·   "+
-                getString(com.archos.mediacenter.video.R.string.cinema_ch_ch_to_zoom));
-        images.execute(()->{
-            Bitmap bitmap=null;
-            try{
-                bitmap = CinemaArtStorage.decode(this, entry.uri(), 3840);
-            }catch(Exception ignored){ }
-            Bitmap decoded=bitmap;
-            runOnUiThread(()->{
-                if(token!=imageGeneration||viewer==null){if(decoded!=null)decoded.recycle();return;}
-                if(decoded!=null)picture.setImageBitmap(decoded);
-                else photoCaption.setText(getString(com.archos.mediacenter.video.R.string.cinema_could_not_open_image)+" · "+entry.name());
+        transformPhoto(0, 0);
+        photoCaption.setText(entry.name() + "   " + (photoIndex + 1) + " / " + photos.size()
+                + "   ·   " + getString(R.string.cinema_ch_ch_to_zoom));
+        thumbs.execute(() -> {
+            Bitmap bitmap = null;
+            try { bitmap = CinemaArtStorage.decode(this, entry.uri(), 3840); } catch (Exception ignored) {}
+            Bitmap decoded = bitmap;
+            runOnUiThread(() -> {
+                if (token != imageGeneration || viewer == null) {
+                    if (decoded != null) decoded.recycle();
+                    return;
+                }
+                if (decoded != null) picture.setImageBitmap(decoded);
+                else photoCaption.setText(getString(R.string.cinema_could_not_open_image) + " · " + entry.name());
             });
         });
     }
 
-
-
-    private void transformPhoto(float x,float y){
+    private void transformPhoto(float x, float y) {
         picture.setScaleX(zoom);
         picture.setScaleY(zoom);
-        var drawable=picture.getDrawable();
-        float maxX=0,maxY=0;
-        if(drawable!=null){
-            float fit=Math.min((float)picture.getWidth()/drawable.getIntrinsicWidth(),
-                    (float)picture.getHeight()/drawable.getIntrinsicHeight());
-            maxX=Math.max(0,(drawable.getIntrinsicWidth()*fit*zoom-picture.getWidth())/2);
-            maxY=Math.max(0,(drawable.getIntrinsicHeight()*fit*zoom-picture.getHeight())/2);
+        var drawable = picture.getDrawable();
+        float maxX = 0, maxY = 0;
+        if (drawable != null) {
+            float fit = Math.min((float) picture.getWidth() / drawable.getIntrinsicWidth(),
+                    (float) picture.getHeight() / drawable.getIntrinsicHeight());
+            maxX = Math.max(0, (drawable.getIntrinsicWidth() * fit * zoom - picture.getWidth()) / 2);
+            maxY = Math.max(0, (drawable.getIntrinsicHeight() * fit * zoom - picture.getHeight()) / 2);
         }
-        picture.setTranslationX(Math.max(-maxX,Math.min(maxX,x)));
-        picture.setTranslationY(Math.max(-maxY,Math.min(maxY,y)));
+        picture.setTranslationX(Math.max(-maxX, Math.min(maxX, x)));
+        picture.setTranslationY(Math.max(-maxY, Math.min(maxY, y)));
     }
 
-    @Override public boolean dispatchKeyEvent(KeyEvent event){
-        if(viewer==null)return super.dispatchKeyEvent(event);
-        int key=event.getKeyCode();
-        if(key==KeyEvent.KEYCODE_BACK)return super.dispatchKeyEvent(event);
-        if(event.getAction()!=KeyEvent.ACTION_DOWN)return true;
-        switch(key){
-            case KeyEvent.KEYCODE_CHANNEL_UP,KeyEvent.KEYCODE_CHANNEL_DOWN->{
-                zoom=Math.max(1,Math.min(4,zoom+(key==KeyEvent.KEYCODE_CHANNEL_UP?.25f:-.25f)));
-                transformPhoto(picture.getTranslationX(),picture.getTranslationY());
+    @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (viewer == null) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getKeyCode() == KeyEvent.KEYCODE_MENU
+                    && !path.isEmpty()) {
+                View focus = getCurrentFocus();
+                var holder = focus == null ? null : files.findContainingViewHolder(focus);
+                if (holder != null && holder.getBindingAdapterPosition() >= 0
+                        && holder.getBindingAdapterPosition() < entries.size()) {
+                    showLongPressMenu(entries.get(holder.getBindingAdapterPosition()));
+                    return true;
+                }
             }
-            case KeyEvent.KEYCODE_DPAD_LEFT,KeyEvent.KEYCODE_DPAD_RIGHT,
-                    KeyEvent.KEYCODE_DPAD_UP,KeyEvent.KEYCODE_DPAD_DOWN->{
-                if(zoom>1){
-                    int step=dp(this,32);
-                    transformPhoto(picture.getTranslationX()+(key==KeyEvent.KEYCODE_DPAD_LEFT?step:key==KeyEvent.KEYCODE_DPAD_RIGHT?-step:0),
-                            picture.getTranslationY()+(key==KeyEvent.KEYCODE_DPAD_UP?step:key==KeyEvent.KEYCODE_DPAD_DOWN?-step:0));
-                }else if(key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT){
+            return super.dispatchKeyEvent(event);
+        }
+        int key = event.getKeyCode();
+        if (key == KeyEvent.KEYCODE_BACK) return super.dispatchKeyEvent(event);
+        if (event.getAction() != KeyEvent.ACTION_DOWN) return true;
+        switch (key) {
+            case KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_CHANNEL_DOWN -> {
+                zoom = Math.max(1, Math.min(4, zoom + (key == KeyEvent.KEYCODE_CHANNEL_UP ? .25f : -.25f)));
+                transformPhoto(picture.getTranslationX(), picture.getTranslationY());
+            }
+            case KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                    KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
+                if (zoom > 1) {
+                    int step = dp(this, 32);
+                    transformPhoto(picture.getTranslationX() + (key == KeyEvent.KEYCODE_DPAD_LEFT ? step : key == KeyEvent.KEYCODE_DPAD_RIGHT ? -step : 0),
+                            picture.getTranslationY() + (key == KeyEvent.KEYCODE_DPAD_UP ? step : key == KeyEvent.KEYCODE_DPAD_DOWN ? -step : 0));
+                } else if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT) {
                     int direction = key == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1;
                     if (root.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL) direction = -direction;
                     int next = photoIndex + direction;
-                    if(next>=0&&next<photos.size()){photoIndex=next;loadPhoto();}
+                    if (next >= 0 && next < photos.size()) { photoIndex = next; loadPhoto(); }
                 }
             }
-            case KeyEvent.KEYCODE_DPAD_CENTER,KeyEvent.KEYCODE_ENTER->{zoom=1;transformPhoto(0,0);}
-            default->{return super.dispatchKeyEvent(event);}
+            case KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { zoom = 1; transformPhoto(0, 0); }
+            default -> { return super.dispatchKeyEvent(event); }
         }
         return true;
     }
 
-    @Override public void onBackPressed(){
-        if(viewer!=null){
+    @Override public void onBackPressed() {
+        if (viewer != null) {
             imageGeneration++;
             root.removeView(viewer);
-            viewer=null;
-            picture=null;
+            viewer = null;
+            picture = null;
             focusEntry(generation);
-        }else if(!path.isEmpty()){
-            selected=path.pop().uri();
+        } else if (!imagesOnly && selectMode) {
+            marked.clear();
+            selectMode = false;
+            adapter.notifyDataSetChanged();
+            refreshActionStrip();
+        } else if (!path.isEmpty()) {
+            selected = path.pop().uri();
             load();
-        }else super.onBackPressed();
+        } else {
+            super.onBackPressed();
+        }
     }
 
-    @Override public void onDestroy(){
+    @Override public void onDestroy() {
         generation++;
         imageGeneration++;
         folders.shutdownNow();
-        images.shutdownNow();
+        thumbs.shutdownNow();
         super.onDestroy();
     }
 
-    private final class Files extends RecyclerView.Adapter<FileCard>{
-        @Override public int getItemCount(){return entries.size();}
-        @Override public int getItemViewType(int position){return grid?1:0;}
-        @Override public FileCard onCreateViewHolder(ViewGroup parent,int mode){
-            boolean tile=mode==1;
-            LinearLayout row=new LinearLayout(CinemaFileBrowserActivity.this);
-            row.setOrientation(tile?LinearLayout.VERTICAL:LinearLayout.HORIZONTAL);
-            row.setGravity(tile?Gravity.CENTER:Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(CinemaFileBrowserActivity.this,8),dp(CinemaFileBrowserActivity.this,6),
-                    dp(CinemaFileBrowserActivity.this,8),dp(CinemaFileBrowserActivity.this,6));
-            focusable(row);
-            row.setLayoutParams(new RecyclerView.LayoutParams(-1,dp(CinemaFileBrowserActivity.this,tile?112:48)));
-            ImageView icon=new ImageView(CinemaFileBrowserActivity.this);
-            icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
-            int iconSize=dp(CinemaFileBrowserActivity.this,tile?54:24);
-            row.addView(icon,new LinearLayout.LayoutParams(iconSize,iconSize));
-            TextView name=text(CinemaFileBrowserActivity.this,CinemaTokens.LABEL,false);
-            name.setMaxLines(tile?2:1);
-            name.setGravity(tile?Gravity.CENTER:Gravity.START|Gravity.CENTER_VERTICAL);
-            name.setPadding(dp(CinemaFileBrowserActivity.this,8),dp(CinemaFileBrowserActivity.this,4),0,0);
-            row.addView(name,new LinearLayout.LayoutParams(tile?-1:0,-2,tile?0:1));
-            return new FileCard(row,icon,name);
+    private final class Files extends RecyclerView.Adapter<FileCard> {
+        @Override public int getItemCount() { return entries.size(); }
+        @Override public int getItemViewType(int position) { return grid ? 1 : 0; }
+
+        @Override public FileCard onCreateViewHolder(ViewGroup parent, int mode) {
+            boolean tile = mode == 1;
+            FrameLayout cell = new FrameLayout(CinemaFileBrowserActivity.this);
+            cell.setClipChildren(false);
+            cell.setClipToPadding(false);
+            cell.setPadding(dp(CinemaFileBrowserActivity.this, 6), dp(CinemaFileBrowserActivity.this, 6),
+                    dp(CinemaFileBrowserActivity.this, 6), dp(CinemaFileBrowserActivity.this, 6));
+            cell.setLayoutParams(new RecyclerView.LayoutParams(-1,
+                    dp(CinemaFileBrowserActivity.this, tile ? 142 : 60)));
+
+            FrameLayout card = new FrameLayout(CinemaFileBrowserActivity.this);
+            card.setFocusable(true);
+            card.setClickable(true);
+            card.setLongClickable(true);
+            card.setClipToOutline(true);
+            card.setBackground(rounded(0xFF1F1E1C, dp(CinemaFileBrowserActivity.this, 12), 0xFF3A342B));
+            cell.addView(card, new FrameLayout.LayoutParams(-1, -1));
+
+            LinearLayout content = new LinearLayout(CinemaFileBrowserActivity.this);
+            content.setOrientation(tile ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+            content.setGravity(tile ? Gravity.CENTER : Gravity.CENTER_VERTICAL);
+            content.setPadding(dp(CinemaFileBrowserActivity.this, 8), dp(CinemaFileBrowserActivity.this, 8),
+                    dp(CinemaFileBrowserActivity.this, 8), dp(CinemaFileBrowserActivity.this, 8));
+            card.addView(content, new FrameLayout.LayoutParams(-1, -1));
+
+            ImageView icon = new ImageView(CinemaFileBrowserActivity.this);
+            icon.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            icon.setClipToOutline(true);
+            int iconW = dp(CinemaFileBrowserActivity.this, tile ? 88 : 40);
+            int iconH = dp(CinemaFileBrowserActivity.this, tile ? 68 : 36);
+            content.addView(icon, new LinearLayout.LayoutParams(iconW, iconH));
+
+            TextView name = text(CinemaFileBrowserActivity.this, tile ? 13 : 15, true);
+            name.setMaxLines(tile ? 2 : 1);
+            name.setEllipsize(TextUtils.TruncateAt.END);
+            name.setGravity(tile ? Gravity.CENTER : Gravity.START | Gravity.CENTER_VERTICAL);
+            name.setPaddingRelative(dp(CinemaFileBrowserActivity.this, tile ? 4 : 12),
+                    dp(CinemaFileBrowserActivity.this, tile ? 6 : 0),
+                    dp(CinemaFileBrowserActivity.this, 4), 0);
+            content.addView(name, new LinearLayout.LayoutParams(tile ? -1 : 0, -2, tile ? 0 : 1));
+
+            TextView checkBadge = text(CinemaFileBrowserActivity.this, 12, true);
+            checkBadge.setText("✓");
+            checkBadge.setTextColor(0xFF141517);
+            checkBadge.setGravity(Gravity.CENTER);
+            checkBadge.setBackground(rounded(CinemaTokens.GOLD, dp(CinemaFileBrowserActivity.this, 11), 0));
+            checkBadge.setVisibility(View.GONE);
+            var badgeLp = new FrameLayout.LayoutParams(dp(CinemaFileBrowserActivity.this, 22),
+                    dp(CinemaFileBrowserActivity.this, 22), Gravity.TOP | Gravity.END);
+            badgeLp.setMargins(dp(CinemaFileBrowserActivity.this, 6), dp(CinemaFileBrowserActivity.this, 6),
+                    dp(CinemaFileBrowserActivity.this, 6), dp(CinemaFileBrowserActivity.this, 6));
+            card.addView(checkBadge, badgeLp);
+
+            return new FileCard(cell, card, icon, name, checkBadge);
         }
-        @Override public void onBindViewHolder(FileCard card,int position){
-            Entry entry=entries.get(position);
+
+        @Override public void onBindViewHolder(FileCard holder, int position) {
+            Item entry = entries.get(position);
             boolean checked = marked.containsKey(entry.uri());
-            card.name.setText(checked ? getString(R.string.cinema_photo_marked, entry.name()) : entry.name());
-            card.itemView.setContentDescription(card.name.getText());
-            card.itemView.setActivated(checked);
-            if (card.work != null) card.work.cancel(false);
-            card.uri = entry.uri();
-            Picasso.get().cancelRequest(card.icon);
-            int icon=entry.directory()?R.drawable.cinema_folder:entry.photo()?android.R.drawable.ic_menu_gallery:R.drawable.cinema_play_movie;
-            card.icon.setImageResource(icon);
-            if (entry.photo()) {
+            holder.name.setText(entry.name());
+            holder.checkBadge.setVisibility(checked ? View.VISIBLE : View.GONE);
+            holder.card.setBackground(rounded(checked ? 0xFF2D2518 : 0xFF1F1E1C,
+                    dp(CinemaFileBrowserActivity.this, 12), checked ? CinemaTokens.GOLD : 0xFF3A342B));
+            holder.card.setContentDescription(checked
+                    ? getString(R.string.cinema_photo_marked, entry.name()) : entry.name());
+
+            if (holder.work != null) holder.work.cancel(false);
+            holder.uri = entry.uri();
+            Picasso.get().cancelRequest(holder.icon);
+            holder.icon.setColorFilter(null);
+
+            int fallbackIcon = entry.directory() ? R.drawable.cinema_folder
+                    : entry.isImage() ? android.R.drawable.ic_menu_gallery : R.drawable.cinema_play_movie;
+            if (entry.directory()) {
+                holder.icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                holder.icon.setImageResource(fallbackIcon);
+                holder.icon.setColorFilter(CinemaTokens.GOLD);
+            } else if (entry.isImage()) {
+                holder.icon.setScaleType(ImageView.ScaleType.CENTER_CROP);
                 Bitmap cached = thumbnails.get(entry.uri());
-                if (cached != null) card.icon.setImageBitmap(cached);
-                else if ("file".equals(entry.uri().getScheme()) || "content".equals(entry.uri().getScheme())) {
-                    int size = dp(CinemaFileBrowserActivity.this, grid ? 54 : 32);
-                    Picasso.get().load(entry.uri()).resize(size, size).centerInside().placeholder(icon).error(icon).into(card.icon);
-                } else if (imageMode) {
-                    card.work = images.submit(() -> {
+                if (cached != null) {
+                    holder.icon.setImageBitmap(cached);
+                } else if ("file".equalsIgnoreCase(entry.uri().getScheme()) || "content".equalsIgnoreCase(entry.uri().getScheme())) {
+                    int w = dp(CinemaFileBrowserActivity.this, grid ? 96 : 48);
+                    int h = dp(CinemaFileBrowserActivity.this, grid ? 72 : 40);
+                    Picasso.get().load(entry.uri()).resize(w, h).centerCrop().placeholder(fallbackIcon).error(fallbackIcon).into(holder.icon);
+                } else {
+                    holder.icon.setImageResource(fallbackIcon);
+                    holder.work = thumbs.submit(() -> {
                         try {
-                            var thumbnail = CinemaArtStorage.decode(CinemaFileBrowserActivity.this, entry.uri(), 144);
-                            if (thumbnail == null) return;
-                            thumbnails.put(entry.uri(), thumbnail);
+                            Bitmap bmp = CinemaArtStorage.decode(CinemaFileBrowserActivity.this, entry.uri(), 192);
+                            if (bmp == null) return;
+                            thumbnails.put(entry.uri(), bmp);
                             runOnUiThread(() -> {
-                                if (entry.uri().equals(card.uri) && !isDestroyed()) card.icon.setImageBitmap(thumbnail);
+                                if (entry.uri().equals(holder.uri) && !isDestroyed()) holder.icon.setImageBitmap(bmp);
                             });
                         } catch (Exception ignored) {}
                     });
                 }
+            } else if (entry.isVideo()) {
+                holder.icon.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                Bitmap cached = thumbnails.get(entry.uri());
+                if (cached != null) {
+                    holder.icon.setImageBitmap(cached);
+                } else {
+                    holder.icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                    holder.icon.setImageResource(fallbackIcon);
+                    holder.icon.setColorFilter(CinemaTokens.GOLD);
+                    if ("file".equalsIgnoreCase(entry.uri().getScheme())) {
+                        holder.work = thumbs.submit(() -> {
+                            Bitmap bmp = CinemaFileOperations.loadVideoThumbnail(CinemaFileBrowserActivity.this, entry.uri(), 220);
+                            if (bmp == null) return;
+                            thumbnails.put(entry.uri(), bmp);
+                            runOnUiThread(() -> {
+                                if (entry.uri().equals(holder.uri) && !isDestroyed()) {
+                                    holder.icon.setColorFilter(null);
+                                    holder.icon.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                                    holder.icon.setImageBitmap(bmp);
+                                }
+                            });
+                        });
+                    }
+                }
+            } else {
+                holder.icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                holder.icon.setImageResource(fallbackIcon);
+                holder.icon.setColorFilter(0xFFB5ADA0);
             }
-            card.itemView.setOnFocusChangeListener((view,focused)->{
-                card.name.setTextColor(focused?CinemaTokens.ON_FOCUS:CinemaTokens.TEXT);
-                if(focused)selected=entry.uri();
+
+            holder.card.setOnFocusChangeListener((view, focused) -> {
+                GradientDrawable ring = rounded(Color.TRANSPARENT, dp(CinemaFileBrowserActivity.this, 12), 0);
+                ring.setStroke(dp(CinemaFileBrowserActivity.this, 3), CinemaTokens.GOLD);
+                view.setForeground(focused ? ring : null);
+                view.animate().scaleX(focused ? 1.04f : 1f).scaleY(focused ? 1.04f : 1f)
+                        .setDuration(motion(CinemaFileBrowserActivity.this) ? CinemaTokens.FOCUS_MS : 0).start();
+                if (focused) selected = entry.uri();
             });
-            card.name.setTextColor(card.itemView.hasFocus()?CinemaTokens.ON_FOCUS:CinemaTokens.TEXT);
-            card.itemView.setOnClickListener(v->open(entry));
+            holder.card.setOnClickListener(v -> open(entry));
+            holder.card.setOnLongClickListener(v -> {
+                if (path.isEmpty()) return false;
+                showLongPressMenu(entry);
+                return true;
+            });
         }
-        @Override public void onViewRecycled(FileCard card) {
-            Picasso.get().cancelRequest(card.icon);
-            if (card.work != null) card.work.cancel(false);
-            card.uri = null;
+
+        @Override public void onViewRecycled(FileCard holder) {
+            Picasso.get().cancelRequest(holder.icon);
+            if (holder.work != null) holder.work.cancel(false);
+            holder.uri = null;
         }
     }
 
-    private static final class FileCard extends RecyclerView.ViewHolder{
+    private static final class FileCard extends RecyclerView.ViewHolder {
+        final FrameLayout card;
         final ImageView icon;
         final TextView name;
+        final TextView checkBadge;
         Uri uri;
-        java.util.concurrent.Future<?> work;
-        FileCard(View root,ImageView icon,TextView name){super(root);this.icon=icon;this.name=name;}
+        Future<?> work;
+
+        FileCard(View cell, FrameLayout card, ImageView icon, TextView name, TextView checkBadge) {
+            super(cell);
+            this.card = card;
+            this.icon = icon;
+            this.name = name;
+            this.checkBadge = checkBadge;
+        }
     }
 }

@@ -65,6 +65,11 @@ public final class CinemaHlsActivity extends Activity {
     private int currentSpeedPercent = 100;
     private TextView osdRotateButton;
     private TextView osdSpeedButton;
+    private TextView osdRewindButton;
+    private TextView osdPlayPauseButton;
+    private TextView osdForwardButton;
+    private TextView osdSubtitleButton;
+    private TextView osdLiveBadge;
     private androidx.media3.exoplayer.ExoPlayer adaptivePlayer;
     private android.media.MediaPlayer player;
     private TextView videoViewSubtitles;
@@ -90,6 +95,20 @@ public final class CinemaHlsActivity extends Activity {
 
     boolean isCatalogChannel() {
         return getIntent().getBooleanExtra(LIVE_CHANNEL, false);
+    }
+
+    private boolean isLiveChannelPlayback() {
+        if (isCatalogChannel()) return true;
+        Intent i = getIntent();
+        if (i != null) {
+            String mt = i.getStringExtra("media_type");
+            if ("tv".equalsIgnoreCase(mt) || "live".equalsIgnoreCase(mt)
+                    || "channel".equalsIgnoreCase(mt) || "sport".equalsIgnoreCase(mt)) {
+                return true;
+            }
+            if (i.getBooleanExtra("is_live_cast", false)) return true;
+        }
+        return live();
     }
     private Runnable pendingRetryRunnable;
     private String currentFormat;
@@ -543,15 +562,29 @@ public final class CinemaHlsActivity extends Activity {
         osdBar.setVisibility(View.GONE);
 
         boolean ar = CinemaUi.arabic(this);
-        osdBar.addView(osdButton(ar ? "⏪ 10ث" : "⏪ 10s", () -> seek(Math.max(0, position() - 10000))));
-        osdBar.addView(osdButton(ar ? "⏯ تشغيل/إيقاف" : "⏯ Play/Pause", this::toggle));
-        osdBar.addView(osdButton(ar ? "10ث ⏩" : "10s ⏩", () -> seek(position() + 10000)));
-        osdBar.addView(osdButton(ar ? "💬 الترجمة" : "💬 Subtitles", this::openSubtitleMenuFromRemote));
+        osdLiveBadge = CinemaUi.text(this, 13, true);
+        osdLiveBadge.setText(ar ? "● مباشر" : "● LIVE");
+        osdLiveBadge.setTextColor(0xffff6b6b);
+        osdLiveBadge.setPadding(Math.round(12 * d), Math.round(6 * d), Math.round(12 * d), Math.round(6 * d));
+        osdLiveBadge.setBackground(CinemaUi.rounded(0x33ef4444, Math.round(10 * d), 0x88ef4444));
+        var liveBadgeLp = new LinearLayout.LayoutParams(-2, -2);
+        liveBadgeLp.setMarginEnd(Math.round(8 * d));
+        osdLiveBadge.setVisibility(View.GONE);
+        osdBar.addView(osdLiveBadge, liveBadgeLp);
+
+        osdRewindButton = osdButton(ar ? "⏪ 10ث" : "⏪ 10s", () -> seek(Math.max(0, position() - 10000)));
+        osdBar.addView(osdRewindButton);
+        osdPlayPauseButton = osdButton(ar ? "⏯ تشغيل/إيقاف" : "⏯ Play/Pause", this::toggle);
+        osdBar.addView(osdPlayPauseButton);
+        osdForwardButton = osdButton(ar ? "10ث ⏩" : "10s ⏩", () -> seek(position() + 10000));
+        osdBar.addView(osdForwardButton);
+        osdSubtitleButton = osdButton(ar ? "💬 الترجمة" : "💬 Subtitles", this::openSubtitleMenuFromRemote);
+        osdBar.addView(osdSubtitleButton);
         osdRotateButton = osdButton(osdRotateLabel(ar), this::cycleManualRotationFromOsd);
         osdBar.addView(osdRotateButton);
         osdSpeedButton = osdButton(osdSpeedLabel(ar), this::openSpeedMenuFromOsd);
         osdBar.addView(osdSpeedButton);
-        if (!isLiveCast() && !"audio".equals(getIntent().getStringExtra("media_type"))) {
+        if (!isLiveChannelPlayback() && !isLiveCast() && !"audio".equals(getIntent().getStringExtra("media_type"))) {
             for (CinemaPlaybackOption option : CinemaPlaybackOption.values()) {
                 TextView button = osdButton(getString(option.title), () -> option.toggle(this));
                 button.setEnabled(option.available());
@@ -566,6 +599,34 @@ public final class CinemaHlsActivity extends Activity {
         lp.bottomMargin = Math.round(72 * d);
         root.addView(osdBar, lp);
         attachSeekHud(root);
+        updateLiveControlsVisibility();
+    }
+
+    private void updateLiveControlsVisibility() {
+        boolean isLive = isLiveChannelPlayback();
+        int seekVis = isLive ? View.GONE : View.VISIBLE;
+        if (osdRewindButton != null) {
+            osdRewindButton.setVisibility(seekVis);
+            osdRewindButton.setFocusable(!isLive);
+            osdRewindButton.setEnabled(!isLive);
+        }
+        if (osdForwardButton != null) {
+            osdForwardButton.setVisibility(seekVis);
+            osdForwardButton.setFocusable(!isLive);
+            osdForwardButton.setEnabled(!isLive);
+        }
+        if (osdSpeedButton != null) {
+            osdSpeedButton.setVisibility(seekVis);
+            osdSpeedButton.setFocusable(!isLive);
+            osdSpeedButton.setEnabled(!isLive);
+        }
+        if (osdLiveBadge != null) {
+            osdLiveBadge.setVisibility(isLive ? View.VISIBLE : View.GONE);
+        }
+        if (isLive && seekHud != null) {
+            progressHandler.removeCallbacks(updateSeekHud);
+            seekHud.setVisibility(View.GONE);
+        }
     }
 
     private void attachSeekHud(FrameLayout root) {
@@ -599,7 +660,7 @@ public final class CinemaHlsActivity extends Activity {
     }
 
     private boolean seekFromRemote(KeyEvent event) {
-        if (seekHud == null || isLiveCast() || live()) return false;
+        if (seekHud == null || isLiveChannelPlayback() || isLiveCast() || live()) return false;
         if (osdBar != null && osdBar.getVisibility() == View.VISIBLE && osdBar.hasFocus()) return false;
         int duration = duration();
         if (duration <= 0 || (adaptivePlayer != null && !adaptivePlayer.isCurrentMediaItemSeekable())) return false;
@@ -721,13 +782,22 @@ public final class CinemaHlsActivity extends Activity {
         return btn;
     }
 
-    private void showOsdAndFocus(int childIndex) {
+    private void showOsdAndFocus(View preferred) {
         if (osdBar == null) return;
+        updateLiveControlsVisibility();
         refreshOsdLabels();
         osdBar.setVisibility(View.VISIBLE);
         osdBar.bringToFront();
-        if (childIndex >= 0 && childIndex < osdBar.getChildCount()) {
-            osdBar.getChildAt(childIndex).requestFocus();
+        if (preferred != null && preferred.getVisibility() == View.VISIBLE && preferred.isFocusable()) {
+            preferred.requestFocus();
+        } else {
+            for (int i = 0; i < osdBar.getChildCount(); i++) {
+                View child = osdBar.getChildAt(i);
+                if (child.getVisibility() == View.VISIBLE && child.isFocusable()) {
+                    child.requestFocus();
+                    break;
+                }
+            }
         }
         scheduleHideOsd();
     }
@@ -752,19 +822,18 @@ public final class CinemaHlsActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
-        if (isCatalogChannel()) {
+        if (isLiveChannelPlayback()) {
             finish();
             return;
         }
         if (dismissPlaybackOverlay()) return;
-        if (hasPlaybackSession()) CinemaUi.confirmStopPlayback(this);
-        else super.onBackPressed();
+        finish();
     }
 
     private boolean consumedOverlayBack;
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
-        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK && !isCatalogChannel()) {
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK && !isLiveChannelPlayback()) {
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
                 consumedOverlayBack = dismissPlaybackOverlay();
             }
@@ -772,6 +841,12 @@ public final class CinemaHlsActivity extends Activity {
                 if (event.getAction() == KeyEvent.ACTION_UP) consumedOverlayBack = false;
                 return true;
             }
+        }
+        if (isLiveChannelPlayback() && (event.getKeyCode() == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD
+                || event.getKeyCode() == KeyEvent.KEYCODE_MEDIA_REWIND
+                || event.getKeyCode() == KeyEvent.KEYCODE_MEDIA_STEP_FORWARD
+                || event.getKeyCode() == KeyEvent.KEYCODE_MEDIA_STEP_BACKWARD)) {
+            return true;
         }
         if (CinemaDpadSeek.isHorizontal(event.getKeyCode()) && seekFromRemote(event)) return true;
         return super.dispatchKeyEvent(event);
@@ -796,14 +871,14 @@ public final class CinemaHlsActivity extends Activity {
         }
         if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
             if (osdBar != null && osdBar.getVisibility() != View.VISIBLE) {
-                showOsdAndFocus(3); // Focus Subtitles button
+                showOsdAndFocus(isLiveChannelPlayback() ? osdPlayPauseButton : osdSubtitleButton);
                 return true;
             }
         }
         if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)
                 && (osdBar == null || osdBar.getVisibility() != View.VISIBLE)) {
             toggle();
-            showOsdAndFocus(1);
+            showOsdAndFocus(osdPlayPauseButton);
             return true;
         }
         return super.onKeyDown(keyCode, event);
@@ -1298,10 +1373,14 @@ public final class CinemaHlsActivity extends Activity {
         }
         var mediaSourceFactory = new androidx.media3.exoplayer.source.DefaultMediaSourceFactory(this)
                 .setLoadErrorHandlingPolicy(new androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy(localTorrent == null ? 5 : 1));
-        if (localTorrent != null) mediaSourceFactory.setDataSourceFactory(
-                new androidx.media3.datasource.DefaultHttpDataSource.Factory().setReadTimeoutMs(65_000));
-        if (isCatalogChannel()) {
+        if (localTorrent != null) {
+            mediaSourceFactory.setDataSourceFactory(
+                    new androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                            .setAllowCrossProtocolRedirects(true)
+                            .setReadTimeoutMs(65_000));
+        } else if (isCatalogChannel()) {
             var factory = new androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                    .setAllowCrossProtocolRedirects(true)
                     .setConnectTimeoutMs(6500).setReadTimeoutMs(9500);
             String agent = getIntent().getStringExtra(CHANNEL_USER_AGENT);
             factory.setUserAgent(agent == null || agent.isBlank()
@@ -1312,6 +1391,13 @@ public final class CinemaHlsActivity extends Activity {
             }
             mediaSourceFactory.setDataSourceFactory(factory).setLoadErrorHandlingPolicy(
                     new androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy(1));
+        } else {
+            var httpFactory = new androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                    .setAllowCrossProtocolRedirects(true)
+                    .setUserAgent("Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .setConnectTimeoutMs(8000).setReadTimeoutMs(12000);
+            mediaSourceFactory.setDataSourceFactory(
+                    new androidx.media3.datasource.DefaultDataSource.Factory(this, httpFactory));
         }
         var loadControl = new androidx.media3.exoplayer.DefaultLoadControl.Builder();
         if (isCatalogChannel()) {
@@ -1484,6 +1570,7 @@ public final class CinemaHlsActivity extends Activity {
                     progressHandler.postDelayed(channelWatchdog, 18_000L);
                 }
                 if (playbackState == androidx.media3.common.Player.STATE_READY) {
+                    updateLiveControlsVisibility();
                     if (liveChannelStatus != null && addonFrameRendered) {
                         progressHandler.removeCallbacks(channelWatchdog);
                         liveChannelStatus.setVisibility(View.GONE);

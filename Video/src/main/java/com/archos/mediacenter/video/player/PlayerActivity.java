@@ -1668,11 +1668,7 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
     @Override
     public void onBackPressed() {
         if (mPlayerController != null && mPlayerController.dismissPlaybackOverlay()) return;
-        if (ArchosFeatures.isAndroidTV(this) && !mStopped && mPlayerController != null) {
-            com.archos.mediacenter.video.leanback.cinema.CinemaUi.confirmStopPlayback(this);
-        } else {
-            super.onBackPressed();
-        }
+        super.onBackPressed();
     }
 
     private boolean consumedOverlayBack;

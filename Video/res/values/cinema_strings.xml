@@ -21,8 +21,8 @@
     <string name="cinema_cast_crew">Cast &amp; Crew</string>
     <string name="cinema_ch_ch_to_zoom">CH+ / CH− to zoom</string>
     <string name="cinema_change_audio_track">Change audio track: </string>
-    <string name="cinema_choose_a_file_from_storage_or_your_network_to_play_manually">Choose a file from storage or your network to play manually</string>
-    <string name="cinema_choose_a_video">Choose a video</string>
+    <string name="cinema_choose_a_file_from_storage_or_your_network_to_play_manually">Browse videos, photos, and folders across internal storage, USB drives, and network</string>
+    <string name="cinema_choose_a_video">File Browser</string>
     <string name="cinema_choose_from_episode_folder">Choose from episode folder</string>
     <string name="cinema_choose_from_video_folder">Choose from video folder</string>
     <string name="cinema_choose_poster">Choose poster</string>
@@ -46,7 +46,7 @@
     <string name="cinema_episode_details_tracks">Episode details &amp; tracks</string>
     <string name="cinema_existing_player_setting">Existing player setting</string>
     <string name="cinema_fetch_missing_posters">Fetch Missing Posters</string>
-    <string name="cinema_file_browser">File browser</string>
+    <string name="cinema_file_browser">File Browser</string>
     <string name="cinema_file_information_unavailable">File information unavailable</string>
     <string name="cinema_file_tracks_are_still_loading">File tracks are still loading</string>
     <string name="cinema_finding_posters">Finding posters…</string>

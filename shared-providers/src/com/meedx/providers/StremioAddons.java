@@ -42,7 +42,31 @@ public final class StremioAddons {
     private static final List<BuiltIn> BUILT_INS = List.of(
             new BuiltIn("com.esmaeli.persianstremio", "Persian Stremio", "https://pstream.ir/manifest.json",
                     "https://raw.githubusercontent.com/MrMohebi/stremio-ir-providers/refs/heads/master/logo.png",
-                    "ic_addon_persian_stremio", 0xff244671, STREAMS | CATALOGS | META | SUBTITLES));
+                    "ic_addon_persian_stremio", 0xff244671, STREAMS | CATALOGS | META | SUBTITLES),
+            new BuiltIn("com.stremio.torrentio.addon", "Torrentio", "https://torrentio.strem.fun/manifest.json",
+                    "https://torrentio.strem.fun/images/logo_v1.png",
+                    "ic_addon_torrentio", 0xff2d2350, STREAMS),
+            new BuiltIn("com.keopps.peerflix", "Peerflix", "https://peerflix.mov/manifest.json",
+                    "https://peerflix.mov/static/logo.png",
+                    "ic_addon_peerflix", 0xff1e3a4c, STREAMS),
+            new BuiltIn("org.stremio.pubdomainmovies", "Public Domain Movies",
+                    "https://caching.stremio.net/publicdomainmovies.now.sh/manifest.json",
+                    "https://johnserv531.github.io/gh-images/1586344884.jpg",
+                    "ic_addon_public_domain", 0xff473422, STREAMS | CATALOGS),
+            new BuiltIn("com.linvo.cinemeta", "Cinemeta", "https://v3-cinemeta.strem.io/manifest.json",
+                    "https://raw.githubusercontent.com/Stremio/stremio-web/development/assets/images/stremio_symbol.png",
+                    "ic_addon_cinemeta", 0xff3b275c, CATALOGS | META),
+            new BuiltIn("anime.kitsu", "Anime Kitsu", "https://anime-kitsu.strem.fun/manifest.json",
+                    "https://i.imgur.com/7N6XGoO.png",
+                    "ic_addon_kitsu", 0xff5a2c24, CATALOGS | META),
+            new BuiltIn("pw.ers.netflix-catalog", "Streaming Catalogs",
+                    "https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club/manifest.json",
+                    "https://play-lh.googleusercontent.com/TBRwjS_qfJCSj1m7zZB93FnpJM5fSpMA_wUlFDLxWAb45T9RmwBvQd5cWR5viJJOhkI",
+                    "ic_addon_streaming_catalogs", 0xff4c1d24, CATALOGS),
+            new BuiltIn("org.stremio.opensubtitlesv3", "OpenSubtitles v3",
+                    "https://opensubtitles-v3.strem.io/manifest.json",
+                    "https://www.strem.io/images/addons/opensubtitles-logo.png",
+                    "ic_addon_opensubtitles", 0xff1f402e, SUBTITLES));
 
     public static BuiltIn builtIn(Addon addon) {
         return BUILT_INS.stream().filter(item -> item.manifestUrl().equalsIgnoreCase(addon.manifestUrl))
@@ -300,6 +324,13 @@ public final class StremioAddons {
                 if (o == null) continue;
                 String mUrl = o.optString("manifestUrl", "");
                 if (mUrl.isBlank()) continue;
+                int mask = o.optInt("resources_mask", -1);
+                String logo = o.optString("logo", "");
+                BuiltIn bi = BUILT_INS.stream().filter(b -> b.manifestUrl().equalsIgnoreCase(mUrl)).findFirst().orElse(null);
+                if (bi != null) {
+                    if (mask < 0) mask = bi.resources();
+                    if (logo.isBlank()) logo = bi.logo();
+                }
                 out.add(new Addon(
                         mUrl,
                         baseUrlFromManifest(mUrl),
@@ -308,7 +339,7 @@ public final class StremioAddons {
                         o.optString("description", ""),
                         o.optString("version", ""),
                         o.optBoolean("enabled", true),
-                        o.optLong("updatedAt", 0L), o.optInt("resources_mask", -1), o.optString("logo")));
+                        o.optLong("updatedAt", 0L), mask, logo));
             }
         } catch (Exception ignored) {}
         if (hasBuiltIns(context)) {
@@ -596,11 +627,19 @@ public final class StremioAddons {
     }
 
     public static boolean mayCatalog(Addon addon) {
-        return addon.resources >= 0 && (addon.resources & CATALOGS) != 0;
+        if (addon == null) return false;
+        if (addon.resources >= 0) return (addon.resources & CATALOGS) != 0;
+        BuiltIn bi = builtIn(addon);
+        if (bi != null) return (bi.resources() & CATALOGS) != 0;
+        JSONObject cached = manifestRules.get(addon.manifestUrl);
+        return cached != null && (resourceMask(cached) & CATALOGS) != 0;
     }
 
     public static String manifestLogo(Addon addon) {
-        if (!addon.logo.isBlank()) return addon.logo;
+        if (addon == null) return "";
+        if (addon.logo != null && !addon.logo.isBlank()) return addon.logo;
+        BuiltIn bi = builtIn(addon);
+        if (bi != null && !bi.logo().isBlank()) return bi.logo();
         try {
             return readLogo(addon.manifestUrl, new JSONObject(fetchText(addon.manifestUrl)));
         } catch (Exception ignored) { return ""; }
@@ -608,9 +647,18 @@ public final class StremioAddons {
 
     private static String readLogo(String manifestUrl, JSONObject manifest) {
         try {
-            String logo = new URL(new URL(manifestUrl), manifest.getString("logo")).toString();
-            return logo.startsWith("https://") && isHttpUrl(logo) ? logo : "";
+            String raw = optStr(manifest, "logo");
+            if (raw.isEmpty()) return "";
+            String logo = new URL(new URL(manifestUrl), raw).toString();
+            if (logo.startsWith("http://www.strem.io/")) logo = "https://" + logo.substring("http://".length());
+            return isHttpUrl(logo) ? logo : "";
         } catch (Exception ignored) { return ""; }
+    }
+
+    private static String optStr(JSONObject obj, String key) {
+        if (obj == null || obj.isNull(key)) return "";
+        String value = obj.optString(key, "");
+        return "null".equals(value) ? "" : value;
     }
 
     public static boolean mayStream(Addon addon) {
@@ -860,21 +908,33 @@ public final class StremioAddons {
     }
 
     public static List<Poster> browseCatalog(Addon addon, String catalogId, String query) {
+        return browseCatalog(addon, null, catalogId, query);
+    }
+
+    public static List<Poster> browseCatalog(Addon addon, String catalogType, String catalogId, String query) {
         var posters = new LinkedHashMap<String, Poster>();
-        readAddonCatalog(posters, addon, capabilities(addon), query, catalogId);
+        readAddonCatalog(posters, addon, capabilities(addon), query, catalogType, catalogId);
         return new ArrayList<>(posters.values());
     }
 
     private static void readAddonCatalog(Map<String, Poster> posters, Addon addon, Capabilities capability,
                                          String query, String catalogId) {
+        readAddonCatalog(posters, addon, capability, query, null, catalogId);
+    }
+
+    private static void readAddonCatalog(Map<String, Poster> posters, Addon addon, Capabilities capability,
+                                         String query, String catalogType, String catalogId) {
         if (addon != null && capability != null && capability.catalogs() != null) {
             JSONArray catalogs = capability.catalogs();
             for (int i = 0; !Thread.currentThread().isInterrupted() && i < (catalogId == null ? Math.min(catalogs.length(), 8) : catalogs.length()); i++) {
                 JSONObject catalog = catalogs.optJSONObject(i);
                 if (catalog == null) continue;
-                String id = catalog.optString("id");
-                String type = catalog.optString("type");
-                if (id.isBlank() || (catalogId != null && !catalogId.equals(id)) || !(supportedType(type) || (catalogId != null && ("tv".equals(type) || "sport".equals(type))))) continue;
+                String id = optStr(catalog, "id");
+                String type = optStr(catalog, "type");
+                if (id.isBlank()) continue;
+                if (catalogId != null && !catalogId.equals(id)) continue;
+                if (catalogType != null && !catalogType.isBlank() && !catalogType.equals(type)) continue;
+                if (catalogId == null && !supportedType(type)) continue;
                 JSONArray extra = catalog.optJSONArray("extra");
                 boolean searchable = false;
                 boolean missingRequired = false;
@@ -886,7 +946,7 @@ public final class StremioAddons {
                     missingRequired |= arg.optBoolean("isRequired") && (!search || query.isBlank());
                 }
                 if (missingRequired) continue;
-                String route = addon.baseUrl + "/catalog/" + type + "/" + Uri.encode(id);
+                String route = addon.baseUrl + "/catalog/" + Uri.encode(type) + "/" + Uri.encode(id);
                 if (!query.isBlank() && searchable) route += "/search=" + Uri.encode(query);
                 appendCatalog(posters, route + ".json", type, query, searchable);
             }
@@ -895,8 +955,8 @@ public final class StremioAddons {
 
     private static void appendCatalog(Map<String, Poster> out, String url, String type, String query, boolean searched) {
         try {
-            JSONArray rows = new JSONObject(fetchText(url)).getJSONArray("metas");
-            readCatalogRows(out, rows, type, searched ? "" : query, Math.min(rows.length(), 60));
+            JSONArray rows = new JSONObject(fetchText(url)).optJSONArray("metas");
+            if (rows != null) readCatalogRows(out, rows, type, searched ? "" : query, Math.min(rows.length(), 100));
         } catch (Exception ignored) {}
     }
 
@@ -905,13 +965,20 @@ public final class StremioAddons {
         for (int i = 0; i < count; i++) {
             JSONObject row = rows.optJSONObject(i);
             if (row == null) continue;
-            String id = row.optString("id");
-            String title = row.optString("name");
+            String id = optStr(row, "id");
+            String title = optStr(row, "name");
+            if (title.isBlank()) title = optStr(row, "title");
+            String rowType = optStr(row, "type");
+            String effectiveType = rowType.isBlank() ? type : rowType;
             if (id.isBlank() || title.isBlank() || (!needle.isBlank() && !title.toLowerCase(Locale.ROOT).contains(needle))) continue;
-            out.putIfAbsent(type + ":" + id, new Poster(id, type, title, row.optString("poster"),
-                    row.optString("background"), row.optString("description"), year(row.optString("releaseInfo", row.optString("year"))),
-                    rating(row.optDouble("imdbRating", 0.0)), date(row.optString("released")), row.optJSONArray("genres"),
-                    id.matches("tt[0-9]+") ? id : row.optString("imdb_id", ""), row.optLong("tmdb_id", 0)));
+            String poster = optStr(row, "poster");
+            if (poster.isBlank()) poster = optStr(row, "logo");
+            String imdb = id.matches("tt[0-9]+") ? id : optStr(row, "imdb_id");
+            out.putIfAbsent(effectiveType + ":" + id, new Poster(id, effectiveType, title, poster,
+                    optStr(row, "background"), optStr(row, "description"),
+                    year(optStr(row, "releaseInfo").isBlank() ? optStr(row, "year") : optStr(row, "releaseInfo")),
+                    rating(row.optDouble("imdbRating", 0.0)), date(optStr(row, "released")), row.optJSONArray("genres"),
+                    imdb, row.optLong("tmdb_id", 0)));
         }
     }
 
@@ -990,13 +1057,20 @@ public final class StremioAddons {
     }
 
     public static List<EpisodeChoice> episodes(Addon addon, String id) {
+        return episodes(addon, "series", id);
+    }
+
+    public static List<EpisodeChoice> episodes(Addon addon, String type, String id) {
+        String metaType = (type == null || type.isBlank()) ? "series" : type;
         var endpoints = new ArrayList<String>();
         if (addon != null) endpoints.add(addon.baseUrl);
-        if (id.matches("tt[0-9]+")) endpoints.add("https://v3-cinemeta.strem.io");
+        if (id.matches("tt[0-9]+") && !endpoints.contains("https://v3-cinemeta.strem.io")) {
+            endpoints.add("https://v3-cinemeta.strem.io");
+        }
         for (String endpoint : endpoints) {
             if (Thread.currentThread().isInterrupted()) break;
             try {
-                JSONObject meta = new JSONObject(fetchText(endpoint + "/meta/series/" + Uri.encode(id) + ".json"))
+                JSONObject meta = new JSONObject(fetchText(endpoint + "/meta/" + Uri.encode(metaType) + "/" + Uri.encode(id) + ".json"))
                         .optJSONObject("meta");
                 var episodes = parseEpisodes(meta == null ? null : meta.optJSONArray("videos"));
                 if (!episodes.isEmpty()) return episodes;
@@ -1066,15 +1140,21 @@ public final class StremioAddons {
     public static List<Stream> resolveStreams(Context context, String mediaType, String id, int season, int episode,
                                                Addon only, java.util.function.Consumer<List<Stream>> partial) {
         if (context == null || id == null || id.isBlank() || id.length() > 200) return List.of();
-        boolean series = "series".equalsIgnoreCase(mediaType) || "episode".equalsIgnoreCase(mediaType) || episode > 0;
-        String type = series ? "series" : "tv".equals(mediaType) || "sport".equals(mediaType) ? mediaType : "movie";
+        boolean series = "series".equalsIgnoreCase(mediaType) || "episode".equalsIgnoreCase(mediaType)
+                || ("anime".equalsIgnoreCase(mediaType) && episode > 0) || episode > 0;
+        String type;
+        if ("episode".equalsIgnoreCase(mediaType)) type = "series";
+        else if (mediaType != null && !mediaType.isBlank()) type = mediaType.toLowerCase(Locale.ROOT);
+        else type = series ? "series" : "movie";
         String suffix = ":" + Math.max(0, season) + ":" + Math.max(1, episode);
-        boolean fullEpisodeId = only != null && (id.endsWith(suffix)
-                || (builtIn(only) != null && id.endsWith("___" + suffix.substring(1))));
-        String path = "/stream/" + type + "/" + Uri.encode(id, ":")
+        boolean fullEpisodeId = id.endsWith(suffix)
+                || id.endsWith("___" + suffix.substring(1))
+                || id.matches("(?i)kitsu:[0-9]+:[0-9]+");
+        String path = "/stream/" + Uri.encode(type) + "/" + Uri.encode(id, ":")
                 + (series && !fullEpisodeId ? suffix : "") + ".json";
+        Addon targetOnly = (only != null && mayStream(only)) ? only : null;
         var addons = list(context).stream().filter(item -> item.enabled && mayStream(item)
-                && (only == null || only.manifestUrl.equals(item.manifestUrl))
+                && (targetOnly == null || targetOnly.manifestUrl.equalsIgnoreCase(item.manifestUrl))
                 && acceptsStream(item, type, id))
                 .collect(java.util.stream.Collectors.toList());
         var statuses = new java.util.concurrent.ConcurrentHashMap<String, StreamHealth>();
@@ -1122,7 +1202,7 @@ public final class StremioAddons {
     }
 
     private static boolean matchesManifest(JSONArray values, String value, boolean prefix) {
-        if (values == null) return true;
+        if (values == null || values.length() == 0) return true;
         for (int i = 0; i < values.length(); i++) {
             String rule = values.optString(i);
             if (prefix ? value.startsWith(rule) : value.equals(rule)) return true;
@@ -1283,29 +1363,49 @@ public final class StremioAddons {
         catch (NumberFormatException ignored) { return -1; }
     }
 
+    private static final String USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
     public static boolean isPlayableDirectStream(Stream stream) {
         if (stream == null || stream.torrent() || !isHttpUrl(stream.url)) return false;
-        HttpURLConnection connection = null;
-        try {
-            connection = (HttpURLConnection) new URL(stream.url).openConnection();
-            connection.setConnectTimeout(2300);
-            connection.setReadTimeout(2200);
-            connection.setRequestProperty("User-Agent", "LocalCinema/1.0");
-            connection.setRequestProperty("Range", "bytes=0-1023");
-            int status = connection.getResponseCode();
-            if (status != 200 && status != 206) return false;
-            String mime = connection.getContentType();
-            if (mime == null) return true;
-            mime = mime.split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
-            return !mime.equals("text/html") && !mime.equals("application/xhtml+xml")
-                    && !mime.equals("application/json") && !mime.endsWith("+json")
-                    && !mime.startsWith("image/") && !mime.startsWith("audio/")
-                    && !mime.equals("application/zip") && !mime.equals("application/x-bittorrent");
-        } catch (IOException | IllegalArgumentException failure) {
-            return false;
-        } finally {
-            if (connection != null) connection.disconnect();
+        String current = stream.url;
+        boolean playlist = "hls".equals(stream.format) || "dash".equals(stream.format)
+                || current.toLowerCase(Locale.ROOT).contains(".m3u8")
+                || current.toLowerCase(Locale.ROOT).contains(".mpd");
+        for (int hop = 0; hop < 5; hop++) {
+            HttpURLConnection connection = null;
+            try {
+                connection = (HttpURLConnection) new URL(current).openConnection();
+                connection.setConnectTimeout(4500);
+                connection.setReadTimeout(4500);
+                connection.setInstanceFollowRedirects(false);
+                connection.setRequestProperty("User-Agent", USER_AGENT);
+                if (!playlist) connection.setRequestProperty("Range", "bytes=0-1023");
+                int status = connection.getResponseCode();
+                if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+                    String next = connection.getHeaderField("Location");
+                    if (next == null || next.isBlank()) return false;
+                    current = new URL(new URL(current), next).toString();
+                    if (!isHttpUrl(current)) return false;
+                    continue;
+                }
+                if (status != 200 && status != 206) {
+                    return playlist && status == 405;
+                }
+                String mime = connection.getContentType();
+                if (mime == null) return true;
+                mime = mime.split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
+                return !mime.equals("text/html") && !mime.equals("application/xhtml+xml")
+                        && !mime.equals("application/json") && !mime.endsWith("+json")
+                        && !mime.startsWith("image/") && !mime.startsWith("audio/")
+                        && !mime.equals("application/zip") && !mime.equals("application/x-bittorrent");
+            } catch (IOException | IllegalArgumentException failure) {
+                return playlist && hop > 0;
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
         }
+        return false;
     }
 
     private static boolean isHttpUrl(String url) {
@@ -1354,29 +1454,40 @@ public final class StremioAddons {
     }
 
     private static String fetchText(String url) throws IOException {
-        int timeout = checkBudget();
-        HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
-        connection.setConnectTimeout(timeout);
-        connection.setReadTimeout(timeout);
-        connection.setInstanceFollowRedirects(true);
-        connection.setRequestProperty("User-Agent", "LocalCinema/1.0");
-        connection.setRequestProperty("Accept", "application/json");
-        try {
-            int code = connection.getResponseCode();
-            if (code != 200) throw new HttpFailure(code);
-            try (InputStream in = connection.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = in.read(buf)) != -1) {
-                    checkBudget();
-                    if (out.size() + n > 2 * 1024 * 1024) throw new IOException("Addon response too large");
-                    out.write(buf, 0, n);
+        String current = url;
+        for (int hop = 0; hop < 5; hop++) {
+            int timeout = checkBudget();
+            HttpURLConnection connection = (HttpURLConnection) new URL(current).openConnection();
+            connection.setConnectTimeout(timeout);
+            connection.setReadTimeout(timeout);
+            connection.setInstanceFollowRedirects(false);
+            connection.setRequestProperty("User-Agent", USER_AGENT);
+            connection.setRequestProperty("Accept", "application/json");
+            try {
+                int code = connection.getResponseCode();
+                if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                    String location = connection.getHeaderField("Location");
+                    if (location == null || location.isBlank()) throw new HttpFailure(code);
+                    current = new URL(new URL(current), location).toString();
+                    if (!isHttpUrl(current)) throw new IOException("Invalid redirect");
+                    continue;
                 }
-                checkBudget();
-                return new String(out.toByteArray(), StandardCharsets.UTF_8);
+                if (code != 200) throw new HttpFailure(code);
+                try (InputStream in = connection.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = in.read(buf)) != -1) {
+                        checkBudget();
+                        if (out.size() + n > 2 * 1024 * 1024) throw new IOException("Addon response too large");
+                        out.write(buf, 0, n);
+                    }
+                    checkBudget();
+                    return new String(out.toByteArray(), StandardCharsets.UTF_8);
+                }
+            } finally {
+                connection.disconnect();
             }
-        } finally {
-            connection.disconnect();
         }
+        throw new IOException("Too many redirects");
     }
 }

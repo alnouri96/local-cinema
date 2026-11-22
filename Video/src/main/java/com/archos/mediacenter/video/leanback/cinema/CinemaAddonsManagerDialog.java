@@ -80,16 +80,41 @@ final class CinemaAddonsManagerDialog {
 
     private void refreshInstalled(String selected) {
         installedRows.removeAllViews();
+        installedRows.setClipChildren(false);
+        installedRows.setClipToPadding(false);
         View restore = null;
-        for (var addon : installed()) {
-            String nameAndState = host.getString(R.string.addon_tile_state, addon.name, host.getString(
-                    addon.enabled ? R.string.addon_enabled_label : R.string.addon_disabled_label));
-            var item = CinemaAddonTilePresenter.create(host, nameAndState, R.drawable.cinema_addons,
-                    addon, io, main, 104, () -> manageAddon(addon, () -> refreshInstalled(addon.manifestUrl)));
+        var list = installed();
+        int cols = 6;
+        LinearLayout currentRow = null;
+        for (int i = 0; i < list.size(); i++) {
+            var addon = list.get(i);
+            if (i % cols == 0) {
+                currentRow = new LinearLayout(host);
+                currentRow.setOrientation(LinearLayout.HORIZONTAL);
+                currentRow.setClipChildren(false);
+                currentRow.setClipToPadding(false);
+                var rowLp = new LinearLayout.LayoutParams(-1, -2);
+                rowLp.topMargin = dp(8);
+                installedRows.addView(currentRow, rowLp);
+            }
+            var item = CinemaAddonTilePresenter.createSquareTile(host, addon.name, R.drawable.cinema_addons,
+                    addon, io, main, false, () -> manageAddon(addon, () -> refreshInstalled(addon.manifestUrl)));
             if (addon.manifestUrl.equals(selected)) restore = item;
-            var size = new LinearLayout.LayoutParams(-1, dp(104));
-            size.bottomMargin = dp(8);
-            installedRows.addView(item, size);
+            var cell = new android.widget.FrameLayout(host);
+            cell.setClipChildren(false);
+            cell.setClipToPadding(false);
+            int pad = dp(5);
+            cell.setPadding(pad, pad, pad, pad);
+            cell.addView(item, new android.widget.FrameLayout.LayoutParams(-1, -2));
+            currentRow.addView(cell, new LinearLayout.LayoutParams(0, -2, 1f));
+        }
+        if (currentRow != null) {
+            int rem = list.size() % cols;
+            if (rem != 0) {
+                for (int padIdx = rem; padIdx < cols; padIdx++) {
+                    currentRow.addView(new View(host), new LinearLayout.LayoutParams(0, 1, 1f));
+                }
+            }
         }
         if (restore != null) restore.requestFocus();
     }
@@ -301,12 +326,19 @@ final class CinemaAddonsManagerDialog {
     private LinearLayout column() {
         var content = new LinearLayout(host);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPaddingRelative(dp(20), dp(10), dp(20), dp(10));
+        content.setClipChildren(false);
+        content.setClipToPadding(false);
+        content.setPaddingRelative(dp(20), dp(12), dp(20), dp(14));
         return content;
     }
 
     private void showSheet(AlertDialog dialog, LinearLayout content) {
         dialog.show();
+        if (dialog.getWindow() != null) {
+            var metrics = host.getResources().getDisplayMetrics();
+            dialog.getWindow().setLayout(Math.min(dp(860), (int) (metrics.widthPixels * 0.88f)),
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
         for (int index = 0; index < content.getChildCount(); index++) {
             View option = content.getChildAt(index);
             if (option.isFocusable() && option.isEnabled() && option.isShown()) {
@@ -319,12 +351,16 @@ final class CinemaAddonsManagerDialog {
 
     private androidx.appcompat.app.AlertDialog.Builder sheet(int heading, LinearLayout content) {
         var scroll = new ScrollView(host);
+        scroll.setClipChildren(false);
+        scroll.setClipToPadding(false);
         scroll.setFillViewport(false);
         scroll.setDescendantFocusability(android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS);
         scroll.addView(content, new ScrollView.LayoutParams(-1, -2));
         var frame = new android.widget.FrameLayout(host);
+        frame.setClipChildren(false);
+        frame.setClipToPadding(false);
         frame.addView(scroll, new android.widget.FrameLayout.LayoutParams(-1,
-                Math.min(dp(420), host.getResources().getDisplayMetrics().heightPixels * 53 / 100)));
+                Math.min(dp(460), host.getResources().getDisplayMetrics().heightPixels * 62 / 100)));
         return CinemaUi.dialog(host).setTitle(heading).setView(frame);
     }
 

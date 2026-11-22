@@ -1404,4 +1404,49 @@
     <string name="cinema_art_display">Display options</string>
     <string name="cinema_art_default_percent">%1$s · Default</string>
     <string name="cinema_art_option_value">%1$s · %2$s</string>
+
+    <!-- Unified File Browser & Operations -->
+    <string name="cinema_usb_storage_label">USB Storage (%1$s)</string>
+    <string name="cinema_file_selected_count_title">%1$d items selected</string>
+    <string name="cinema_file_select">Select</string>
+    <string name="cinema_file_deselect">Deselect</string>
+    <string name="cinema_file_select_all">Select all</string>
+    <string name="cinema_file_clear_selection">Clear selection</string>
+    <string name="cinema_file_copy">Copy</string>
+    <string name="cinema_file_move">Move</string>
+    <string name="cinema_file_paste">Paste</string>
+    <string name="cinema_file_paste_here">Paste here</string>
+    <string name="cinema_file_delete">Delete</string>
+    <string name="cinema_file_deleting">Deleting files…</string>
+    <string name="cinema_file_copying">Copying files…</string>
+    <string name="cinema_file_moving">Moving files…</string>
+    <string name="cinema_file_delete_single_confirm">Delete \"%1$s\"?</string>
+    <string name="cinema_file_delete_multi_confirm">Delete %1$d selected items?</string>
+    <string name="cinema_file_delete_result">Deleted %1$d of %2$d items</string>
+    <string name="cinema_file_copy_result">Copied %1$d of %2$d items</string>
+    <string name="cinema_file_move_result">Moved %1$d of %2$d items</string>
+    <string name="cinema_file_clipboard_copy_status">Ready to copy: %1$d item(s) — open destination and press Paste</string>
+    <string name="cinema_file_clipboard_move_status">Ready to move: %1$d item(s) — open destination and press Paste</string>
+    <string name="cinema_file_selected_status">Selected: %1$d item(s)</string>
+    <string name="cinema_file_select_mode_hint">Selection mode active — press OK on items to toggle</string>
+    <string name="cinema_art_pick_hint">Select photos for Art Mode — long-press OK for file actions</string>
+    <string name="cinema_file_ready_to_copy">Copied %1$d item(s) to clipboard</string>
+    <string name="cinema_file_ready_to_move">Ready to move %1$d item(s)</string>
+    <string name="cinema_file_long_press_hint">Long-press OK on any item for Select, Copy, Move, Paste, or Delete</string>
+    <string name="cinema_file_usb_permission_title">Storage write permission</string>
+    <string name="cinema_file_usb_permission_message">Grant folder access to paste into this external USB drive.</string>
+
+    <!-- Add-ons Reorder -->
+    <string name="addon_reorder_action">⇅ Reorder</string>
+    <string name="addon_reorder_done">✓ Done</string>
+    <string name="addon_reorder_saved">Add-ons order saved</string>
+    <string name="addon_reorder_interactive">Interactive reorder mode</string>
+    <string name="addon_hub_reorder_hint">Long-press OK on any add-on to move or configure it</string>
+    <string name="addon_reorder_active_hint">Use arrow keys to move the highlighted add-on, then press OK to save</string>
+    <string name="addon_move_right">Move right</string>
+    <string name="addon_move_left">Move left</string>
+
+    <!-- YouTube 4K Ambient Screensaver -->
+    <string name="cinema_ambient_categories">Categories</string>
+    <string name="cinema_ambient_subtitle_hint">Press OK to play · Long-press OK to add or remove from Favorites</string>
 </resources>

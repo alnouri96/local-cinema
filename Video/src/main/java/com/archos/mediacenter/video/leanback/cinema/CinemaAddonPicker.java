@@ -138,9 +138,12 @@ final class CinemaAddonPicker {
                 return;
             }
             String imdb = validImdb(chosen.id()) ? chosen.id() : "";
+            boolean isLiveAddonChannel = "tv".equalsIgnoreCase(chosen.type())
+                    || "sport".equalsIgnoreCase(chosen.type())
+                    || "channel".equalsIgnoreCase(chosen.type());
             String streamKey = "addon:" + chosen.id() + (chosen.episode() > 0 ? ":s" + chosen.season() + "e" + chosen.episode() : "");
-            String mediaType = chosen.episode() > 0 ? "episode" : "movie";
-            long resume = CinemaWatchStore.findBestStreamResumeMs(app, streamKey, mediaType, imdb, chosen.tmdb(),
+            String mediaType = isLiveAddonChannel ? chosen.type() : (chosen.episode() > 0 ? "episode" : "movie");
+            long resume = isLiveAddonChannel ? 0L : CinemaWatchStore.findBestStreamResumeMs(app, streamKey, mediaType, imdb, chosen.tmdb(),
                     chosen.season(), chosen.episode(), chosen.title());
             var available = new java.util.concurrent.atomic.AtomicReference<List<StremioAddons.Stream>>(List.of());
             var sheet = new java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<List<StremioAddons.Stream>>>();
@@ -159,12 +162,16 @@ final class CinemaAddonPicker {
                                 trySource(activity, io, handler, stream, available::get, new java.util.HashSet<>(), active, (source, ready) -> {
                                     Intent play = new Intent(Intent.ACTION_VIEW, Uri.parse(source.url), activity, CinemaHlsActivity.class)
                                         .putExtra("format", source.format).putExtra("torrent_file_index", source.fileIndex)
-                                        .putExtra("subtitle_language", "ar").putExtra("addon_subtitles", true)
+                                        .putExtra("subtitle_language", "ar").putExtra("addon_subtitles", !isLiveAddonChannel)
                                         .putExtra("title", chosen.title()).putExtra("stream_key", streamKey)
                                         .putExtra("media_type", mediaType).putExtra("imdb_id", imdb)
                                         .putExtra("tmdb_id", chosen.tmdb()).putExtra("season", chosen.season())
                                         .putExtra("episode", chosen.episode()).putExtra("resume_ms", resume)
                                         .putExtra("addon_poster", chosen.poster()).putExtra("addon_heading", chosen.heading());
+                                    if (isLiveAddonChannel) {
+                                        play.putExtra(CinemaHlsActivity.LIVE_CHANNEL, true);
+                                        play.putExtra("is_live_cast", true);
+                                    }
                                     if (ready != null) play.putExtra(CinemaTorrentStream.PREPARED_TOKEN, ready.offerToPlayer());
                                     closeSources.run();
                                     activity.startActivity(play);

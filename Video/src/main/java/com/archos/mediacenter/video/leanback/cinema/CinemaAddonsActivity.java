@@ -46,9 +46,12 @@ public final class CinemaAddonsActivity extends FragmentActivity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final java.util.concurrent.ExecutorService io = Executors.newFixedThreadPool(2);
     private LinearLayout root;
+    private LinearLayout headerBar;
     private CinemaAddonsSectionController section;
     private StremioAddons.Addon selectedAddon;
     private String selectedCatalog;
+    private String selectedCatalogType;
+    private boolean streamOnlyBrowse;
     private String hubFocus;
     private boolean browsing;
     private boolean focusOpeningPoster;
@@ -95,7 +98,8 @@ public final class CinemaAddonsActivity extends FragmentActivity {
                 ContextCompat.RECEIVER_NOT_EXPORTED);
         getOnBackPressedDispatcher().addCallback(this, new androidx.activity.OnBackPressedCallback(true) {
             @Override public void handleOnBackPressed() {
-                if (browsing) showHub();
+                if (!browsing && section != null && section.isReordering()) section.exitReorderMode();
+                else if (browsing) showHub();
                 else finish();
             }
         });
@@ -126,7 +130,10 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         layers.addView(root, new FrameLayout.LayoutParams(-1, -1));
         setContentView(layers);
         var header = new LinearLayout(this);
+        headerBar = header;
         header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setClipChildren(false);
+        header.setClipToPadding(false);
         root.addView(header, new LinearLayout.LayoutParams(-1, -2));
         var heading = CinemaUi.text(this, 30, true);
         heading.setText(title);
@@ -160,10 +167,22 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         if (catalogWork != null) catalogWork.cancel(true);
         selectedAddon = null;
         selectedCatalog = null;
+        selectedCatalogType = null;
+        streamOnlyBrowse = false;
         shell(getString(R.string.addon_hub_title));
-        section = new CinemaAddonsSectionController(this, io, handler, this::showGrid,
-                this::openLive, this::chooseCatalog);
+        section = new CinemaAddonsSectionController(this, io, handler,
+                this::openStreamAddon, this::openLive, this::chooseCatalog);
+        section.attachHeaderActions(headerBar);
         section.attach(root, hubFocus);
+    }
+
+    private void openStreamAddon(StremioAddons.Addon addon) {
+        hubFocus = addon.manifestUrl;
+        selectedAddon = addon;
+        selectedCatalog = null;
+        selectedCatalogType = null;
+        streamOnlyBrowse = true;
+        showGrid();
     }
 
     private void chooseCatalog(StremioAddons.Addon addon) {
@@ -171,23 +190,77 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         CinemaAddonPicker.load(this, io, handler, R.string.addon_loading, () -> StremioAddons.capabilities(addon), capabilities -> {
             var catalogs = capabilities == null ? null : capabilities.catalogs();
             if (catalogs == null || catalogs.length() == 0) {
-                Toast.makeText(this, R.string.addon_no_titles, Toast.LENGTH_SHORT).show();
+                if (StremioAddons.mayStream(addon)) {
+                    openStreamAddon(addon);
+                } else {
+                    Toast.makeText(this, R.string.addon_no_titles, Toast.LENGTH_SHORT).show();
+                }
                 return;
             }
             var names = new ArrayList<String>();
             var ids = new ArrayList<String>();
+            var types = new ArrayList<String>();
+            var nameCounts = new java.util.HashMap<String, Integer>();
             for (int i = 0; i < catalogs.length(); i++) {
                 var catalog = catalogs.optJSONObject(i);
                 if (catalog == null || catalog.optString("id").isBlank()) continue;
-                names.add(catalog.optString("name", catalog.optString("id")));
-                ids.add(catalog.optString("id"));
+                String cname = catalog.optString("name", catalog.optString("id"));
+                nameCounts.put(cname, nameCounts.getOrDefault(cname, 0) + 1);
+            }
+            for (int i = 0; i < catalogs.length(); i++) {
+                var catalog = catalogs.optJSONObject(i);
+                if (catalog == null || catalog.optString("id").isBlank()) continue;
+                String id = catalog.optString("id");
+                String type = catalog.optString("type");
+                String cname = catalog.optString("name", id);
+                String label = nameCounts.getOrDefault(cname, 0) > 1 && !type.isBlank()
+                        ? cname + " · " + localizedCatalogType(type) : cname;
+                names.add(label);
+                ids.add(id);
+                types.add(type);
+            }
+            if (ids.isEmpty()) {
+                if (StremioAddons.mayStream(addon)) openStreamAddon(addon);
+                else Toast.makeText(this, R.string.addon_no_titles, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (ids.size() == 1) {
+                selectedAddon = addon;
+                selectedCatalog = ids.get(0);
+                selectedCatalogType = types.get(0);
+                streamOnlyBrowse = false;
+                showGrid();
+                return;
             }
             CinemaUi.dialog(this).setTitle(addon.name).setItems(names.toArray(new String[0]), (dialog, index) -> {
                 selectedAddon = addon;
                 selectedCatalog = ids.get(index);
+                selectedCatalogType = types.get(index);
+                streamOnlyBrowse = false;
                 showGrid();
             }).setNegativeButton(R.string.addon_back, null).show();
         });
+    }
+
+    private String localizedCatalogType(String type) {
+        if ("movie".equalsIgnoreCase(type)) return CinemaUi.label(this, "أفلام", "Movies");
+        if ("series".equalsIgnoreCase(type)) return CinemaUi.label(this, "مسلسلات", "Series");
+        if ("tv".equalsIgnoreCase(type) || "channel".equalsIgnoreCase(type)) return CinemaUi.label(this, "قنوات", "Live TV");
+        if ("sport".equalsIgnoreCase(type)) return CinemaUi.label(this, "رياضة", "Sports");
+        if ("anime".equalsIgnoreCase(type)) return CinemaUi.label(this, "أنمي", "Anime");
+        return type;
+    }
+
+    private boolean isChannelCatalog() {
+        return "tv".equalsIgnoreCase(selectedCatalogType)
+                || "channel".equalsIgnoreCase(selectedCatalogType)
+                || "sport".equalsIgnoreCase(selectedCatalogType);
+    }
+
+    private static boolean isChannelPoster(StremioAddons.Poster poster) {
+        if (poster == null || poster.type() == null) return false;
+        String t = poster.type();
+        return "tv".equalsIgnoreCase(t) || "channel".equalsIgnoreCase(t) || "sport".equalsIgnoreCase(t);
     }
 
     private void openLive(boolean custom) {
@@ -217,7 +290,7 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         filterSize.topMargin = dp(6);
         root.addView(filters, filterSize);
         filters.addView(search, new LinearLayout.LayoutParams(dp(260), dp(42)));
-        if (selectedAddon == null) {
+        if (selectedAddon == null || streamOnlyBrowse) {
             addFilter(filters, R.string.addon_genres, R.array.addon_genre_options, genreIndex, i -> genreIndex = i);
             addFilter(filters, R.string.addon_years, R.array.addon_year_options, yearIndex, i -> yearIndex = i);
             addFilter(filters, R.string.addon_rating, R.array.addon_rating_options, ratingIndex, i -> ratingIndex = i);
@@ -242,7 +315,7 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         root.addView(status, new LinearLayout.LayoutParams(-1, -2));
         grid = new RecyclerView(this);
         int gutter = dp(12);
-        grid.setPadding(gutter, dp(6), gutter, dp(12));
+        grid.setPadding(gutter, dp(12), gutter, dp(16));
         grid.setClipToPadding(false);
         grid.setClipChildren(false);
         grid.setItemAnimator(null);
@@ -257,8 +330,8 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         search.setId(View.generateViewId());
         grid.setNextFocusUpId(search.getId());
         var viewport = new FrameLayout(this);
-        viewport.setClipChildren(true);
-        viewport.setClipToPadding(true);
+        viewport.setClipChildren(false);
+        viewport.setClipToPadding(false);
         viewport.addView(grid, new FrameLayout.LayoutParams(-1, -1));
         root.addView(viewport, new LinearLayout.LayoutParams(-1, 0, 1));
         moreStatus = CinemaUi.text(this, 14, true);
@@ -391,15 +464,16 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         var filter = new StremioAddons.CatalogFilter(genreIndex == 1 ? "movie" : genreIndex == 2 ? "series" : "",
                 GENRES[genreIndex], MOVIE_GENRES[genreIndex], TV_GENRES[genreIndex], FIRST_YEARS[yearIndex],
                 LAST_YEARS[yearIndex], ratingIndex >= 2 ? 11 - ratingIndex : 0, ratingIndex == 1);
-        var source = selectedAddon;
+        var source = streamOnlyBrowse ? null : selectedAddon;
         var catalog = selectedCatalog;
+        var catalogType = selectedCatalogType;
         catalogWork = io.submit(() -> {
             boolean enabled = previous != null || StremioAddons.list(app).stream()
                     .anyMatch(addon -> addon.enabled && (StremioAddons.mayStream(addon) || StremioAddons.mayCatalog(addon)));
             var current = source == null && enabled && previous == null
                     ? new StremioAddons.CatalogPager(app, query, filter) : previous;
             var page = source == null ? (current == null ? new StremioAddons.CatalogPage(List.of(), false, false) : current.next())
-                    : new StremioAddons.CatalogPage(StremioAddons.browseCatalog(source, catalog, query), false, false);
+                    : new StremioAddons.CatalogPage(StremioAddons.browseCatalog(source, catalogType, catalog, query), false, false);
             handler.post(() -> {
                 if (!browsing || isFinishing() || isDestroyed() || generation != request) return;
                 loadingPage = false;
@@ -501,7 +575,7 @@ public final class CinemaAddonsActivity extends FragmentActivity {
     }
 
     private void showPosterActions(StremioAddons.Poster poster) {
-        if ("tv".equals(poster.type()) || "sport".equals(poster.type())) {
+        if (isChannelPoster(poster)) {
             selectPoster(selectedAddon, poster);
             return;
         }
@@ -530,21 +604,33 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         cancelSelection();
         requestedPoster = poster;
         int request = selectionGeneration;
-        if (!"series".equals(poster.type())) {
+        StremioAddons.Addon streamAddon = (addon != null && StremioAddons.mayStream(addon)) ? addon : null;
+        boolean episodic = "series".equalsIgnoreCase(poster.type()) || "anime".equalsIgnoreCase(poster.type());
+        if (!episodic) {
             selectionWork = CinemaAddonPicker.request(this, io, handler,
-                    () -> new CinemaAddonPicker.Selection(poster.title(), addon == null ? StremioAddons.streamId(this, poster) : poster.id(),
-                            tmdbId(poster), poster.type(), 0, 0, addon, poster.image(), poster.title()), () -> selectionActive(request));
+                    () -> {
+                        String sid = (streamAddon != null && !streamOnlyBrowse)
+                                ? poster.id() : StremioAddons.streamId(this, poster);
+                        return new CinemaAddonPicker.Selection(poster.title(), sid,
+                                tmdbId(poster), poster.type(), 0, 0, streamAddon, poster.image(), poster.title());
+                    }, () -> selectionActive(request));
             return;
         }
         record Episodes(String id, List<StremioAddons.EpisodeChoice> rows) {}
         selectionWork = CinemaAddonPicker.load(this, io, handler, R.string.addon_loading_episodes, () -> {
-            String id = addon == null ? StremioAddons.streamId(this, poster) : poster.id();
-            return id.isBlank() ? null : new Episodes(id, StremioAddons.episodes(addon, id));
+            String id = (addon != null && !streamOnlyBrowse) ? poster.id() : StremioAddons.streamId(this, poster);
+            if (id.isBlank()) return null;
+            var eps = StremioAddons.episodes(addon, poster.type(), id);
+            if (eps.isEmpty() && !poster.imdb().isBlank() && !poster.imdb().equals(id)) {
+                eps = StremioAddons.episodes(null, "series", poster.imdb());
+                if (!eps.isEmpty()) id = poster.imdb();
+            }
+            return new Episodes(id, eps);
         }, result -> {
             if (!selectionActive(request)) return;
             if (result == null) Toast.makeText(this, R.string.addon_missing_id, Toast.LENGTH_LONG).show();
-            else if (result.rows().isEmpty()) enterEpisode(addon, poster, result.id());
-            else showEpisodes(addon, poster, result.id(), result.rows());
+            else if (result.rows().isEmpty()) enterEpisode(streamAddon, poster, result.id());
+            else showEpisodes(streamAddon, poster, result.id(), result.rows());
         });
     }
 
@@ -599,7 +685,7 @@ public final class CinemaAddonsActivity extends FragmentActivity {
             list.setOnItemClickListener((parent, selected, index, rowId) -> {
                 var episode = rows.get(index);
                 dialog.dismiss();
-                String streamId = addon != null && !episode.streamId().isBlank() ? episode.streamId() : id;
+                String streamId = !episode.streamId().isBlank() ? episode.streamId() : id;
                 resolveEpisode(addon, poster, streamId, episode.season(), episode.episode(), episode.title());
             });
             if (tabs.containsKey(season)) list.setNextFocusUpId(tabs.get(season).getId());
@@ -691,6 +777,10 @@ public final class CinemaAddonsActivity extends FragmentActivity {
             notifyItemRangeInserted(start, added.size());
         }
 
+        @Override public int getItemViewType(int position) {
+            return (isChannelCatalog() || isChannelPoster(items.get(position))) ? 1 : 0;
+        }
+
         @Override public void onViewAttachedToWindow(PosterHolder holder) {
             super.onViewAttachedToWindow(holder);
             if (holder.tile.hasFocus()) onPosterFocus(holder.tile, holder.poster, true);
@@ -706,7 +796,7 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         @Override public int getItemCount() { return items.size(); }
 
         @Override public PosterHolder onCreateViewHolder(ViewGroup parent, int viewType) {
-            return new PosterHolder();
+            return new PosterHolder(viewType == 1);
         }
 
         @Override public void onBindViewHolder(PosterHolder holder, int position) {
@@ -730,10 +820,12 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         private final ImageView image;
         private final TextView title;
         private final TextView metadata;
+        private final boolean squareChannel;
         private StremioAddons.Poster poster;
 
-        PosterHolder() {
+        PosterHolder(boolean squareChannel) {
             super(new FrameLayout(CinemaAddonsActivity.this));
+            this.squareChannel = squareChannel;
             var cell = (FrameLayout) itemView;
             cell.setLayoutParams(new RecyclerView.LayoutParams(-1, -2));
             cell.setPadding(dp(8), dp(8), dp(8), dp(8));
@@ -749,23 +841,32 @@ public final class CinemaAddonsActivity extends FragmentActivity {
             image = new ImageView(CinemaAddonsActivity.this) {
                 @Override protected void onMeasure(int widthSpec, int heightSpec) {
                     int width = View.MeasureSpec.getSize(widthSpec);
-                    setMeasuredDimension(width, Math.round(width * 1.5f));
+                    int height = squareChannel ? width : Math.round(width * 1.5f);
+                    setMeasuredDimension(width, height);
                 }
             };
-            image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            if (squareChannel) {
+                image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                image.setBackgroundColor(0xff1b1b1f);
+                int pad = dp(14);
+                image.setPadding(pad, pad, pad, pad);
+            } else {
+                image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            }
             tile.addView(image, new LinearLayout.LayoutParams(-1, -2));
 
             title = CinemaUi.text(CinemaAddonsActivity.this, 14, true);
             title.setGravity(Gravity.CENTER);
             title.setMaxLines(2);
             title.setEllipsize(TextUtils.TruncateAt.END);
-            title.setPaddingRelative(dp(4), 0, dp(4), 0);
-            tile.addView(title, new LinearLayout.LayoutParams(-1, dp(39)));
+            title.setPaddingRelative(dp(6), dp(4), dp(6), dp(squareChannel ? 6 : 0));
+            tile.addView(title, new LinearLayout.LayoutParams(-1, dp(squareChannel ? 44 : 39)));
 
             metadata = CinemaUi.text(CinemaAddonsActivity.this, 12, false);
             metadata.setGravity(Gravity.CENTER);
             metadata.setSingleLine();
             metadata.setTextColor(GOLD);
+            metadata.setVisibility(squareChannel ? View.GONE : View.VISIBLE);
             tile.addView(metadata, new LinearLayout.LayoutParams(-1, dp(21)));
 
             tile.setOnFocusChangeListener((v, focused) -> onPosterFocus(v, poster, focused));
@@ -781,9 +882,13 @@ public final class CinemaAddonsActivity extends FragmentActivity {
             onPosterFocus(tile, null, false);
             poster = item;
             Picasso.get().cancelRequest(image);
-            image.setImageResource(R.drawable.cinema_addons);
+            int placeholder = squareChannel ? R.drawable.cinema_live_tv : R.drawable.cinema_addons;
+            image.setImageResource(placeholder);
             if (isArtworkUrl(poster.image())) {
-                Picasso.get().load(poster.image()).fit().centerCrop().placeholder(R.drawable.cinema_addons).into(image);
+                var req = Picasso.get().load(poster.image()).fit();
+                if (squareChannel) req.centerInside();
+                else req.centerCrop();
+                req.placeholder(placeholder).error(placeholder).into(image);
             }
             title.setText(poster.title());
             metadata.setText(posterMetadata(poster));

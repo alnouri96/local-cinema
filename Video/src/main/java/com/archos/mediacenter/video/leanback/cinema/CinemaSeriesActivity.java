@@ -91,30 +91,30 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
         backdrop=new ImageView(this);backdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);root.addView(backdrop,new FrameLayout.LayoutParams(-1,-1));
         View shade=new View(this);shade.setBackground(new GradientDrawable(rtl?GradientDrawable.Orientation.RIGHT_LEFT:GradientDrawable.Orientation.LEFT_RIGHT,new int[]{0xf2171717,0xcc171717,0x66171717}));root.addView(shade,new FrameLayout.LayoutParams(-1,-1));
         View floor=new View(this);floor.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0x00171717,CinemaTokens.CANVAS}));root.addView(floor,new FrameLayout.LayoutParams(-1,-1));
-        ScrollView scroll=new ScrollView(this);mainScroll=scroll;scroll.setClipToPadding(false);root.addView(scroll,new FrameLayout.LayoutParams(-1,-1));
-        LinearLayout column=new LinearLayout(this);column.setOrientation(LinearLayout.VERTICAL);column.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);column.setGravity(rtl?Gravity.RIGHT:Gravity.LEFT);column.setPaddingRelative(dp(this,CinemaTokens.GUTTER),dp(this,12),dp(this,48),dp(this,20));scroll.addView(column);
+        ScrollView scroll=new ScrollView(this);mainScroll=scroll;scroll.setClipChildren(false);scroll.setClipToPadding(false);root.addView(scroll,new FrameLayout.LayoutParams(-1,-1));
+        LinearLayout column=new LinearLayout(this);column.setOrientation(LinearLayout.VERTICAL);column.setClipChildren(false);column.setClipToPadding(false);column.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);column.setGravity(rtl?Gravity.RIGHT:Gravity.LEFT);column.setPaddingRelative(dp(this,CinemaTokens.GUTTER),dp(this,10),dp(this,48),dp(this,24));scroll.addView(column);
 
-        HorizontalScrollView seasonScroll=new HorizontalScrollView(this);seasonScroll.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);seasonScroll.setFillViewport(true);seasonScroll.setHorizontalScrollBarEnabled(false);column.addView(seasonScroll,new LinearLayout.LayoutParams(-1,-2));
-        seasons=new LinearLayout(this);seasons.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);seasons.setGravity(Gravity.CENTER_VERTICAL|(rtl?Gravity.RIGHT:Gravity.LEFT));
+        HorizontalScrollView seasonScroll=new HorizontalScrollView(this);seasonScroll.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);seasonScroll.setFillViewport(true);seasonScroll.setHorizontalScrollBarEnabled(false);seasonScroll.setClipChildren(false);seasonScroll.setClipToPadding(false);seasonScroll.setPadding(0,dp(this,4),0,dp(this,4));column.addView(seasonScroll,new LinearLayout.LayoutParams(-1,-2));
+        seasons=new LinearLayout(this);seasons.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);seasons.setGravity(Gravity.CENTER_VERTICAL|(rtl?Gravity.RIGHT:Gravity.LEFT));seasons.setClipChildren(false);seasons.setClipToPadding(false);
         seasons.setPadding(dp(this,4),dp(this,3),dp(this,4),dp(this,3));
         GradientDrawable pillBg=rounded(0x28000000,dp(this,20),0);pillBg.setStroke(dp(this,1),0x22FFFFFF);
         seasons.setBackground(pillBg);
         seasonScroll.addView(seasons);
 
-        FrameLayout identity=new FrameLayout(this);LinearLayout.LayoutParams identityParams=new LinearLayout.LayoutParams(dp(this,500),dp(this,76));identityParams.topMargin=dp(this,6);identityParams.bottomMargin=dp(this,6);column.addView(identity,identityParams);
-        title=text(this,CinemaTokens.FILM_TITLE,true);title.setMaxLines(2);title.setTextSize(30);title.setEllipsize(android.text.TextUtils.TruncateAt.END);title.setMinimumHeight(dp(this,46));title.setText(show.getName());title.setGravity(Gravity.CENTER_VERTICAL|(rtl?Gravity.RIGHT:Gravity.LEFT));identity.addView(title,new FrameLayout.LayoutParams(-1,-1));
-        logo=new ImageView(this);logo.setScaleType(rtl?ImageView.ScaleType.FIT_END:ImageView.ScaleType.FIT_START);logo.setVisibility(View.GONE);identity.addView(logo,new FrameLayout.LayoutParams(dp(this,360),dp(this,64),rtl?Gravity.RIGHT:Gravity.LEFT));
+        FrameLayout identity=new FrameLayout(this);identity.setClipChildren(false);identity.setClipToPadding(false);LinearLayout.LayoutParams identityParams=new LinearLayout.LayoutParams(dp(this,500),-2);identityParams.topMargin=dp(this,4);identityParams.bottomMargin=dp(this,2);column.addView(identity,identityParams);
+        title=text(this,CinemaTokens.FILM_TITLE,true);title.setMaxLines(2);title.setTextSize(28);title.setEllipsize(android.text.TextUtils.TruncateAt.END);title.setMinimumHeight(dp(this,38));title.setText(show.getName());title.setGravity(Gravity.CENTER_VERTICAL|(rtl?Gravity.RIGHT:Gravity.LEFT));identity.addView(title,new FrameLayout.LayoutParams(-1,-2));
+        logo=new ImageView(this);logo.setAdjustViewBounds(true);logo.setMaxWidth(dp(this,320));logo.setMaxHeight(dp(this,50));logo.setScaleType(ImageView.ScaleType.FIT_CENTER);logo.setVisibility(View.GONE);identity.addView(logo,new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|(rtl?Gravity.RIGHT:Gravity.LEFT)));
 
-        seasonHeading=text(this,CinemaTokens.ROW_TITLE,true);seasonHeading.setSingleLine(true);seasonHeading.setEllipsize(android.text.TextUtils.TruncateAt.END);seasonHeading.setGravity(rtl?Gravity.RIGHT:Gravity.LEFT);seasonHeading.setPadding(0,dp(this,4),0,dp(this,2));CinemaUi.addFixedSlot(column,seasonHeading,-1,dp(this,30));
+        seasonHeading=text(this,CinemaTokens.ROW_TITLE,true);seasonHeading.setSingleLine(true);seasonHeading.setEllipsize(android.text.TextUtils.TruncateAt.END);seasonHeading.setGravity(rtl?Gravity.RIGHT:Gravity.LEFT);seasonHeading.setPadding(0,dp(this,2),0,0);CinemaUi.addFixedSlot(column,seasonHeading,-1,dp(this,26));
 
-        infoRow=new LinearLayout(this);infoRow.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);infoRow.setOrientation(LinearLayout.HORIZONTAL);infoRow.setGravity(Gravity.CENTER_VERTICAL|(rtl?Gravity.RIGHT:Gravity.LEFT));infoRow.setMinimumHeight(dp(this,24));infoRow.setPadding(0,dp(this,2),0,dp(this,2));infoRow.setVisibility(View.INVISIBLE);CinemaUi.addFixedSlot(column,infoRow,-1,dp(this,28));
-        ratingsRow=new LinearLayout(this);ratingsRow.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);ratingsRow.setOrientation(LinearLayout.HORIZONTAL);ratingsRow.setGravity(Gravity.CENTER_VERTICAL|(rtl?Gravity.RIGHT:Gravity.LEFT));ratingsRow.setMinimumHeight(dp(this,26));ratingsRow.setPadding(0,0,0,dp(this,4));ratingsRow.setVisibility(View.INVISIBLE);CinemaUi.addFixedSlot(column,ratingsRow,-1,dp(this,26));
+        infoRow=new LinearLayout(this);infoRow.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);infoRow.setOrientation(LinearLayout.HORIZONTAL);infoRow.setGravity(Gravity.CENTER_VERTICAL|(rtl?Gravity.RIGHT:Gravity.LEFT));infoRow.setMinimumHeight(dp(this,22));infoRow.setPadding(0,dp(this,1),0,dp(this,1));infoRow.setVisibility(View.INVISIBLE);CinemaUi.addFixedSlot(column,infoRow,-1,dp(this,26));
+        ratingsRow=new LinearLayout(this);ratingsRow.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);ratingsRow.setOrientation(LinearLayout.HORIZONTAL);ratingsRow.setGravity(Gravity.CENTER_VERTICAL|(rtl?Gravity.RIGHT:Gravity.LEFT));ratingsRow.setMinimumHeight(dp(this,22));ratingsRow.setPadding(0,0,0,dp(this,2));ratingsRow.setVisibility(View.INVISIBLE);CinemaUi.addFixedSlot(column,ratingsRow,-1,dp(this,24));
 
-        plot=text(this,CinemaTokens.LABEL,false);plot.setText(show.getPlot());plot.setMaxLines(2);plot.setGravity(rtl?Gravity.RIGHT:Gravity.LEFT);plot.setLineSpacing(dp(this,2),1);plot.setEllipsize(android.text.TextUtils.TruncateAt.END);CinemaUi.addFixedSlot(column,plot,dp(this,520),dp(this,42));
+        plot=text(this,CinemaTokens.LABEL,false);plot.setText(show.getPlot());plot.setMaxLines(2);plot.setGravity(rtl?Gravity.RIGHT:Gravity.LEFT);plot.setLineSpacing(dp(this,2),1);plot.setEllipsize(android.text.TextUtils.TruncateAt.END);CinemaUi.addFixedSlot(column,plot,dp(this,520),dp(this,40));
 
-        episodeScroll=new HorizontalScrollView(this);episodeScroll.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);episodeScroll.setFillViewport(true);episodeScroll.setHorizontalScrollBarEnabled(false);episodeScroll.setClipToPadding(false);episodeScroll.setPaddingRelative(dp(this,2),dp(this,4),0,dp(this,4));LinearLayout.LayoutParams episodeParams=new LinearLayout.LayoutParams(-1,dp(this,EPISODE_CARD_HEIGHT+8));episodeParams.topMargin=dp(this,6);column.addView(episodeScroll,episodeParams);episodes=new LinearLayout(this);episodes.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);episodes.setGravity(Gravity.CENTER_VERTICAL|(rtl?Gravity.RIGHT:Gravity.LEFT));episodeScroll.addView(episodes);
+        episodeScroll=new HorizontalScrollView(this);episodeScroll.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);episodeScroll.setFillViewport(true);episodeScroll.setHorizontalScrollBarEnabled(false);episodeScroll.setClipChildren(false);episodeScroll.setClipToPadding(false);episodeScroll.setPaddingRelative(dp(this,10),dp(this,12),dp(this,16),dp(this,12));LinearLayout.LayoutParams episodeParams=new LinearLayout.LayoutParams(-1,-2);episodeParams.topMargin=dp(this,2);column.addView(episodeScroll,episodeParams);episodes=new LinearLayout(this);episodes.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);episodes.setGravity(Gravity.CENTER_VERTICAL|(rtl?Gravity.RIGHT:Gravity.LEFT));episodes.setClipChildren(false);episodes.setClipToPadding(false);episodeScroll.addView(episodes);
 
-        LinearLayout actions=new LinearLayout(this);actionsRow=actions;actions.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);actions.setOrientation(LinearLayout.HORIZONTAL);actions.setGravity(Gravity.CENTER_VERTICAL|(rtl?Gravity.RIGHT:Gravity.LEFT));actions.setPaddingRelative(dp(this,2),0,0,0);LinearLayout.LayoutParams actionParams=new LinearLayout.LayoutParams(-1,dp(this,48));actionParams.topMargin=dp(this,8);
+        LinearLayout actions=new LinearLayout(this);actionsRow=actions;actions.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);actions.setOrientation(LinearLayout.HORIZONTAL);actions.setGravity(Gravity.CENTER_VERTICAL|(rtl?Gravity.RIGHT:Gravity.LEFT));actions.setClipChildren(false);actions.setClipToPadding(false);actions.setPaddingRelative(dp(this,2),dp(this,4),0,dp(this,4));LinearLayout.LayoutParams actionParams=new LinearLayout.LayoutParams(-1,-2);actionParams.topMargin=dp(this,4);
         watch=CinemaActionChip.create(this,actions,label(this,"جاري قراءة الحلقات…","Reading episodes…"),com.archos.mediacenter.video.R.drawable.cinema_play_movie,()->{
             if(showMode){Episode e=currentEpisode();if(e!=null)playSeason(e.getSeasonNumber());}
             else if(focusedSeasonEpisode==null)playSeason(selectedSeason);
@@ -166,13 +166,13 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
 
         LinearLayout.LayoutParams seasonsGap=new LinearLayout.LayoutParams(-1,-2);seasonsGap.topMargin=dp(this,4);
         seasonsSectionTitle=text(this,CinemaTokens.ROW_TITLE,true);seasonsSectionTitle.setGravity(rtl?Gravity.RIGHT:Gravity.LEFT);seasonsSectionTitle.setVisibility(View.GONE);column.addView(seasonsSectionTitle,seasonsGap);
-        seasonPostersScroll=new HorizontalScrollView(this);seasonPostersScroll.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);seasonPostersScroll.setFillViewport(true);seasonPostersScroll.setHorizontalScrollBarEnabled(false);seasonPostersScroll.setClipChildren(false);seasonPostersScroll.setClipToPadding(false);seasonPostersScroll.setPaddingRelative(dp(this,6),dp(this,4),dp(this,16),dp(this,2));seasonPostersScroll.setVisibility(View.GONE);seasonPostersScroll.setDescendantFocusability(android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS);column.addView(seasonPostersScroll,new LinearLayout.LayoutParams(-1,-2));
+        seasonPostersScroll=new HorizontalScrollView(this);seasonPostersScroll.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);seasonPostersScroll.setFillViewport(true);seasonPostersScroll.setHorizontalScrollBarEnabled(false);seasonPostersScroll.setClipChildren(false);seasonPostersScroll.setClipToPadding(false);seasonPostersScroll.setPaddingRelative(dp(this,10),dp(this,12),dp(this,16),dp(this,14));seasonPostersScroll.setVisibility(View.GONE);seasonPostersScroll.setDescendantFocusability(android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS);column.addView(seasonPostersScroll,new LinearLayout.LayoutParams(-1,-2));
         seasonPostersRow=new LinearLayout(this);seasonPostersRow.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);seasonPostersRow.setOrientation(LinearLayout.HORIZONTAL);seasonPostersRow.setGravity(Gravity.CENTER_VERTICAL|(rtl?Gravity.RIGHT:Gravity.LEFT));seasonPostersRow.setClipChildren(false);seasonPostersRow.setClipToPadding(false);seasonPostersRow.setVisibility(View.GONE);seasonPostersScroll.addView(seasonPostersRow);
         column.addView(actions,actionParams);
 
-        LinearLayout.LayoutParams castGap=new LinearLayout.LayoutParams(-1,-2);castGap.topMargin=dp(this,18);
+        LinearLayout.LayoutParams castGap=new LinearLayout.LayoutParams(-1,-2);castGap.topMargin=dp(this,14);
         TextView castTitle=text(this,CinemaTokens.ROW_TITLE,true);castTitle.setGravity(rtl?Gravity.RIGHT:Gravity.LEFT);castTitle.setText(this.getString(com.archos.mediacenter.video.R.string.cinema_cast_crew));column.addView(castTitle,castGap);
-        HorizontalScrollView castScroll=new HorizontalScrollView(this);castScroll.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);castScroll.setFillViewport(true);castScroll.setHorizontalScrollBarEnabled(false);castScroll.setClipChildren(false);castScroll.setClipToPadding(false);column.addView(castScroll,new LinearLayout.LayoutParams(-1,-2));
+        HorizontalScrollView castScroll=new HorizontalScrollView(this);castScroll.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);castScroll.setFillViewport(true);castScroll.setHorizontalScrollBarEnabled(false);castScroll.setClipChildren(false);castScroll.setClipToPadding(false);castScroll.setPaddingRelative(dp(this,8),dp(this,10),dp(this,16),dp(this,12));column.addView(castScroll,new LinearLayout.LayoutParams(-1,-2));
         cast=new LinearLayout(this);cast.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);cast.setOrientation(LinearLayout.HORIZONTAL);cast.setGravity(rtl?Gravity.RIGHT:Gravity.LEFT);cast.setClipChildren(false);cast.setClipToPadding(false);castScroll.addView(cast);
         root.getViewTreeObserver().addOnGlobalFocusChangeListener((oldFocus,newFocus)->updateCardHighlights(newFocus));
         settingsNav=null;refreshShowMetadata();LoaderManager.getInstance(this).initLoader(1,null,this);loadArtwork();registerLibraryRefresh();
@@ -584,10 +584,12 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
             LinearLayout wrapper=new LinearLayout(this);
             wrapper.setOrientation(LinearLayout.VERTICAL);
             wrapper.setGravity(Gravity.CENTER_HORIZONTAL);
+            wrapper.setClipChildren(false);
+            wrapper.setClipToPadding(false);
             wrapper.setFocusable(true);
             wrapper.setClickable(true);
             LinearLayout.LayoutParams wp=new LinearLayout.LayoutParams(dp(this,SEASON_POSTER_WIDTH),-2);
-            wp.setMarginEnd(dp(this,14));
+            wp.setMarginEnd(dp(this,18));
             seasonPostersRow.addView(wrapper,wp);
 
             FrameLayout card=new FrameLayout(this);
@@ -614,19 +616,23 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
             badge.setText(Long.toString(count));
             card.addView(badge,new FrameLayout.LayoutParams(-2,dp(this,20),Gravity.TOP|Gravity.RIGHT));
 
-            TextView cap=text(this,13,true);
+            TextView cap=text(this,14,true);
             cap.setText(seasonTitle);
+            cap.setSingleLine(true);
+            cap.setEllipsize(android.text.TextUtils.TruncateAt.END);
             cap.setGravity(Gravity.CENTER);
-            cap.setPadding(0,dp(this,4),0,0);
-            wrapper.addView(cap);
+            cap.setPadding(dp(this,2),dp(this,12),dp(this,2),dp(this,4));
+            wrapper.addView(cap,new LinearLayout.LayoutParams(-1,-2));
 
             wrapper.setOnFocusChangeListener((v,focused)->{
+                cap.setTextColor(focused?CinemaTokens.GOLD:CinemaTokens.TEXT);
                 if(focused){
                     selectedShowSeason=season;
                     highlightedSeasonCard=highlightCard(highlightedSeasonCard,card);
                     refreshActions();
+                } else {
+                    updateCardHighlights(getCurrentFocus());
                 }
-                card.animate().scaleX(focused?1.04f:1f).scaleY(focused?1.04f:1f).setDuration(CinemaTokens.FOCUS_MS).start();
             });
             wrapper.setTag(season);
             if(Integer.valueOf(season).equals(selectedShowSeason))highlightedSeasonCard=highlightCard(highlightedSeasonCard,card);
@@ -724,7 +730,7 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
             // First card in row: clean 2:3 mini Season poster card ("All Episodes" continuous playback on click)
             if(!seasonEpisodes.isEmpty()){
                 FrameLayout sCard=new FrameLayout(this);sCard.setFocusable(true);sCard.setClickable(true);sCard.setClipToOutline(true);sCard.setBackground(rounded(CinemaTokens.SURFACE,dp(this,8),0));sCard.setTag("season_card");
-                LinearLayout.LayoutParams sSize=new LinearLayout.LayoutParams(dp(this,SEASON_MINI_WIDTH),dp(this,EPISODE_CARD_HEIGHT));sSize.setMarginEnd(dp(this,12));episodes.addView(sCard,sSize);
+                LinearLayout.LayoutParams sSize=new LinearLayout.LayoutParams(dp(this,SEASON_MINI_WIDTH),dp(this,EPISODE_CARD_HEIGHT));sSize.setMarginEnd(dp(this,16));episodes.addView(sCard,sSize);
                 seasonCardImage=new ImageView(this);seasonCardImage.setScaleType(ImageView.ScaleType.CENTER_CROP);sCard.addView(seasonCardImage,new FrameLayout.LayoutParams(-1,-1));
                 bindSeasonImage(season,seasonCardImage);
                 TextView sBadge=text(this,11,true);sBadge.setText(seasonTitle);sBadge.setSingleLine(true);sBadge.setGravity(Gravity.CENTER);sBadge.setPadding(dp(this,7),dp(this,3),dp(this,7),dp(this,3));sBadge.setBackground(rounded(0xCC121212,dp(this,6),0));
@@ -753,7 +759,7 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
             View restore=null,inProgressCard=null,firstEpisodeCard=null;
             Episode inProgressEp=null,firstEp=null;
             for(Episode episode:seasonEpisodes){
-                FrameLayout card=new FrameLayout(this);card.setFocusable(true);card.setClickable(true);card.setClipToOutline(true);card.setBackground(rounded(CinemaTokens.SURFACE,dp(this,8),0));LinearLayout.LayoutParams size=new LinearLayout.LayoutParams(dp(this,EPISODE_CARD_WIDTH),dp(this,EPISODE_CARD_HEIGHT));size.setMarginEnd(dp(this,12));episodes.addView(card,size);
+                FrameLayout card=new FrameLayout(this);card.setFocusable(true);card.setClickable(true);card.setClipToOutline(true);card.setBackground(rounded(CinemaTokens.SURFACE,dp(this,8),0));LinearLayout.LayoutParams size=new LinearLayout.LayoutParams(dp(this,EPISODE_CARD_WIDTH),dp(this,EPISODE_CARD_HEIGHT));size.setMarginEnd(dp(this,16));episodes.addView(card,size);
                 if(firstEpisodeCard==null){firstEpisodeCard=card;firstEp=episode;}
                 ImageView image=new ImageView(this);episodeImages.put(episode.getEpisodeNumber(),image);image.setScaleType(ImageView.ScaleType.CENTER_CROP);card.addView(image,new FrameLayout.LayoutParams(-1,-1));
                 Uri epPic=episode.getPictureUri()!=null?episode.getPictureUri():episodeMetaThumbs.get(season+":"+episode.getEpisodeNumber());
@@ -1477,7 +1483,7 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
                 seasonPosterImages.forEach(this::bindSeasonImage);
                 if(!showMode)bindSeasonImage(selectedSeason,seasonCardImage);
             }
-            if(art.logo()!=null){Picasso.get().load(art.logo()).resize(dp(this,360),dp(this,60)).centerInside().into(logo,new com.squareup.picasso.Callback(){public void onSuccess(){if(!isDestroyed()){title.setVisibility(View.GONE);logo.setVisibility(View.VISIBLE);}}public void onError(Exception e){if(!isDestroyed()){logo.setVisibility(View.GONE);title.setVisibility(View.VISIBLE);}}});}
+            if(art.logo()!=null){Picasso.get().load(art.logo()).resize(dp(this,320),dp(this,50)).centerInside().onlyScaleDown().into(logo,new com.squareup.picasso.Callback(){public void onSuccess(){if(!isDestroyed()){title.setVisibility(View.GONE);logo.setVisibility(View.VISIBLE);}}public void onError(Exception e){if(!isDestroyed()){logo.setVisibility(View.GONE);title.setVisibility(View.VISIBLE);}}});}
             if(!art.cast().isEmpty()){
                 View cur=getCurrentFocus();
                 int focusedCastIdx=(cur!=null&&cur.getParent()==cast)?cast.indexOfChild(cur):-1;
@@ -1707,7 +1713,7 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
             if (initialMulti != null) multiRatings = initialMulti;
             title.setText(item.title());
             if (item.logo() != null && !item.logo().isBlank()) {
-                Picasso.get().load(item.logo()).resize(dp(this, 360), dp(this, 60)).centerInside().into(logo, new com.squareup.picasso.Callback() {
+                Picasso.get().load(item.logo()).resize(dp(this, 320), dp(this, 50)).centerInside().onlyScaleDown().into(logo, new com.squareup.picasso.Callback() {
                     @Override public void onSuccess() {
                         if (!isDestroyed()) {
                             title.setVisibility(View.GONE);
