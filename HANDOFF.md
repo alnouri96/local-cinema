@@ -21,6 +21,10 @@ Start with [AGENTS.md](AGENTS.md), [the current status](docs/CONTINUATION.md), a
 
 [Local Cinema v1.0.0-beta.15](https://github.com/alnouri96/meedx/releases/tag/v1.0.0-beta.15) is GitHub Latest. Both apps are open source and free. The [corresponding source tag](https://github.com/alnouri96/local-cinema/tree/v1.0.0-beta.15) is public. The old development repository remains private and archived. Develop from the public checkout rather than pushing the legacy Git history.
 
+## Website update on 2026-11-22
+
+The home page links its wide product illustration to the app page. Downloads groups the two APKs and opens a bilingual changelog from either card. The current notes also appear on the app page, in the OTA feed, and on GitHub. The APKs and their checksums are unchanged. See [the Pages deployment](https://c8878e15.meedx.pages.dev).
+
 ## Current work
 
 - See [release notes](CHANGELOG-CINEMA.md) for the beta.15 changes, including Iraq live channels, favorites, torrent preparation, and the floating remote.
