@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Increase the Leanback focus enlargement above 100% by half. -->
+    <item name="lb_focus_zoom_factor_xsmall" type="fraction">109%</item>
+    <item name="lb_focus_zoom_factor_small" type="fraction">115%</item>
+    <item name="lb_focus_zoom_factor_medium" type="fraction">121%</item>
+    <item name="lb_focus_zoom_factor_large" type="fraction">127%</item>
+</resources>

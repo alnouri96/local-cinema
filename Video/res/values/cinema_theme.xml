@@ -1,0 +1,14 @@
+<resources>
+    <style name="CinemaDialogTheme" parent="Theme.AppCompat.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/cinema_dialog_surface</item>
+        <item name="android:colorBackground">#171717</item>
+        <item name="android:textColorPrimary">#F5F5F5</item>
+        <item name="android:textColorSecondary">#B8B8B8</item>
+        <item name="colorAccent">#E5A93B</item>
+        <item name="android:backgroundDimAmount">0.45</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:windowElevation">8dp</item>
+        <item name="android:windowMinWidthMajor">55%</item>
+        <item name="android:windowMinWidthMinor">55%</item>
+    </style>
+</resources>

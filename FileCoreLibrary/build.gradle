@@ -1,0 +1,133 @@
+apply plugin: 'com.android.library'
+
+repositories {
+    google()
+    mavenCentral()
+    mavenLocal()
+    maven { url = 'https://jitpack.io' }
+}
+
+allprojects {
+    gradle.projectsEvaluated {
+        tasks.withType(JavaCompile).configureEach {
+            options.compilerArgs << "-Xlint:unchecked" << "-Xlint:deprecation"
+        }
+        // to generate the required jar dependencies e.g. cling seamless
+        preBuild.dependsOn(ndkBuild)
+    }
+}
+
+android {
+    namespace = 'com.archos.filecorelibrary'
+    compileSdk = 36
+    sourceSets {
+        main {
+            manifest.srcFile 'AndroidManifest.xml'
+            java.srcDirs = ['src']
+            resources.srcDirs = ['src']
+            aidl.srcDirs = ['src']
+            res.srcDirs = ['res']
+            assets.srcDirs = ['assets']
+            //tmp prebuilt jni
+            jniLibs.srcDirs = ['libs']
+            //disable automatic jni build rules
+            jni.srcDirs = []
+        }
+    }
+
+    defaultConfig {
+        minSdkVersion 23
+        targetSdkVersion 35
+        multiDexEnabled = true
+    }
+
+    tasks.withType(JavaCompile).configureEach {
+        compileTask -> compileTask.dependsOn ndkBuild
+    }
+    clean.dependsOn 'ndkClean'
+
+    buildTypes {
+        release {
+            minifyEnabled = false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-project.txt'
+        }
+    }
+
+    compileOptions {
+        coreLibraryDesugaringEnabled = true
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        aidl = true
+        renderScript = false
+    }
+
+    packagingOptions {
+        exclude 'META-INF/versions/**/OSGI-INF/MANIFEST.MF'
+    }
+    lint {
+        abortOnError false // Set to false to only fail on fatal issues
+        disable 'all'
+        enable 'NewApi'
+        fatal 'NewApi'
+    }
+}
+
+tasks.register('ndkBuild', Exec) {
+    onlyIf { !project.hasProperty('prebuiltNative') }
+    workingDir = "../"
+
+    outputs.upToDateWhen {
+        file("libs/arm64-v8a/libfilecoreutils.so").exists()
+        file("libs/armeabi-v7a/libfilecoreutils.so").exists()
+        file("libs/x86/libfilecoreutils.so").exists()
+        file("libs/x86_64/libfilecoreutils.so").exists()
+        //file("libs/jcifs-ng.jar").exists()
+    }
+    //OutputFiles/OutputDirectories
+    List<String> myCmd = new ArrayList<String>()
+    myCmd.add("make")
+    myCmd.add("native_libnativehelper")
+    myCmd.add("native_build_FileCoreLibrary")
+    //myCmd.add("jcifs-ng")
+    commandLine = myCmd
+}
+
+tasks.register('ndkClean', Exec) {
+    workingDir = "../"
+    List<String> myCmd = new ArrayList<String>()
+    myCmd.add("make")
+    myCmd.add("native_clean")
+    //myCmd.add("external_clean_jcifs-ng")
+    commandLine = myCmd
+}
+
+// ensure there is no loggers other than logback
+configurations.configureEach {
+    exclude group: "org.slf4j", module: "slf4j-log4j12"
+    exclude group: "log4j", module: "log4j"
+    exclude group: 'jcifs', module: 'jcifs' // try to avoid conflict with jcifs-ng on Konka Android TV 2861
+}
+
+dependencies {
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
+    api 'eu.agno3.jcifs:jcifs-ng:2.1.10'
+    // upgrading for later release i.e. 0.2.25 or 2.27.0 will break the build since it has switched to java 24
+    api 'com.github.mwiede:jsch:2.27.7'
+    // desugar is needed no avoid  commons-net java.time.Duration ClassNotFoundException after 3.8.0
+    implementation 'commons-net:commons-net:3.12.0'
+    implementation 'com.jakewharton.threetenabp:threetenabp:1.4.9'
+    implementation 'com.github.nova-video-player:sardine-android:0.0.2'
+    implementation 'com.hierynomus:smbj:0.14.0'
+    implementation 'com.hierynomus:sshj:0.40.0'
+    implementation 'oro:oro:2.0.8'
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation 'androidx.preference:preference:1.2.1'
+    implementation 'org.slf4j:slf4j-api:2.0.17'
+    implementation 'com.github.tony19:logback-android:3.0.0'
+    implementation 'com.squareup.okhttp3:logging-interceptor:5.3.2'
+    implementation 'io.sentry:sentry:8.31.0'
+}
+

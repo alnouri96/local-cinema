@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="144dp"
+    android:height="216dp"
+    android:viewportWidth="144"
+    android:viewportHeight="216">
+
+    <path android:pathData="M0,0H144V216H0Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:startX="2" android:startY="210" android:endX="139" android:endY="9" android:type="linear">
+                <item android:color="#171717" android:offset="0" />
+                <item android:color="#211C17" android:offset="0.46" />
+                <item android:color="#67451B" android:offset="1" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path android:fillColor="#30694618"
+        android:pathData="M0,88L108,0H144V22L0,149ZM0,163L144,48V72L0,185Z" />
+    <path android:fillColor="#26E5A93B"
+        android:pathData="M0,45L65,0H87L0,62ZM77,155L144,103V108L87,155Z" />
+    <path android:fillColor="#00000000" android:strokeColor="#45E5A93B" android:strokeWidth="0.8"
+        android:pathData="M14,7H130Q137,7 137,14V202Q137,209 130,209H14Q7,209 7,202V14Q7,7 14,7Z" />
+    <path android:fillColor="#4DE5A93B"
+        android:pathData="M14,21V14H26V15H15V21ZM130,21V14H118V15H129V21Z" />
+
+    <!-- Film-strip details are part of the illustration, behind the TV. -->
+    <path android:fillColor="#56381D" android:strokeColor="#BBD19741" android:strokeWidth="1"
+        android:pathData="M35,57L99,31L118,76L54,102Z" />
+    <path android:fillColor="#F3C372"
+        android:pathData="M44,58L49,56L51,61L46,63ZM55,53L60,51L62,56L57,58ZM66,49L71,47L73,52L68,54ZM77,45L82,43L84,48L79,50ZM88,40L93,38L95,43L90,45Z" />
+
+    <path android:fillColor="#151413" android:strokeColor="#E5A93B" android:strokeWidth="2.2"
+        android:pathData="M40,61H104Q113,61 113,70V122Q113,131 104,131H40Q31,131 31,122V70Q31,61 40,61Z" />
+    <path android:strokeColor="#A8874F" android:strokeWidth="0.8"
+        android:pathData="M41,67H103Q107,67 107,71V119Q107,123 103,123H41Q37,123 37,119V71Q37,67 41,67Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:startX="38" android:startY="120" android:endX="98" android:endY="68" android:type="linear">
+                <item android:color="#211C17" android:offset="0" />
+                <item android:color="#503619" android:offset="1" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path android:fillColor="#28E5A93B" android:pathData="M38,110L89,68H105L38,119Z" />
+    <path android:fillColor="#00000000" android:strokeColor="#BDE5A93B" android:strokeWidth="1"
+        android:pathData="M91,95A19,19 0,1 1,53 95A19,19 0,1 1,91 95Z" />
+    <path android:fillColor="#E5A93B" android:pathData="M69,84Q67,83 67,86V104Q67,106 69,105L83,97Q85,95 83,94Z" />
+    <path android:fillColor="#E5A93B" android:pathData="M69,131H75V139H89V141H55V139H69ZM98,125H102V127H98Z" />
+
+    <path android:fillColor="#33E5A93B"
+        android:pathData="M24,152H64V153H24ZM80,152H120V153H80ZM68,152L72,148L76,152L72,156Z" />
+    <path android:fillColor="#D9A343" android:pathData="M46,209H98V210H46Z" />
+</vector>

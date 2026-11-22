@@ -1,0 +1,2206 @@
+package com.archos.mediacenter.video.leanback.cinema;
+
+import com.archos.mediacenter.video.player.CinemaSubtitleText;
+import com.archos.mediacenter.video.player.CinemaDpadSeek;
+
+import android.app.Activity;
+import android.content.Intent;
+import android.graphics.Matrix;
+import android.graphics.drawable.GradientDrawable;
+import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
+import android.media.AudioManager;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.support.v4.media.MediaMetadataCompat;
+import android.support.v4.media.session.MediaSessionCompat;
+import android.support.v4.media.session.PlaybackStateCompat;
+import android.view.Gravity;
+import android.view.KeyEvent;
+import android.view.SurfaceView;
+import android.view.TextureView;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowManager;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.widget.Toast;
+import android.widget.VideoView;
+
+import androidx.appcompat.app.AlertDialog;
+
+import com.archos.mediacenter.video.R;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.InputStream;
+import java.util.List;
+
+/** Uses Android's native HLS / ExoPlayer playback path with full subtitle search & phone pickup. */
+public final class CinemaHlsActivity extends Activity {
+    static final String LIVE_CHANNEL = "catalog_live_channel";
+    static final String CHANNEL_USER_AGENT = "channel_ua";
+    static final String CHANNEL_REFERER = "channel_referer";
+    private static final int REQ_SUBSOURCE = 913;
+    private static final int REQ_ONLINE_SUB = 915;
+    private static final int REQ_LOCAL_SUB = 916;
+
+    private VideoView video;
+    private androidx.media3.ui.AspectRatioFrameLayout aspectContainer;
+    private View adaptiveSurface;
+    private int lastUnappliedRotation = 0;
+    private float lastEffectiveWidth = 0f;
+    private float lastEffectiveHeight = 0f;
+    private int manualRotationDegrees = 0;
+    private int rawVideoWidth = 1920;
+    private int rawVideoHeight = 1080;
+    private int rawVideoRotation = 0;
+    private int rawUnappliedRotation = 0;
+    private int intentVideoWidth = 0;
+    private int intentVideoHeight = 0;
+    private int intentVideoRotation = 0;
+    private float rawVideoPixelRatio = 1.0f;
+    private int currentSpeedPercent = 100;
+    private TextView osdRotateButton;
+    private TextView osdSpeedButton;
+    private androidx.media3.exoplayer.ExoPlayer adaptivePlayer;
+    private android.media.MediaPlayer player;
+    private TextView videoViewSubtitles;
+    private TextView exoSubtitles;
+    private TextView externalSubtitleView;
+    private TextView secondarySubtitleView;
+    private LinearLayout osdBar;
+    private CinemaPlaybackFilters playbackFilters;
+    private int subtitleTrack = -1;
+    private MediaSessionCompat mediaSession;
+    private AudioManager audioManager;
+    private AudioFocusRequest audioFocusRequest;
+    private final android.os.Handler progressHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final java.util.concurrent.ExecutorService progressIo = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private boolean pendingResumeApplied;
+    private boolean userSoughtBelowThreshold;
+    private boolean initialResumeSeekInFlight;
+    private boolean initialLiveSeekApplied;
+    private int adaptiveRetryCount = 0;
+    private static final int MAX_ADAPTIVE_RETRIES = 5;
+    private TextView liveChannelStatus;
+    private final Runnable channelWatchdog = () -> handleAdaptiveError(null);
+
+    boolean isCatalogChannel() {
+        return getIntent().getBooleanExtra(LIVE_CHANNEL, false);
+    }
+    private Runnable pendingRetryRunnable;
+    private String currentFormat;
+    private final CinemaDpadSeek dpadSeek = new CinemaDpadSeek();
+    private LinearLayout seekHud;
+    private android.widget.ProgressBar seekBar;
+    private TextView seekTime;
+    private long seekHudUntil;
+    private final Runnable updateSeekHud = new Runnable() {
+        @Override public void run() {
+            if (seekHud == null || seekHud.getVisibility() != View.VISIBLE) return;
+            if (android.os.SystemClock.uptimeMillis() >= seekHudUntil) {
+                seekHud.setVisibility(View.GONE);
+                return;
+            }
+            updateSeekTime(position());
+            progressHandler.postDelayed(this, 250);
+        }
+    };
+    private boolean playbackStarted;
+    private CinemaTorrentStream localTorrent;
+    private androidx.appcompat.app.AlertDialog torrentPreparation;
+    private String currentAudioUrl;
+    private String currentCastId = "";
+    private float subtitleSizeSp = 20f;
+    private int subtitleColor = android.graphics.Color.WHITE;
+    private int subtitleBottomMarginDp = 32;
+    private boolean subtitleOpaqueBg = false;
+    private boolean subtitleVisible = true;
+    private long subtitleDelayMs = 0L;
+    private byte[] lastSubtitleBytes;
+    private String lastSubtitleExt;
+    private boolean externalSubtitlesEnabled = false;
+    private int subtitleRevision;
+    private java.util.List<ExternalCue> externalCues = java.util.Collections.emptyList();
+    private boolean secondarySubtitlesEnabled = false;
+    private java.util.List<ExternalCue> secondaryCues = java.util.Collections.emptyList();
+    private static final int SUB_MODE_DUAL = 0;
+    private static final int SUB_MODE_PRIMARY = 1;
+    private static final int SUB_MODE_SECONDARY = 2;
+    private static final int DUAL_POS_STACKED_BOTTOM = 0;
+    private static final int DUAL_POS_SPLIT_PRIMARY_BOTTOM = 1;
+    private static final int DUAL_POS_SPLIT_PRIMARY_TOP = 2;
+    private int subDisplayMode = SUB_MODE_DUAL;
+    private int dualSubtitlePosition = DUAL_POS_SPLIT_PRIMARY_BOTTOM;
+    private LinearLayout bottomSubtitleStack;
+    private LinearLayout topSubtitleStack;
+
+    private record ExternalCue(long startMs, long endMs, String text) {}
+
+    private final Runnable subtitleTicker = new Runnable() {
+        @Override public void run() {
+            if (isDestroyed() || isFinishing() || (!externalSubtitlesEnabled && !secondarySubtitlesEnabled)) return;
+            updateExternalSubtitleNow();
+            progressHandler.postDelayed(this, 100L);
+        }
+    };
+
+    private final Runnable hideOsd = () -> {
+        if (osdBar != null) osdBar.setVisibility(View.GONE);
+    };
+
+    private static final long PERIODIC_SAVE_INTERVAL_MS = 5_000L;
+    private final Runnable periodicProgressSave = new Runnable() {
+        @Override public void run() {
+            if (isDestroyed() || isFinishing()) return;
+            if (playing()) {
+                playbackStarted = true;
+                saveStreamProgressAtAsync(null, false, false);
+            }
+            progressHandler.postDelayed(this, PERIODIC_SAVE_INTERVAL_MS);
+        }
+    };
+
+    private final AudioManager.OnAudioFocusChangeListener focusListener = focusChange -> {
+        if (focusChange == AudioManager.AUDIOFOCUS_LOSS || focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+            if (playing()) toggle();
+        }
+    };
+
+    private boolean isLiveCast() {
+        Intent i = getIntent();
+        if (i == null) return false;
+        if (i.getBooleanExtra("is_live_cast", false)
+                || i.getBooleanExtra("exclude_from_history", false)
+                || "phone_local_media".equals(i.getStringExtra("source_type"))) {
+            return true;
+        }
+        Uri data = i.getData();
+        return CinemaWatchStore.isEphemeralLiveCast(
+                data != null ? data.toString() : "",
+                i.getStringExtra("title"),
+                i.getStringExtra("media_type"),
+                i.getStringExtra("imdb_id"),
+                i.getLongExtra("tmdb_id", 0L));
+    }
+
+    private void saveStreamProgressAsync(boolean completed) {
+        saveStreamProgressAtAsync(null, completed, true);
+    }
+
+    private void saveStreamProgressAtAsync(Long explicitPosMs, boolean completed) {
+        saveStreamProgressAtAsync(explicitPosMs, completed, true);
+    }
+
+    private boolean addonFrameRendered;
+    private boolean addonPlaybackFailed;
+    private long addonPlayedMs;
+    private long addonPositionMs;
+    private long addonSampledAt;
+
+    private void resetAddonPlaybackSample(long positionMs) {
+        addonPositionMs = positionMs;
+        addonSampledAt = android.os.SystemClock.elapsedRealtime();
+    }
+
+    private boolean hasRealAddonProgress(long currentPosition) {
+        if (!addonFrameRendered || addonPlaybackFailed || currentPosition <= 0
+                || !CinemaWatchStore.includeAddonContinue(this)) return false;
+        long advance = currentPosition - addonPositionMs;
+        long elapsed = android.os.SystemClock.elapsedRealtime() - addonSampledAt;
+        if (advance > 0 && advance <= elapsed * 3 + 500) addonPlayedMs += advance;
+        resetAddonPlaybackSample(currentPosition);
+        return currentPosition >= 1500 && addonPlayedMs >= 1500;
+    }
+
+    private void saveStreamProgressAtAsync(Long explicitPosMs, boolean completed, boolean pushRemote) {
+        if (!playbackStarted && !playing()) return;
+        if (live() || isLiveCast()) return;
+        Uri data = getIntent() != null ? getIntent().getData() : null;
+        if (data == null) return;
+        String streamKey = getIntent().getStringExtra("stream_key");
+        if (streamKey == null || streamKey.isBlank()) streamKey = data.toString();
+        long dur = duration();
+        long rawPos = explicitPosMs != null ? Math.max(0L, explicitPosMs) : position();
+        if (streamKey.startsWith("addon:") && (explicitPosMs != null || !hasRealAddonProgress(rawPos))) return;
+        long pos = completed && dur > 0 ? dur : rawPos;
+        if (dur <= 0 || pos < 0) return;
+        String format = getIntent().getStringExtra("format");
+        String title = getIntent().getStringExtra("title");
+        if (title == null || title.isBlank()) {
+            title = data.getLastPathSegment() != null ? data.getLastPathSegment() : "Stream";
+        }
+        String mediaType = getIntent().getStringExtra("media_type");
+        String imdbId = getIntent().getStringExtra("imdb_id");
+        long tmdbId = getIntent().getLongExtra("tmdb_id", 0L);
+        int season = getIntent().getIntExtra("season", 0);
+        int episode = getIntent().getIntExtra("episode", 0);
+        final String keyFinal = streamKey;
+        int torrentFile = getIntent().getIntExtra("torrent_file_index", CinemaTorrentStream.savedFileIndex(data.toString()));
+        final String uriFinal = localTorrent != null && torrentFile >= 0
+                ? CinemaTorrentStream.nativeMagnet(data.toString()) + "&lcfile=" + torrentFile : data.toString();
+        final String titleFinal = title;
+        final boolean soughtBelow85 = userSoughtBelowThreshold;
+        final boolean reachedThreshold = completed || (dur > 0 && pos * 100L >= dur * 85L);
+        final android.content.Context app = getApplicationContext();
+        final String poster = getIntent().getStringExtra("addon_poster");
+        final String heading = getIntent().getStringExtra("addon_heading");
+        progressIo.execute(() -> {
+            if (keyFinal.startsWith("addon:") && !CinemaWatchStore.includeAddonContinue(app)) return;
+            CinemaWatchStore.StreamEntry before = CinemaWatchStore.getStream(app, keyFinal);
+            boolean wasWatched = before != null && before.watched();
+            if (wasWatched && !soughtBelow85 && !reachedThreshold) {
+                return;
+            }
+            if (poster != null && !poster.isBlank() && CinemaWatchStore.getIdentity(app, keyFinal) == null) {
+                CinemaWatchStore.saveIdentity(app, keyFinal, null, mediaType, imdbId, tmdbId, season,
+                        episode, heading, 0, poster, "", "addon");
+            }
+            CinemaWatchStore.saveStreamProgress(
+                    app, keyFinal, uriFinal, format, titleFinal, mediaType, imdbId, tmdbId, season, episode, pos, dur);
+            if (pushRemote || reachedThreshold) {
+                CinemaWatchStore.StreamEntry after = CinemaWatchStore.getStream(app, keyFinal);
+                CinemaWatchStore.pushPlaybackScrobbleAsync(app, 0L, uriFinal, titleFinal, mediaType, imdbId, tmdbId, season, episode, pos, dur, reachedThreshold);
+                if (after != null && (after.watched() != wasWatched || reachedThreshold)) {
+                    CinemaLinkServer.broadcastWatchSync(CinemaWatchStore.buildSyncRecordForStream(after));
+                    CinemaWatchStore.syncWithTraktAsync(app);
+                }
+            }
+        });
+    }
+
+    private void applyInitialResumeIfNeeded() {
+        if (pendingResumeApplied || live() || isLiveCast() || getIntent() == null) return;
+        long dur = duration();
+        if (dur <= 0) return;
+        pendingResumeApplied = true;
+        long resumeMs = getIntent().getLongExtra("resume_ms", 0L);
+        if (resumeMs > 0 && resumeMs < dur - 1000L) {
+            initialResumeSeekInFlight = true;
+            seekInternal((int) Math.min(Integer.MAX_VALUE, resumeMs), false);
+            return;
+        }
+        if (getIntent().getBooleanExtra("start_from_beginning", false)) return;
+        Uri data = getIntent().getData();
+        String streamKey = getIntent().getStringExtra("stream_key");
+        if ((streamKey == null || streamKey.isBlank()) && data != null) streamKey = data.toString();
+        final String keyFinal = streamKey;
+        final String title = getIntent().getStringExtra("title");
+        final String mediaType = getIntent().getStringExtra("media_type");
+        final String imdbId = getIntent().getStringExtra("imdb_id");
+        final long tmdbId = getIntent().getLongExtra("tmdb_id", 0L);
+        final int season = getIntent().getIntExtra("season", 0);
+        final int episode = getIntent().getIntExtra("episode", 0);
+        final android.content.Context app = getApplicationContext();
+        progressIo.execute(() -> {
+            long saved = CinemaWatchStore.findBestStreamResumeMs(app, keyFinal, mediaType, imdbId, tmdbId, season, episode, title);
+            if (saved > 0 && saved < dur - 1000L) {
+                progressHandler.post(() -> {
+                    if (!isDestroyed() && !isFinishing()) {
+                        initialResumeSeekInFlight = true;
+                        seekInternal((int) Math.min(Integer.MAX_VALUE, saved), false);
+                    }
+                });
+            }
+        });
+    }
+
+    private void keepScreenOn(boolean on) {
+        if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        getWindow().getDecorView().setKeepScreenOn(on);
+        if (video != null) video.setKeepScreenOn(on);
+        if (adaptiveSurface != null) adaptiveSurface.setKeepScreenOn(on);
+    }
+
+    private void updatePlaybackScreen(androidx.media3.common.Player engine) {
+        int state = engine.getPlaybackState();
+        keepScreenOn(!isFinishing() && engine.getPlayWhenReady()
+                && (state == androidx.media3.common.Player.STATE_READY
+                    || state == androidx.media3.common.Player.STATE_BUFFERING));
+    }
+
+    private void initMediaSession() {
+        if (mediaSession != null) return;
+        mediaSession = new MediaSessionCompat(this, "CinemaHlsActivity");
+        String title = getIntent() != null ? getIntent().getStringExtra("title") : null;
+        if (title != null && !title.isBlank()) {
+            mediaSession.setMetadata(new MediaMetadataCompat.Builder()
+                    .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
+                    .build());
+        }
+        mediaSession.setCallback(new MediaSessionCompat.Callback() {
+            @Override public void onPlay() { if (!playing()) toggle(); }
+            @Override public void onPause() { if (playing()) toggle(); }
+            @Override public void onStop() {
+                if (playing()) toggle();
+                keepScreenOn(false);
+                updateMediaSessionState(PlaybackStateCompat.STATE_STOPPED);
+            }
+        });
+        updateMediaSessionState(PlaybackStateCompat.STATE_NONE);
+    }
+
+    private void updateMediaSessionState(int state) {
+        if (mediaSession == null) return;
+        boolean active = state == PlaybackStateCompat.STATE_PLAYING || state == PlaybackStateCompat.STATE_PAUSED;
+        if (mediaSession.isActive() != active) mediaSession.setActive(active);
+        long actions = PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE
+                | PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_STOP;
+        mediaSession.setPlaybackState(new PlaybackStateCompat.Builder()
+                .setActions(actions)
+                .setState(state, Math.max(0, position()), state == PlaybackStateCompat.STATE_PLAYING ? 1.0f : 0.0f)
+                .build());
+    }
+
+    private void requestVideoAudioFocus() {
+        if (audioManager == null) audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+        if (audioManager == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (audioFocusRequest == null) {
+                audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                        .setAudioAttributes(new AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                                .build())
+                        .setOnAudioFocusChangeListener(focusListener)
+                        .build();
+            }
+            audioManager.requestAudioFocus(audioFocusRequest);
+        } else {
+            audioManager.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+        }
+    }
+
+    private void abandonVideoAudioFocus() {
+        if (audioManager == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioFocusRequest != null) {
+            audioManager.abandonAudioFocusRequest(audioFocusRequest);
+        } else {
+            audioManager.abandonAudioFocus(focusListener);
+        }
+    }
+
+    @Override protected void onCreate(Bundle state) {
+        super.onCreate(state);
+        var defaultPrefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this);
+        int defSize = 36;
+        int defVpos = 64;
+        int defColor = android.graphics.Color.WHITE;
+        try { defSize = getResources().getInteger(com.archos.mediacenter.video.R.integer.player_pref_subtitle_size_default); } catch (Exception ignored) {}
+        try { defVpos = getResources().getInteger(com.archos.mediacenter.video.R.integer.player_pref_subtitle_vpos_default); } catch (Exception ignored) {}
+        try { defColor = android.graphics.Color.parseColor(getString(com.archos.mediacenter.video.R.string.subtitle_color_default)); } catch (Exception ignored) {}
+        subtitleSizeSp = Math.max(14f, Math.min(38f, 14f + (defaultPrefs.getInt(
+                com.archos.mediacenter.video.player.PlayerActivity.KEY_SUBTITLE_SIZE, defSize) * 0.17f)));
+        subtitleColor = defaultPrefs.getInt(
+                com.archos.mediacenter.video.player.PlayerActivity.KEY_SUBTITLE_COLOR, defColor);
+        subtitleBottomMarginDp = Math.max(16, Math.min(180, defaultPrefs.getInt(
+                com.archos.mediacenter.video.player.PlayerActivity.KEY_SUBTITLE_VPOS, defVpos) / 2));
+        subtitleOpaqueBg = defaultPrefs.getBoolean(
+                com.archos.mediacenter.video.player.PlayerActivity.KEY_SUBTITLE_OUTLINE, false);
+        dualSubtitlePosition = Math.max(0, Math.min(2,
+                defaultPrefs.getInt("pref_dual_sub_position", DUAL_POS_SPLIT_PRIMARY_BOTTOM)));
+        manualRotationDegrees = normalizeRotationDegrees(getIntent().getIntExtra("manual_rotation", 0));
+        boolean rememberSpeed = defaultPrefs.getBoolean("pref_remember_video_speed", false);
+        int savedSpeedPct = rememberSpeed
+                ? defaultPrefs.getInt("pref_video_speed", 100)
+                : Math.round(defaultPrefs.getFloat(
+                        getString(com.archos.mediacenter.video.R.string.save_audio_speed_setting_pref_key), 1.0f) * 100f);
+        if (savedSpeedPct >= 50 && savedSpeedPct <= 200) {
+            currentSpeedPercent = savedSpeedPct;
+        }
+        var root = new FrameLayout(this);
+        root.setBackgroundColor(android.graphics.Color.BLACK);
+        currentFormat = getIntent().getStringExtra("format");
+        currentAudioUrl = getIntent().getStringExtra("audio_url");
+        currentCastId = getIntent().getStringExtra("cast_id");
+        if (currentCastId == null) currentCastId = "";
+        Uri dataUri = getIntent().getData();
+        if ("torrent".equals(currentFormat) && dataUri != null
+                && com.meedx.providers.StremioAddons.isTorrentMagnet(dataUri.toString())) {
+            localTorrent = CinemaTorrentStream.takePrepared(getIntent().getStringExtra(CinemaTorrentStream.PREPARED_TOKEN));
+            if (localTorrent == null) {
+                root.setBackgroundColor(0xff171717);
+                setContentView(root);
+                var torrent = new CinemaTorrentStream(this, dataUri.toString(),
+                        getIntent().getIntExtra("torrent_file_index", CinemaTorrentStream.savedFileIndex(dataUri.toString())));
+                torrentPreparation = CinemaAddonPicker.prepareTorrent(this, torrent, ready -> {
+                    torrentPreparation = null;
+                    localTorrent = ready;
+                    root.setBackgroundColor(android.graphics.Color.BLACK);
+                    startAdaptive(root, currentFormat, currentAudioUrl);
+                    findArabicAddonSubtitles();
+                    initMediaSession();
+                }, this::finish);
+                return;
+            }
+        }
+        String dataPath = dataUri != null && dataUri.getPath() != null
+                ? dataUri.getPath().toLowerCase(java.util.Locale.ROOT) : "";
+        if ("torrent".equals(currentFormat) || "dash".equals(currentFormat) || "audio".equals(currentFormat)
+                || "split".equals(currentFormat) || "addon".equals(currentFormat)
+                || "portrait_cast".equals(currentFormat) || "phone_local_media".equals(currentFormat)
+                || "adaptive_file".equals(currentFormat)
+                || (currentAudioUrl != null && !currentAudioUrl.isEmpty())
+                || "hls".equals(currentFormat)
+                || dataPath.endsWith(".m3u8") || dataPath.endsWith(".mpd")) {
+            startAdaptive(root, currentFormat, currentAudioUrl);
+            findArabicAddonSubtitles();
+            initMediaSession();
+            return;
+        }
+        aspectContainer = new androidx.media3.ui.AspectRatioFrameLayout(this);
+        aspectContainer.setResizeMode(androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT);
+        root.addView(aspectContainer, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER));
+        video = new VideoView(this);
+        aspectContainer.addView(video, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER));
+        int extraW = getIntent().getIntExtra("video_width", 0);
+        int extraH = getIntent().getIntExtra("video_height", 0);
+        int extraRot = getIntent().getIntExtra("video_rotation", 0);
+        float initRatio = computeDisplayAspectRatio(extraW, extraH, extraRot, 1.0f);
+        if (initRatio > 0f) aspectContainer.setAspectRatio(initRatio);
+        videoViewSubtitles = new TextView(this);
+        videoViewSubtitles.setGravity(Gravity.CENTER);
+        videoViewSubtitles.setTextColor(subtitleColor);
+        videoViewSubtitles.setTextSize(subtitleSizeSp);
+        videoViewSubtitles.setShadowLayer(4, 1, 2, android.graphics.Color.BLACK);
+        var position = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
+        position.bottomMargin = Math.round(subtitleBottomMarginDp * getResources().getDisplayMetrics().density);
+        root.addView(videoViewSubtitles, position);
+        attachExternalSubtitleOverlay(root);
+        attachOsdBar(root);
+        setContentView(root);
+        initMediaSession();
+        video.setOnPreparedListener(prepared -> {
+            CinemaLinkServer.playbackChanged();
+            player = prepared;
+            subtitleTrack = -1;
+            videoViewSubtitles.setText(null);
+            prepared.setOnVideoSizeChangedListener((mp, vw, vh) -> {
+                if (vw > 0 && vh > 0 && aspectContainer != null) {
+                    aspectContainer.setResizeMode(androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT);
+                    aspectContainer.setAspectRatio((float) vw / (float) vh);
+                }
+            });
+            prepared.setOnTimedTextListener((source, cue) -> {
+                String text = cue == null ? null : CinemaSubtitleText.displayText(cue.getText());
+                if (playbackFilters != null) playbackFilters.observeSubtitle(text, -1, -1);
+                videoViewSubtitles.setText(text);
+            });
+            applyInitialResumeIfNeeded();
+            if (currentSpeedPercent != 100) {
+                speed(currentSpeedPercent / 100f);
+            }
+            requestVideoAudioFocus();
+            keepScreenOn(true);
+            updateMediaSessionState(PlaybackStateCompat.STATE_PLAYING);
+            progressHandler.removeCallbacks(periodicProgressSave);
+            progressHandler.postDelayed(periodicProgressSave, 15_000L);
+            String subUrl = getIntent().getStringExtra("subtitle_url");
+            if (subUrl != null && !subUrl.isEmpty()) {
+                loadRemoteSubtitleAsync(subUrl, false);
+            }
+            String sub2Url = getIntent().getStringExtra("secondary_subtitle_url");
+            if (sub2Url != null && !sub2Url.isEmpty()) {
+                loadRemoteSubtitleAsync(sub2Url, true);
+            }
+        });
+        video.setOnCompletionListener(mp -> {
+            CinemaLinkServer.playbackChanged();
+            saveStreamProgressAsync(true);
+            keepScreenOn(false);
+            updateMediaSessionState(PlaybackStateCompat.STATE_STOPPED);
+            abandonVideoAudioFocus();
+        });
+        video.setOnErrorListener((mp, what, extra) -> {
+            android.util.Log.w("CinemaHls", "Playback failed: " + what + "/" + extra);
+            keepScreenOn(false);
+            updateMediaSessionState(PlaybackStateCompat.STATE_STOPPED);
+            abandonVideoAudioFocus();
+            finish();
+            return true;
+        });
+        video.setVideoURI(getIntent().getData());
+        video.start();
+    }
+
+    private void attachOsdBar(FrameLayout root) {
+        float d = getResources().getDisplayMetrics().density;
+        osdBar = new LinearLayout(this);
+        osdBar.setOrientation(LinearLayout.HORIZONTAL);
+        osdBar.setGravity(Gravity.CENTER);
+        osdBar.setPadding(Math.round(14 * d), Math.round(10 * d), Math.round(14 * d), Math.round(10 * d));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xe618181d);
+        bg.setCornerRadius(16 * d);
+        bg.setStroke(Math.round(1.5f * d), 0xffe5b94c);
+        osdBar.setBackground(bg);
+        osdBar.setVisibility(View.GONE);
+
+        boolean ar = CinemaUi.arabic(this);
+        osdBar.addView(osdButton(ar ? "⏪ 10ث" : "⏪ 10s", () -> seek(Math.max(0, position() - 10000))));
+        osdBar.addView(osdButton(ar ? "⏯ تشغيل/إيقاف" : "⏯ Play/Pause", this::toggle));
+        osdBar.addView(osdButton(ar ? "10ث ⏩" : "10s ⏩", () -> seek(position() + 10000)));
+        osdBar.addView(osdButton(ar ? "💬 الترجمة" : "💬 Subtitles", this::openSubtitleMenuFromRemote));
+        osdRotateButton = osdButton(osdRotateLabel(ar), this::cycleManualRotationFromOsd);
+        osdBar.addView(osdRotateButton);
+        osdSpeedButton = osdButton(osdSpeedLabel(ar), this::openSpeedMenuFromOsd);
+        osdBar.addView(osdSpeedButton);
+        if (!isLiveCast() && !"audio".equals(getIntent().getStringExtra("media_type"))) {
+            for (CinemaPlaybackOption option : CinemaPlaybackOption.values()) {
+                TextView button = osdButton(getString(option.title), () -> option.toggle(this));
+                button.setEnabled(option.available());
+                button.setAlpha(option.available() ? 1f : 0.48f);
+                button.setTag(option);
+                osdBar.addView(button);
+            }
+        }
+        refreshOsdLabels();
+
+        var lp = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        lp.bottomMargin = Math.round(72 * d);
+        root.addView(osdBar, lp);
+        attachSeekHud(root);
+    }
+
+    private void attachSeekHud(FrameLayout root) {
+        seekHud = new LinearLayout(this);
+        seekHud.setOrientation(LinearLayout.VERTICAL);
+        seekHud.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        seekHud.setPadding(CinemaUi.dp(this, 16), CinemaUi.dp(this, 6),
+                CinemaUi.dp(this, 16), CinemaUi.dp(this, 10));
+        seekHud.setBackground(CinemaUi.rounded(0xe618181d, CinemaUi.dp(this, 12), 0xff544026));
+        seekHud.setVisibility(View.GONE);
+        seekTime = CinemaUi.text(this, 14, true);
+        seekTime.setGravity(Gravity.CENTER);
+        seekHud.addView(seekTime, new LinearLayout.LayoutParams(-1, -2));
+        seekBar = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        seekBar.setProgressTintList(android.content.res.ColorStateList.valueOf(0xffe5a93b));
+        seekBar.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        seekHud.addView(seekBar, new LinearLayout.LayoutParams(-1, CinemaUi.dp(this, 10)));
+        var size = new FrameLayout.LayoutParams(Math.min(CinemaUi.dp(this, 420),
+                getResources().getDisplayMetrics().widthPixels * 3 / 4), -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        size.bottomMargin = CinemaUi.dp(this, 24);
+        root.addView(seekHud, size);
+    }
+
+    private void updateSeekTime(int position) {
+        int duration = duration();
+        if (duration <= 0) return;
+        seekBar.setMax(duration);
+        seekBar.setProgress(position);
+        seekTime.setText(android.text.format.DateUtils.formatElapsedTime(position / 1000L) + " / "
+                + android.text.format.DateUtils.formatElapsedTime(duration / 1000L));
+    }
+
+    private boolean seekFromRemote(KeyEvent event) {
+        if (seekHud == null || isLiveCast() || live()) return false;
+        if (osdBar != null && osdBar.getVisibility() == View.VISIBLE && osdBar.hasFocus()) return false;
+        int duration = duration();
+        if (duration <= 0 || (adaptivePlayer != null && !adaptivePlayer.isCurrentMediaItemSeekable())) return false;
+        if (event.getAction() == KeyEvent.ACTION_UP) return true;
+        if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+
+        int step = dpadSeek.offset(event);
+        if (step == 0) return true;
+        int current = position();
+        int target = CinemaDpadSeek.clamp(duration, current, step);
+        if (current != target) seek(target);
+        seekHudUntil = android.os.SystemClock.uptimeMillis() + 2500;
+        seekHud.setVisibility(View.VISIBLE);
+        seekHud.bringToFront();
+        updateSeekTime(target);
+        progressHandler.removeCallbacks(updateSeekHud);
+        progressHandler.postDelayed(updateSeekHud, 250);
+        return true;
+    }
+
+    private String osdRotateLabel(boolean ar) {
+        if (manualRotationDegrees == 0) return ar ? "⟳ تدوير" : "⟳ Rotate";
+        return "⟳ " + manualRotationDegrees + "°";
+    }
+
+    private String osdSpeedLabel(boolean ar) {
+        if (currentSpeedPercent == 100) return ar ? "⚡ السرعة" : "⚡ Speed";
+        return "⚡ " + ((currentSpeedPercent % 10 == 0)
+                ? String.format(java.util.Locale.US, "%.1f×", currentSpeedPercent / 100f)
+                : String.format(java.util.Locale.US, "%.2f×", currentSpeedPercent / 100f));
+    }
+
+    void refreshOsdLabels() {
+        boolean ar = CinemaUi.arabic(this);
+        if (osdRotateButton != null) osdRotateButton.setText(osdRotateLabel(ar));
+        if (osdSpeedButton != null) osdSpeedButton.setText(osdSpeedLabel(ar));
+        if (osdBar != null) {
+            for (CinemaPlaybackOption option : CinemaPlaybackOption.values()) {
+                TextView button = osdBar.findViewWithTag(option);
+                if (button != null) button.setText(getString(option.title) + " · " + option.state(this));
+            }
+        }
+    }
+
+    private void cycleManualRotationFromOsd() {
+        int next = (manualRotationDegrees + 90) % 360;
+        setManualRotation(next);
+        boolean ar = CinemaUi.arabic(this);
+        Toast.makeText(this,
+                (ar ? "تدوير الفيديو: " : "Video rotation: ") + manualRotationDegrees + "°",
+                Toast.LENGTH_SHORT).show();
+    }
+
+    void openSpeedMenuFromOsd() {
+        if (isFinishing() || isDestroyed()) return;
+        boolean ar = CinemaUi.arabic(this);
+        var sp = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this);
+        boolean remember = sp.getBoolean("pref_remember_video_speed", false);
+        int[] speeds = {50, 75, 100, 110, 125, 150, 175, 200};
+        String[] baseLabels = {"0.5×", "0.75×", "1.0×", "1.1×", "1.25×", "1.5×", "1.75×", "2.0×"};
+        String[] items = new String[speeds.length + 1];
+        for (int i = 0; i < speeds.length; i++) {
+            items[i] = (speeds[i] == currentSpeedPercent ? "✓  " : "    ") + baseLabels[i];
+        }
+        items[speeds.length] = (remember ? "✓  " : "○  ")
+                + (ar ? "حفظ كسرعة مفضلة دائماً" : "Save as Preferred Speed");
+        CinemaUi.dialog(this)
+                .setTitle(ar ? "سرعة التشغيل (0.5× – 2.0×)" : "Playback Speed (0.5× – 2.0×)")
+                .setItems(items, (d, which) -> {
+                    if (which == speeds.length) {
+                        boolean nextRem = !remember;
+                        CinemaLinkServer.savePreferredPlaybackSpeed(this, currentSpeedPercent, nextRem);
+                        Toast.makeText(this, nextRem
+                                ? (ar ? "تم حفظ السرعة المفضلة ✓" : "Preferred playback speed saved ✓")
+                                : (ar ? "تم إلغاء تثبيت السرعة المفضلة" : "Preferred speed cleared"),
+                                Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    int chosen = speeds[which];
+                    speed(chosen / 100f);
+                    if (sp.getBoolean("pref_remember_video_speed", false)) {
+                        CinemaLinkServer.savePreferredPlaybackSpeed(this, chosen, true);
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private TextView osdButton(String label, Runnable action) {
+        float d = getResources().getDisplayMetrics().density;
+        TextView btn = new TextView(this);
+        btn.setText(label);
+        btn.setTextSize(14);
+        btn.setTextColor(0xfff4f4f6);
+        btn.setPadding(Math.round(14 * d), Math.round(8 * d), Math.round(14 * d), Math.round(8 * d));
+        btn.setFocusable(true);
+        btn.setFocusableInTouchMode(true);
+        GradientDrawable focusBg = new GradientDrawable();
+        focusBg.setColor(0xff26272e);
+        focusBg.setCornerRadius(12 * d);
+        btn.setBackground(focusBg);
+        btn.setOnFocusChangeListener((v, has) -> {
+            GradientDrawable fd = new GradientDrawable();
+            fd.setColor(has ? 0xffe5b94c : 0xff26272e);
+            fd.setCornerRadius(12 * d);
+            btn.setBackground(fd);
+            btn.setTextColor(has ? 0xff141517 : 0xfff4f4f6);
+            if (has) scheduleHideOsd();
+        });
+        btn.setOnClickListener(v -> {
+            scheduleHideOsd();
+            action.run();
+            if (v.getTag() instanceof CinemaPlaybackOption) refreshOsdLabels();
+        });
+        var lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.setMarginStart(Math.round(4 * d));
+        lp.setMarginEnd(Math.round(4 * d));
+        btn.setLayoutParams(lp);
+        return btn;
+    }
+
+    private void showOsdAndFocus(int childIndex) {
+        if (osdBar == null) return;
+        refreshOsdLabels();
+        osdBar.setVisibility(View.VISIBLE);
+        osdBar.bringToFront();
+        if (childIndex >= 0 && childIndex < osdBar.getChildCount()) {
+            osdBar.getChildAt(childIndex).requestFocus();
+        }
+        scheduleHideOsd();
+    }
+
+    private void scheduleHideOsd() {
+        progressHandler.removeCallbacks(hideOsd);
+        progressHandler.postDelayed(hideOsd, 3500L);
+    }
+
+    private boolean dismissPlaybackOverlay() {
+        if (osdBar != null && osdBar.getVisibility() == View.VISIBLE) {
+            progressHandler.removeCallbacks(hideOsd);
+            hideOsd.run();
+            return true;
+        }
+        if (seekHud != null && seekHud.getVisibility() == View.VISIBLE) {
+            progressHandler.removeCallbacks(updateSeekHud);
+            seekHud.setVisibility(View.GONE);
+            return true;
+        }
+        return false;
+    }
+
+    @Override public void onBackPressed() {
+        if (isCatalogChannel()) {
+            finish();
+            return;
+        }
+        if (dismissPlaybackOverlay()) return;
+        if (hasPlaybackSession()) CinemaUi.confirmStopPlayback(this);
+        else super.onBackPressed();
+    }
+
+    private boolean consumedOverlayBack;
+
+    @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK && !isCatalogChannel()) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                consumedOverlayBack = dismissPlaybackOverlay();
+            }
+            if (consumedOverlayBack) {
+                if (event.getAction() == KeyEvent.ACTION_UP) consumedOverlayBack = false;
+                return true;
+            }
+        }
+        if (CinemaDpadSeek.isHorizontal(event.getKeyCode()) && seekFromRemote(event)) return true;
+        return super.dispatchKeyEvent(event);
+    }
+
+    @Override public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
+            toggle();
+            return true;
+        }
+        if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY) {
+            if (!playing()) toggle();
+            return true;
+        }
+        if (keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE) {
+            if (playing()) toggle();
+            return true;
+        }
+        if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_CAPTIONS) {
+            openSubtitleMenuFromRemote();
+            return true;
+        }
+        if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+            if (osdBar != null && osdBar.getVisibility() != View.VISIBLE) {
+                showOsdAndFocus(3); // Focus Subtitles button
+                return true;
+            }
+        }
+        if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)
+                && (osdBar == null || osdBar.getVisibility() != View.VISIBLE)) {
+            toggle();
+            showOsdAndFocus(1);
+            return true;
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    public void openSubtitleMenuFromRemote() {
+        if (isFinishing() || isDestroyed()) return;
+        runOnUiThread(this::showSubtitleMenuDialog);
+    }
+
+    private void showSubtitleMenuDialog() {
+        boolean ar = CinemaUi.arabic(this);
+        String streamTitle = getIntent() != null ? getIntent().getStringExtra("title") : null;
+        if (streamTitle == null || streamTitle.isBlank()) streamTitle = "Video";
+        final String titleFinal = streamTitle;
+
+        boolean hasSecondary = !secondaryCues.isEmpty();
+        var itemList = new java.util.ArrayList<String>();
+        var actionList = new java.util.ArrayList<Runnable>();
+        Uri data = getIntent() != null ? getIntent().getData() : null;
+
+        if (hasSecondary) {
+            String primMark = subDisplayMode == SUB_MODE_PRIMARY && subtitleVisible ? " ✓" : "";
+            String secMark = subDisplayMode == SUB_MODE_SECONDARY && subtitleVisible ? " ✓" : "";
+            itemList.add(CinemaUi.label(this, "الترجمة الأساسية فقط" + primMark, "Primary Subtitle Only" + primMark));
+            actionList.add(() -> setDualSubtitleMode(SUB_MODE_PRIMARY));
+
+            itemList.add(CinemaUi.label(this, "الترجمة الثانوية فقط" + secMark, "Secondary Subtitle Only" + secMark));
+            actionList.add(() -> setDualSubtitleMode(SUB_MODE_SECONDARY));
+
+            String dualPosLabel = switch (dualSubtitlePosition) {
+                case DUAL_POS_STACKED_BOTTOM -> CinemaUi.label(this, "موضع الترجمة المزدوجة: كلاهما بالأسفل ⬇ (تبديل)", "Dual position: Both at Bottom (Switch)");
+                case DUAL_POS_SPLIT_PRIMARY_TOP -> CinemaUi.label(this, "موضع الترجمة المزدوجة: الأساسية أعلى · الثانوية أسفل ⇅ (تبديل)", "Dual position: Primary Top / Secondary Bottom (Switch)");
+                default -> CinemaUi.label(this, "موضع الترجمة المزدوجة: الأساسية أسفل · الثانوية أعلى ⇅ (تبديل)", "Dual position: Primary Bottom / Secondary Top (Switch)");
+            };
+            itemList.add(dualPosLabel);
+            actionList.add(() -> {
+                dualSubtitlePosition = (dualSubtitlePosition + 1) % 3;
+                androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+                        .edit().putInt("pref_dual_sub_position", dualSubtitlePosition).apply();
+                applyDualSubtitleLayout();
+                applyAllSubtitleStyles();
+                updateExternalSubtitleNow();
+            });
+        }
+
+        itemList.add("Subsource · " + CinemaUi.label(this, "البحث عن الترجمة", "Subtitles"));
+        actionList.add(() -> {
+            Intent search = new Intent(this, SubsourceSearchActivity.class);
+            search.putExtra("title", titleFinal);
+            search.putExtra("video_id", -1L);
+            if (data != null) search.setData(data);
+            startActivityForResult(search, REQ_SUBSOURCE);
+        });
+
+        itemList.add(getText(com.archos.mediacenter.video.R.string.get_subtitles_online).toString());
+        actionList.add(() -> {
+            Intent online = new Intent(this, com.archos.mediacenter.video.utils.SubtitlesDownloaderActivity2.class);
+            if (data != null) online.putExtra(com.archos.mediacenter.video.utils.SubtitlesDownloaderActivity2.FILE_URL, data.toString());
+            online.putExtra(com.archos.mediacenter.video.utils.SubtitlesDownloaderActivity2.FILE_NAME, titleFinal);
+            startActivityForResult(online, REQ_ONLINE_SUB);
+        });
+
+        itemList.add(CinemaUi.label(this, "اختيار ترجمة من الهاتف 📱", "Select subtitles from Phone 📱"));
+        actionList.add(() -> {
+            boolean sent = CinemaLinkServer.requestPhoneSubtitle(titleFinal);
+            Toast.makeText(this, sent
+                    ? (ar ? "افتح هاتفك لاختيار ملف الترجمة (.srt/.vtt/.ass)" : "Check your Phone to select a subtitle file")
+                    : (ar ? "الهاتف غير متصل الآن" : "Phone controller not connected"),
+                    Toast.LENGTH_LONG).show();
+        });
+
+        itemList.add(CinemaUi.label(this, "اختيار ترجمة من تخزين الشاشة 📂", "Select subtitles on TV storage 📂"));
+        actionList.add(() -> {
+            Intent browser = new Intent(this, CinemaSubtitleBrowserActivity.class);
+            if (data != null) browser.setData(data);
+            startActivityForResult(browser, REQ_LOCAL_SUB);
+        });
+
+        itemList.add(CinemaUi.label(this, "إيقاف الترجمة", "Disable subtitles"));
+        actionList.add(this::clearSubtitles);
+
+        var prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this);
+        boolean dual = prefs.getBoolean(CinemaUi.DUAL_SUBS_ENABLED, hasSecondary && subDisplayMode == SUB_MODE_DUAL);
+        var dialog = CinemaUi.dialog(this)
+                .setTitle(CinemaUi.label(this, "خيارات الترجمة", "Subtitle options"))
+                .setAdapter(CinemaUi.subtitleRows(this, itemList.toArray(new String[0])),
+                        (d, which) -> actionList.get(which).run())
+                .setNeutralButton(dual ? CinemaUi.label(this, "مزدوجة: مفعّلة ✓", "Dual Subs: ON ✓")
+                                : CinemaUi.label(this, "تفعيل الترجمة المزدوجة", "Enable Dual Subs"),
+                        (d, which) -> {
+                            prefs.edit().putBoolean(CinemaUi.DUAL_SUBS_ENABLED, !dual).apply();
+                            setDualSubtitleMode(dual ? SUB_MODE_PRIMARY : SUB_MODE_DUAL);
+                        })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+        CinemaUi.widenSubtitleDialog(dialog.getWindow());
+    }
+
+    private boolean dualSubtitlesAllowed() {
+        return androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+                .getBoolean(CinemaUi.DUAL_SUBS_ENABLED, true);
+    }
+
+    private void setDualSubtitleMode(int mode) {
+        subDisplayMode = mode;
+        subtitleVisible = true;
+        externalSubtitlesEnabled = !externalCues.isEmpty() && mode != SUB_MODE_SECONDARY;
+        secondarySubtitlesEnabled = !secondaryCues.isEmpty() && mode != SUB_MODE_PRIMARY;
+        if (adaptivePlayer != null && externalCues.isEmpty()) {
+            // In case primary is an ExoPlayer HLS subtitle track
+            adaptivePlayer.setTrackSelectionParameters(adaptivePlayer.getTrackSelectionParameters()
+                    .buildUpon()
+                    .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, mode == SUB_MODE_SECONDARY)
+                    .build());
+        }
+        applyAllSubtitleStyles();
+        updateExternalSubtitleNow();
+        if (externalSubtitlesEnabled || secondarySubtitlesEnabled) {
+            progressHandler.removeCallbacks(subtitleTicker);
+            progressHandler.post(subtitleTicker);
+        }
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null) return;
+        if (requestCode != REQ_SUBSOURCE && requestCode != REQ_ONLINE_SUB && requestCode != REQ_LOCAL_SUB) return;
+        Uri subUri = data.getData();
+        progressIo.execute(() -> {
+            try (InputStream in = getContentResolver().openInputStream(subUri);
+                 ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                if (in == null) return;
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) != -1) {
+                    if (out.size() > 2 * 1024 * 1024) break;
+                    out.write(buf, 0, n);
+                }
+                byte[] clean = SubtitleStorage.utf8(out.toByteArray());
+                String name = subUri.getLastPathSegment() != null ? subUri.getLastPathSegment().toLowerCase(java.util.Locale.ROOT) : "";
+                String ext = name.endsWith(".vtt") ? "vtt" : (name.endsWith(".ass") || name.endsWith(".ssa")) ? "ass" : "srt";
+                runOnUiThread(() -> setSubtitle(ext, clean));
+            } catch (Exception error) {
+                android.util.Log.w("CinemaHls", "Could not load selected subtitle", error);
+            }
+        });
+    }
+
+    private void findArabicAddonSubtitles() {
+        var intent = getIntent();
+        if (!intent.getBooleanExtra("addon_subtitles", false)
+                || !android.text.TextUtils.isEmpty(intent.getStringExtra("subtitle_url"))) return;
+        String imdb = intent.getStringExtra("imdb_id");
+        if (imdb == null || imdb.isBlank()) return;
+        int season = intent.getIntExtra("season", 0);
+        int episode = intent.getIntExtra("episode", 0);
+        int revision = subtitleRevision;
+        new Thread(() -> {
+            var urls = com.meedx.providers.StremioAddons.arabicSubtitleUrls(getApplicationContext(), imdb, season, episode);
+            for (String url : urls) {
+                if (isDestroyed() || isFinishing()) return;
+                try {
+                    var subtitle = CinemaSubtitleCodec.downloadUnpackAndCache(this, url);
+                    if (parseExternalCues(subtitle.ext(), subtitle.utf8Bytes()).isEmpty()) continue;
+                    runOnUiThread(() -> {
+                        if (!isDestroyed() && !isFinishing() && revision == subtitleRevision) {
+                            setSubtitle(subtitle.ext(), subtitle.utf8Bytes());
+                        }
+                    });
+                    return;
+                } catch (Exception ignored) {}
+            }
+        }, "addon-arabic-subtitle").start();
+    }
+
+    private void loadRemoteSubtitleAsync(String subtitleUrl, boolean isSecondary) {
+        if (subtitleUrl == null || subtitleUrl.isBlank()) return;
+        progressIo.execute(() -> {
+            try {
+                var decoded = CinemaSubtitleCodec.downloadUnpackAndCache(this, subtitleUrl);
+                runOnUiThread(() -> {
+                    if (!isDestroyed() && !isFinishing()) {
+                        setSubtitle(decoded.ext(), decoded.utf8Bytes(), isSecondary);
+                    }
+                });
+            } catch (Exception e) {
+                android.util.Log.w("CinemaHls", "Could not load remote subtitle", e);
+            }
+        });
+    }
+
+    int getManualRotationDegrees() {
+        return manualRotationDegrees;
+    }
+
+    int getCurrentSpeedPercent() {
+        return currentSpeedPercent;
+    }
+
+    void setManualRotation(int degrees) {
+        int norm = normalizeRotationDegrees(degrees);
+        manualRotationDegrees = (norm == 90 || norm == 180 || norm == 270) ? norm : 0;
+        refreshOsdLabels();
+        if (manualRotationDegrees != 0) ensureTexturePresentation();
+        updateAdaptivePresentation();
+    }
+
+    private static boolean needsTexturePresentation(int width, int height, int rotation) {
+        return rotation != 0 || width > 0 && height > width;
+    }
+
+    private TextureView newVideoTexture() {
+        var texture = new TextureView(this);
+        texture.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            if ((r - l) != (or - ol) || (b - t) != (ob - ot)) {
+                applyTextureViewTransform(texture, lastUnappliedRotation, lastEffectiveWidth, lastEffectiveHeight);
+            }
+        });
+        return texture;
+    }
+
+    private void ensureTexturePresentation() {
+        if (!(adaptiveSurface instanceof SurfaceView surface) || aspectContainer == null) return;
+        var texture = newVideoTexture();
+        adaptiveSurface = texture;
+        if (adaptivePlayer != null) {
+            adaptivePlayer.clearVideoSurfaceView(surface);
+            adaptivePlayer.setVideoTextureView(texture);
+        }
+        aspectContainer.removeView(surface);
+        aspectContainer.addView(texture, 0, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
+        texture.setKeepScreenOn(getWindow().getDecorView().getKeepScreenOn());
+    }
+
+    private void updateAdaptivePresentation() {
+        int w = rawVideoWidth > 0 ? rawVideoWidth : (intentVideoWidth > 0 ? intentVideoWidth : 1920);
+        int h = rawVideoHeight > 0 ? rawVideoHeight : (intentVideoHeight > 0 ? intentVideoHeight : 1080);
+        float par = rawVideoPixelRatio > 0f ? rawVideoPixelRatio : 1.0f;
+        int containerRot = rawVideoRotation != 0 ? rawVideoRotation : intentVideoRotation;
+
+        float baseW;
+        float baseH;
+        if (rawUnappliedRotation == 90 || rawUnappliedRotation == 270) {
+            baseW = h;
+            baseH = w * par;
+        } else if ((containerRot == 90 || containerRot == 270) && w > h) {
+            // Buffer dimensions stayed landscape while MediaCodec/SurfaceFlinger rotates output to portrait.
+            baseW = h;
+            baseH = w * par;
+        } else {
+            baseW = w * par;
+            baseH = h;
+        }
+
+        float dispW = (manualRotationDegrees == 90 || manualRotationDegrees == 270) ? baseH : baseW;
+        float dispH = (manualRotationDegrees == 90 || manualRotationDegrees == 270) ? baseW : baseH;
+        if (dispW <= 0f || dispH <= 0f) return;
+
+        int transformRot = normalizeRotationDegrees(rawUnappliedRotation + manualRotationDegrees);
+        lastUnappliedRotation = transformRot;
+        lastEffectiveWidth = dispW;
+        lastEffectiveHeight = dispH;
+        applyVideoSurfacePresentation(dispW / dispH, transformRot, dispW, dispH);
+    }
+    private static int normalizeRotationDegrees(int degrees) {
+        int normalized = degrees % 360;
+        return normalized < 0 ? normalized + 360 : normalized;
+    }
+
+    private float computeDisplayAspectRatio(int width, int height, int rawRotation, float rawPixelRatio) {
+        if (width <= 0 || height <= 0) return 0f;
+        int rotation = normalizeRotationDegrees(rawRotation);
+        float pixelRatio = rawPixelRatio > 0f ? rawPixelRatio : 1.0f;
+        float parWidth = width * pixelRatio;
+        float effectiveWidth = (rotation == 90 || rotation == 270) ? height : parWidth;
+        float effectiveHeight = (rotation == 90 || rotation == 270) ? parWidth : height;
+        if (effectiveHeight <= 0f) return 0f;
+        lastUnappliedRotation = rotation;
+        lastEffectiveWidth = effectiveWidth;
+        lastEffectiveHeight = effectiveHeight;
+        return effectiveWidth / effectiveHeight;
+    }
+
+    private void applyVideoSurfacePresentation(float aspectRatio, int rotation, float effectiveWidth, float effectiveHeight) {
+        if (aspectContainer != null) {
+            aspectContainer.setResizeMode(androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT);
+            if (aspectRatio > 0f && Float.isFinite(aspectRatio)) {
+                aspectContainer.setAspectRatio(aspectRatio);
+            }
+        }
+        if (adaptiveSurface instanceof TextureView textureView) {
+            applyTextureViewTransform(textureView, rotation, effectiveWidth, effectiveHeight);
+        } else if (adaptiveSurface instanceof SurfaceView surfaceView) {
+            // MediaCodec + SurfaceFlinger handle buffer rotation on SurfaceView natively;
+            // keep View rotation at 0 so the SurfaceView bounds match RESIZE_MODE_FIT cleanly.
+            if (surfaceView.getRotation() != 0f) surfaceView.setRotation(0f);
+        }
+    }
+
+    private void applyTextureViewTransform(TextureView textureView, int rotation, float effectiveWidth, float effectiveHeight) {
+        if (textureView == null || effectiveWidth <= 0f || effectiveHeight <= 0f) return;
+        int vw = textureView.getWidth();
+        int vh = textureView.getHeight();
+        if (vw <= 0 || vh <= 0) return;
+        int normRot = normalizeRotationDegrees(rotation);
+        float cx = vw * 0.5f;
+        float cy = vh * 0.5f;
+        float targetAspect = effectiveWidth / effectiveHeight;
+        float viewAspect = (float) vw / (float) vh;
+        float targetW = viewAspect > targetAspect ? (vh * targetAspect) : vw;
+        float targetH = viewAspect > targetAspect ? vh : (vw / targetAspect);
+        Matrix matrix = new Matrix();
+        if (normRot != 0) {
+            matrix.postRotate(normRot, cx, cy);
+        }
+        float rotatedBaseW = (normRot == 90 || normRot == 270) ? vh : vw;
+        float rotatedBaseH = (normRot == 90 || normRot == 270) ? vw : vh;
+        float scaleX = rotatedBaseW > 0f ? (targetW / rotatedBaseW) : 1.0f;
+        float scaleY = rotatedBaseH > 0f ? (targetH / rotatedBaseH) : 1.0f;
+        matrix.postScale(scaleX, scaleY, cx, cy);
+        textureView.setTransform(matrix);
+    }
+
+    private void attachExternalSubtitleOverlay(FrameLayout root) {
+        int hPad = Math.round(24 * getResources().getDisplayMetrics().density);
+        topSubtitleStack = new LinearLayout(this);
+        topSubtitleStack.setOrientation(LinearLayout.VERTICAL);
+        topSubtitleStack.setGravity(Gravity.CENTER_HORIZONTAL);
+        topSubtitleStack.setPadding(hPad, 0, hPad, 0);
+        var topLp = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        topLp.topMargin = Math.round(24 * getResources().getDisplayMetrics().density);
+        root.addView(topSubtitleStack, topLp);
+
+        bottomSubtitleStack = new LinearLayout(this);
+        bottomSubtitleStack.setOrientation(LinearLayout.VERTICAL);
+        bottomSubtitleStack.setGravity(Gravity.CENTER_HORIZONTAL);
+        bottomSubtitleStack.setPadding(hPad, 0, hPad, 0);
+        var botLp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        botLp.bottomMargin = Math.round(subtitleBottomMarginDp * getResources().getDisplayMetrics().density);
+        root.addView(bottomSubtitleStack, botLp);
+
+        externalSubtitleView = new TextView(this);
+        externalSubtitleView.setGravity(Gravity.CENTER);
+        externalSubtitleView.setTextColor(subtitleColor);
+        externalSubtitleView.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        externalSubtitleView.setTextSize(subtitleSizeSp);
+        externalSubtitleView.setShadowLayer(6f, 0f, 0f, android.graphics.Color.BLACK);
+        externalSubtitleView.setVisibility(View.GONE);
+
+        secondarySubtitleView = new TextView(this);
+        secondarySubtitleView.setGravity(Gravity.CENTER);
+        secondarySubtitleView.setTextColor(0xfffef08a);
+        secondarySubtitleView.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        secondarySubtitleView.setTextSize(Math.max(14f, subtitleSizeSp - 2f));
+        secondarySubtitleView.setShadowLayer(6f, 0f, 0f, android.graphics.Color.BLACK);
+        secondarySubtitleView.setVisibility(View.GONE);
+
+        applyDualSubtitleLayout();
+    }
+
+    private void applyDualSubtitleLayout() {
+        if (topSubtitleStack == null || bottomSubtitleStack == null
+                || externalSubtitleView == null || secondarySubtitleView == null) {
+            return;
+        }
+        if (externalSubtitleView.getParent() instanceof ViewGroup vg) vg.removeView(externalSubtitleView);
+        if (secondarySubtitleView.getParent() instanceof ViewGroup vg) vg.removeView(secondarySubtitleView);
+        topSubtitleStack.removeAllViews();
+        bottomSubtitleStack.removeAllViews();
+
+        if (bottomSubtitleStack.getLayoutParams() instanceof FrameLayout.LayoutParams botLp) {
+            botLp.bottomMargin = Math.round(subtitleBottomMarginDp * getResources().getDisplayMetrics().density);
+            bottomSubtitleStack.setLayoutParams(botLp);
+        }
+        int gapPx = Math.round(8 * getResources().getDisplayMetrics().density);
+
+        if (dualSubtitlePosition == DUAL_POS_STACKED_BOTTOM) {
+            var secLp = new LinearLayout.LayoutParams(-2, -2);
+            secLp.bottomMargin = gapPx;
+            bottomSubtitleStack.addView(secondarySubtitleView, secLp);
+            bottomSubtitleStack.addView(externalSubtitleView, new LinearLayout.LayoutParams(-2, -2));
+        } else if (dualSubtitlePosition == DUAL_POS_SPLIT_PRIMARY_TOP) {
+            topSubtitleStack.addView(externalSubtitleView, new LinearLayout.LayoutParams(-2, -2));
+            bottomSubtitleStack.addView(secondarySubtitleView, new LinearLayout.LayoutParams(-2, -2));
+        } else {
+            topSubtitleStack.addView(secondarySubtitleView, new LinearLayout.LayoutParams(-2, -2));
+            bottomSubtitleStack.addView(externalSubtitleView, new LinearLayout.LayoutParams(-2, -2));
+        }
+    }
+
+    boolean matchesCastId(String castId) {
+        return currentCastId == null || currentCastId.isEmpty() || currentCastId.equals(castId);
+    }
+
+    void clearSubtitlesFromRemote() {
+        clearSubtitles();
+    }
+
+    private androidx.media3.common.MediaItem buildAdaptiveMediaItem(String subtitleUriString) {
+        var item = new androidx.media3.common.MediaItem.Builder().setUri(localTorrent == null ? getIntent().getData() : localTorrent.playbackUri());
+        if ("dash".equals(currentFormat)) item.setMimeType(androidx.media3.common.MimeTypes.APPLICATION_MPD);
+        if ("hls".equals(currentFormat)) item.setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8);
+        if (subtitleUriString != null && !subtitleUriString.isEmpty()) {
+            String explicitMime = getIntent().getStringExtra("subtitle_mime");
+            String explicitLang = getIntent().getStringExtra("subtitle_language");
+            String lowerSub = subtitleUriString.toLowerCase(java.util.Locale.ROOT);
+            String subMime;
+            if (explicitMime != null && !explicitMime.isBlank()) {
+                String m = explicitMime.split(";")[0].trim().toLowerCase(java.util.Locale.ROOT);
+                subMime = switch (m) {
+                    case "application/x-subrip", "text/srt" -> androidx.media3.common.MimeTypes.APPLICATION_SUBRIP;
+                    case "text/x-ssa", "text/x-ass" -> androidx.media3.common.MimeTypes.TEXT_SSA;
+                    case "application/vnd.apple.mpegurl", "application/x-mpegurl" -> androidx.media3.common.MimeTypes.APPLICATION_M3U8;
+                    default -> m;
+                };
+            } else {
+                subMime = lowerSub.contains(".srt") ? androidx.media3.common.MimeTypes.APPLICATION_SUBRIP
+                        : (lowerSub.contains(".ass") || lowerSub.contains(".ssa")) ? androidx.media3.common.MimeTypes.TEXT_SSA
+                        : androidx.media3.common.MimeTypes.TEXT_VTT;
+            }
+            String subLang = (explicitLang != null && !explicitLang.isBlank()) ? explicitLang.trim() : "ar";
+            var subCfg = new androidx.media3.common.MediaItem.SubtitleConfiguration.Builder(Uri.parse(subtitleUriString))
+                    .setMimeType(subMime)
+                    .setLanguage(subLang)
+                    .setSelectionFlags(androidx.media3.common.C.SELECTION_FLAG_DEFAULT)
+                    .build();
+            item.setSubtitleConfigurations(List.of(subCfg));
+        }
+        return item.build();
+    }
+
+    private View torrentLoadingOverlay(FrameLayout root) {
+        var loading = new android.widget.LinearLayout(this);
+        loading.setOrientation(android.widget.LinearLayout.VERTICAL);
+        loading.setGravity(Gravity.CENTER);
+        loading.setBackgroundColor(0xff171717);
+        var spinner = new android.widget.ProgressBar(this);
+        spinner.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(0xffe5a93b));
+        int size = CinemaUi.dp(this, 32);
+        loading.addView(spinner, new android.widget.LinearLayout.LayoutParams(size, size));
+        var label = CinemaUi.text(this, 17, true);
+        label.setText(com.archos.mediacenter.video.R.string.addon_torrent_prepare);
+        label.setPadding(0, CinemaUi.dp(this, 12), 0, 0);
+        loading.addView(label);
+        root.addView(loading, new FrameLayout.LayoutParams(-1, -1));
+        return loading;
+    }
+
+    private void startAdaptive(FrameLayout root, String format, String audio) {
+        aspectContainer = new androidx.media3.ui.AspectRatioFrameLayout(this);
+        aspectContainer.setResizeMode(androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT);
+        root.addView(aspectContainer, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER));
+        boolean useTextureView = manualRotationDegrees != 0
+                || getIntent().getBooleanExtra("use_texture_view", false)
+                || needsTexturePresentation(getIntent().getIntExtra("video_width", 0),
+                    getIntent().getIntExtra("video_height", 0), normalizeRotationDegrees(getIntent().getIntExtra("video_rotation", 0)));
+        adaptiveSurface = useTextureView ? newVideoTexture() : new SurfaceView(this);
+        aspectContainer.addView(adaptiveSurface, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
+        exoSubtitles = new TextView(this);
+        exoSubtitles.setGravity(Gravity.CENTER);
+        exoSubtitles.setTextColor(android.graphics.Color.WHITE);
+        exoSubtitles.setTextSize(20);
+        exoSubtitles.setShadowLayer(4, 1, 2, android.graphics.Color.BLACK);
+        var subLp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
+        subLp.bottomMargin = Math.round(32 * getResources().getDisplayMetrics().density);
+        root.addView(exoSubtitles, subLp);
+        attachExternalSubtitleOverlay(root);
+        attachOsdBar(root);
+        View torrentLoading = localTorrent == null ? null : torrentLoadingOverlay(root);
+        if (isCatalogChannel()) {
+            liveChannelStatus = CinemaUi.text(this, 18, true);
+            liveChannelStatus.setText(R.string.addon_live_connecting);
+            liveChannelStatus.setTextColor(0xffe5a93b);
+            liveChannelStatus.setGravity(Gravity.CENTER);
+            liveChannelStatus.setPadding(CinemaUi.dp(this, 20), CinemaUi.dp(this, 12),
+                    CinemaUi.dp(this, 20), CinemaUi.dp(this, 12));
+            liveChannelStatus.setBackground(CinemaUi.rounded(0xff171717, CinemaUi.dp(this, 12), 0xff54432c));
+            root.addView(liveChannelStatus, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+        }
+        setContentView(root);
+        intentVideoWidth = getIntent().getIntExtra("video_width", 0);
+        intentVideoHeight = getIntent().getIntExtra("video_height", 0);
+        intentVideoRotation = normalizeRotationDegrees(getIntent().getIntExtra("video_rotation", 0));
+        if (intentVideoWidth > 0 && intentVideoHeight > 0) {
+            rawVideoWidth = intentVideoWidth;
+            rawVideoHeight = intentVideoHeight;
+            rawVideoRotation = intentVideoRotation;
+            rawUnappliedRotation = 0;
+            updateAdaptivePresentation();
+        }
+        var mediaSourceFactory = new androidx.media3.exoplayer.source.DefaultMediaSourceFactory(this)
+                .setLoadErrorHandlingPolicy(new androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy(localTorrent == null ? 5 : 1));
+        if (localTorrent != null) mediaSourceFactory.setDataSourceFactory(
+                new androidx.media3.datasource.DefaultHttpDataSource.Factory().setReadTimeoutMs(65_000));
+        if (isCatalogChannel()) {
+            var factory = new androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                    .setConnectTimeoutMs(6500).setReadTimeoutMs(9500);
+            String agent = getIntent().getStringExtra(CHANNEL_USER_AGENT);
+            factory.setUserAgent(agent == null || agent.isBlank()
+                    ? androidx.media3.common.util.Util.getUserAgent(this, "Local Cinema") : agent);
+            String referer = getIntent().getStringExtra(CHANNEL_REFERER);
+            if (referer != null && !referer.isBlank()) {
+                factory.setDefaultRequestProperties(java.util.Map.of("Referer", referer));
+            }
+            mediaSourceFactory.setDataSourceFactory(factory).setLoadErrorHandlingPolicy(
+                    new androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy(1));
+        }
+        var loadControl = new androidx.media3.exoplayer.DefaultLoadControl.Builder();
+        if (isCatalogChannel()) {
+            loadControl.setBufferDurationsMs(4500, 20_000, 1000, 2000);
+        } else if (localTorrent == null) {
+            loadControl.setBufferDurationsMs(15_000, 50_000, 2500, 5000)
+                    .setPrioritizeTimeOverSizeThresholds(true);
+        } else {
+            loadControl.setBufferDurationsMs(6000, 20_000, 700, 1500)
+                    .setTargetBufferBytes(8 * 1024 * 1024);
+        }
+        var builder = new androidx.media3.exoplayer.ExoPlayer.Builder(this)
+                .setMediaSourceFactory(mediaSourceFactory)
+                .setLoadControl(loadControl.build());
+        adaptivePlayer = builder.build();
+        boolean checkAddonAudio = localTorrent != null || getIntent().getBooleanExtra("addon_subtitles", false);
+        String[] preferredAudio = checkAddonAudio ? CinemaPreferredAudio.languages(this) : new String[0];
+        if (checkAddonAudio) adaptivePlayer.setTrackSelectionParameters(adaptivePlayer.getTrackSelectionParameters()
+                .buildUpon().setPreferredAudioLanguages(preferredAudio).build());
+        adaptivePlayer.setAudioAttributes(new androidx.media3.common.AudioAttributes.Builder()
+                .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
+                .build(), true);
+        adaptivePlayer.setHandleAudioBecomingNoisy(true);
+        adaptivePlayer.setVideoScalingMode(androidx.media3.common.C.VIDEO_SCALING_MODE_SCALE_TO_FIT);
+        int height = getIntent().getIntExtra("height", 0);
+        if (height > 0) adaptivePlayer.setTrackSelectionParameters(adaptivePlayer.getTrackSelectionParameters()
+                .buildUpon().setMaxVideoSize(Integer.MAX_VALUE, height).build());
+        if (adaptiveSurface instanceof TextureView textureView) {
+            adaptivePlayer.setVideoTextureView(textureView);
+        } else if (adaptiveSurface instanceof SurfaceView surfaceView) {
+            adaptivePlayer.setVideoSurfaceView(surfaceView);
+        }
+
+        String subUrl = getIntent().getStringExtra("subtitle_url");
+        String sub2Url = getIntent().getStringExtra("secondary_subtitle_url");
+        boolean subIsHlsPlaylist = subUrl != null && subUrl.toLowerCase(java.util.Locale.ROOT).contains(".m3u8");
+        var mediaItem = buildAdaptiveMediaItem(subIsHlsPlaylist ? subUrl : null);
+        if (audio == null || audio.isEmpty()) {
+            adaptivePlayer.setMediaItem(mediaItem);
+        } else {
+            adaptivePlayer.setMediaSource(new androidx.media3.exoplayer.source.MergingMediaSource(
+                    mediaSourceFactory.createMediaSource(mediaItem),
+                    mediaSourceFactory.createMediaSource(androidx.media3.common.MediaItem.fromUri(audio))));
+        }
+        if (subUrl != null && !subUrl.isBlank() && !subIsHlsPlaylist) {
+            loadRemoteSubtitleAsync(subUrl, false);
+        }
+        if (sub2Url != null && !sub2Url.isBlank()) {
+            loadRemoteSubtitleAsync(sub2Url, true);
+        }
+        adaptivePlayer.addListener(new androidx.media3.common.Player.Listener() {
+            @Override public void onCues(androidx.media3.common.text.CueGroup cueGroup) {
+                if (externalSubtitlesEnabled) {
+                    exoSubtitles.setText(null);
+                    return;
+                }
+                if (cueGroup == null || cueGroup.cues.isEmpty()) {
+                    exoSubtitles.setText(null);
+                    return;
+                }
+                StringBuilder sb = new StringBuilder();
+                for (var cue : cueGroup.cues) {
+                    String text = CinemaSubtitleText.displayText(cue.text);
+                    if (!text.isBlank()) {
+                        if (playbackFilters != null) playbackFilters.observeSubtitle(text, -1, -1);
+                        if (sb.length() > 0) sb.append('\n');
+                        sb.append(text);
+                    }
+                }
+                exoSubtitles.setText(sb.length() > 0 ? sb.toString() : null);
+            }
+
+            @Override public void onMetadata(androidx.media3.common.Metadata metadata) {
+                if (playbackFilters != null) playbackFilters.addChapterMetadata(metadata);
+            }
+
+            @Override public void onRenderedFirstFrame() {
+                if (liveChannelStatus != null) {
+                    liveChannelStatus.setVisibility(View.GONE);
+                    adaptiveRetryCount = 0;
+                    progressHandler.removeCallbacks(channelWatchdog);
+                }
+                if (!addonFrameRendered || addonPlaybackFailed) {
+                    addonFrameRendered = true;
+                    addonPlaybackFailed = false;
+                    resetAddonPlaybackSample(position());
+                }
+                if (torrentLoading != null) torrentLoading.setVisibility(View.GONE);
+            }
+
+            @Override public void onTracksChanged(androidx.media3.common.Tracks tracks) {
+                loadChapterMetadata(tracks);
+            }
+
+            @Override public void onVideoSizeChanged(androidx.media3.common.VideoSize videoSize) {
+                if (videoSize == null || videoSize.width <= 0 || videoSize.height <= 0) return;
+                rawVideoWidth = videoSize.width;
+                rawVideoHeight = videoSize.height;
+                rawUnappliedRotation = normalizeRotationDegrees(videoSize.unappliedRotationDegrees);
+                rawVideoPixelRatio = videoSize.pixelWidthHeightRatio > 0f ? videoSize.pixelWidthHeightRatio : 1.0f;
+                androidx.media3.common.Format fmt = adaptivePlayer != null ? adaptivePlayer.getVideoFormat() : null;
+                int containerRot = fmt != null ? normalizeRotationDegrees(fmt.rotationDegrees) : 0;
+                rawVideoRotation = containerRot != 0 ? containerRot : intentVideoRotation;
+                if (needsTexturePresentation(videoSize.width, videoSize.height, rawVideoRotation)) {
+                    ensureTexturePresentation();
+                }
+                updateAdaptivePresentation();
+            }
+
+            @Override public void onPositionDiscontinuity(
+                    androidx.media3.common.Player.PositionInfo oldPosition,
+                    androidx.media3.common.Player.PositionInfo newPosition,
+                    int reason) {
+                CinemaLinkServer.playbackChanged();
+                resetAddonPlaybackSample(newPosition.positionMs);
+                if (reason == androidx.media3.common.Player.DISCONTINUITY_REASON_SEEK) {
+                    if (initialResumeSeekInFlight) {
+                        initialResumeSeekInFlight = false;
+                        return;
+                    }
+                    long dur = duration();
+                    if (dur > 0 && newPosition.positionMs >= 0 && newPosition.positionMs * 100L < dur * 85L) {
+                        userSoughtBelowThreshold = true;
+                    }
+                    saveStreamProgressAtAsync(newPosition.positionMs, false);
+                }
+            }
+
+            @Override public void onEvents(androidx.media3.common.Player player, androidx.media3.common.Player.Events events) {
+                updatePlaybackScreen(player);
+            }
+
+            @Override public void onIsPlayingChanged(boolean isPlaying) {
+                if (isPlaying) {
+                    playbackStarted = true;
+                    if (torrentLoading != null && adaptivePlayer.getVideoFormat() == null) {
+                        torrentLoading.setVisibility(View.GONE);
+                    }
+                }
+                CinemaLinkServer.playbackChanged();
+                int state = isPlaying ? PlaybackStateCompat.STATE_PLAYING
+                        : (adaptivePlayer.getPlaybackState() == androidx.media3.common.Player.STATE_ENDED
+                                ? PlaybackStateCompat.STATE_STOPPED
+                                : (adaptivePlayer.getPlaybackState() == androidx.media3.common.Player.STATE_IDLE
+                                        ? PlaybackStateCompat.STATE_NONE : PlaybackStateCompat.STATE_PAUSED));
+                updateMediaSessionState(state);
+                if (isPlaying) {
+                    applyInitialResumeIfNeeded();
+                    progressHandler.removeCallbacks(periodicProgressSave);
+                    progressHandler.postDelayed(periodicProgressSave, PERIODIC_SAVE_INTERVAL_MS);
+                    if (externalSubtitlesEnabled || secondarySubtitlesEnabled) {
+                        progressHandler.removeCallbacks(subtitleTicker);
+                        progressHandler.post(subtitleTicker);
+                    }
+                } else {
+                    progressHandler.removeCallbacks(periodicProgressSave);
+                    saveStreamProgressAsync(adaptivePlayer.getPlaybackState() == androidx.media3.common.Player.STATE_ENDED);
+                }
+            }
+
+            private boolean audioChecked;
+
+            @Override public void onPlaybackStateChanged(int playbackState) {
+                CinemaLinkServer.playbackChanged();
+                if (liveChannelStatus != null && playbackState == androidx.media3.common.Player.STATE_BUFFERING) {
+                    liveChannelStatus.setVisibility(View.VISIBLE);
+                    liveChannelStatus.setText(addonFrameRendered ? R.string.addon_live_reconnecting : R.string.addon_live_connecting);
+                    progressHandler.removeCallbacks(channelWatchdog);
+                    progressHandler.postDelayed(channelWatchdog, 18_000L);
+                }
+                if (playbackState == androidx.media3.common.Player.STATE_READY) {
+                    if (liveChannelStatus != null && addonFrameRendered) {
+                        progressHandler.removeCallbacks(channelWatchdog);
+                        liveChannelStatus.setVisibility(View.GONE);
+                    }
+                    if (checkAddonAudio && !audioChecked) {
+                        audioChecked = true;
+                        if (CinemaPreferredAudio.knownUnavailable(adaptivePlayer.getCurrentTracks(), preferredAudio)) {
+                            var warning = CinemaUi.dialog(CinemaHlsActivity.this)
+                                    .setTitle(R.string.addon_preferred_audio)
+                                    .setMessage(getString(R.string.addon_preferred_audio_missing,
+                                            CinemaPreferredAudio.label(CinemaHlsActivity.this)))
+                                    .setPositiveButton(R.string.addon_continue_playback, (dialog, which) -> {
+                                        if (adaptivePlayer != null) adaptivePlayer.play();
+                                    }).setNegativeButton(R.string.addon_back, (dialog, which) -> finish())
+                                    .setOnCancelListener(dialog -> finish());
+                            CinemaUi.showDialogWithButtonFocus(warning, android.content.DialogInterface.BUTTON_POSITIVE);
+                        } else {
+                            adaptivePlayer.play();
+                        }
+                    }
+                    if (liveChannelStatus == null || addonFrameRendered) adaptiveRetryCount = 0;
+                    if (pendingRetryRunnable != null) {
+                        progressHandler.removeCallbacks(pendingRetryRunnable);
+                        pendingRetryRunnable = null;
+                    }
+                    if (!initialLiveSeekApplied && (isLiveCast() || adaptivePlayer.isCurrentMediaItemLive())) {
+                        initialLiveSeekApplied = true;
+                        if (adaptivePlayer.isCurrentMediaItemLive()) {
+                            adaptivePlayer.seekToDefaultPosition();
+                        }
+                    } else {
+                        applyInitialResumeIfNeeded();
+                    }
+                } else if (playbackState == androidx.media3.common.Player.STATE_ENDED
+                        || playbackState == androidx.media3.common.Player.STATE_IDLE) {
+                    keepScreenOn(false);
+                    updateMediaSessionState(playbackState == androidx.media3.common.Player.STATE_IDLE
+                            ? PlaybackStateCompat.STATE_NONE : PlaybackStateCompat.STATE_STOPPED);
+                    if (playbackState == androidx.media3.common.Player.STATE_ENDED) {
+                        saveStreamProgressAsync(true);
+                    }
+                }
+            }
+
+            @Override public void onPlayerError(androidx.media3.common.PlaybackException error) {
+                addonPlaybackFailed = true;
+                if (localTorrent != null) {
+                    Toast.makeText(CinemaHlsActivity.this, CinemaTorrentStream.errorMessage(error), Toast.LENGTH_LONG).show();
+                    finish();
+                    return;
+                }
+                handleAdaptiveError(error);
+            }
+        });
+        adaptivePlayer.prepare();
+        if (currentSpeedPercent != 100) {
+            adaptivePlayer.setPlaybackSpeed(currentSpeedPercent / 100f);
+        }
+        if (!checkAddonAudio) adaptivePlayer.play();
+    }
+
+    private static boolean isBehindLiveWindow(androidx.media3.common.PlaybackException error) {
+        if (error == null) return false;
+        if (error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) return true;
+        Throwable cause = error.getCause();
+        while (cause != null) {
+            if (cause instanceof androidx.media3.exoplayer.source.BehindLiveWindowException) return true;
+            cause = cause.getCause();
+        }
+        return false;
+    }
+
+    private void handleAdaptiveError(androidx.media3.common.PlaybackException error) {
+        if (adaptivePlayer == null || isDestroyed() || isFinishing()) return;
+        if (liveChannelStatus != null) {
+            progressHandler.removeCallbacks(channelWatchdog);
+            liveChannelStatus.setText(R.string.addon_live_reconnecting);
+            liveChannelStatus.setVisibility(View.VISIBLE);
+        }
+        String errName = error != null ? error.getErrorCodeName() : "UNKNOWN";
+        if (isBehindLiveWindow(error)) {
+            android.util.Log.w("CinemaWebPlayer", "Behind live window, recovering to live edge");
+            adaptiveRetryCount = 0;
+            adaptivePlayer.seekToDefaultPosition();
+            adaptivePlayer.prepare();
+            adaptivePlayer.play();
+            return;
+        }
+        if (adaptiveRetryCount < (isCatalogChannel() ? 2 : MAX_ADAPTIVE_RETRIES)) {
+            long delayMs = Math.min(8000L, 1000L * (1L << adaptiveRetryCount));
+            adaptiveRetryCount++;
+            android.util.Log.w("CinemaWebPlayer", "Playback error " + errName
+                    + ", retry " + adaptiveRetryCount + "/" + MAX_ADAPTIVE_RETRIES + " in " + delayMs + "ms");
+            if (adaptiveRetryCount == 1 && !isCatalogChannel()) {
+                Toast.makeText(this, "جاري استعادة البث...", Toast.LENGTH_SHORT).show();
+            }
+            if (pendingRetryRunnable != null) progressHandler.removeCallbacks(pendingRetryRunnable);
+            pendingRetryRunnable = () -> {
+                pendingRetryRunnable = null;
+                if (adaptivePlayer == null || isDestroyed() || isFinishing()) return;
+                if (adaptivePlayer.isCurrentMediaItemLive() || isLiveCast()) adaptivePlayer.seekToDefaultPosition();
+                if (liveChannelStatus != null) {
+                    adaptivePlayer.stop();
+                    addonFrameRendered = false;
+                }
+                adaptivePlayer.prepare();
+                adaptivePlayer.play();
+            };
+            progressHandler.postDelayed(pendingRetryRunnable, delayMs);
+            return;
+        }
+        android.util.Log.w("CinemaWebPlayer", "Playback failed after retries: " + errName);
+        keepScreenOn(false);
+        updateMediaSessionState(PlaybackStateCompat.STATE_STOPPED);
+        if (isCatalogChannel()) Toast.makeText(this, R.string.addon_live_source_failed, Toast.LENGTH_LONG).show();
+        else Toast.makeText(this, "تعذّر تشغيل البث حالياً", Toast.LENGTH_SHORT).show();
+        finish();
+    }
+
+    boolean live() { return adaptivePlayer != null && adaptivePlayer.isCurrentMediaItemLive(); }
+
+    void goLive() {
+        if (live()) adaptivePlayer.seekToDefaultPosition();
+    }
+
+    boolean playing() {
+        if (adaptivePlayer != null) return adaptivePlayer.isPlaying();
+        return video != null && video.isPlaying();
+    }
+
+    boolean hasPlaybackSession() {
+        if (isFinishing()) return false;
+        if (adaptivePlayer != null) {
+            int state = adaptivePlayer.getPlaybackState();
+            return state == androidx.media3.common.Player.STATE_BUFFERING
+                    || state == androidx.media3.common.Player.STATE_READY;
+        }
+        return video != null && (playing() || duration() > 0 && position() < duration());
+    }
+
+    int position() {
+        if (adaptivePlayer != null) return (int) Math.min(Integer.MAX_VALUE, Math.max(0L, adaptivePlayer.getCurrentPosition()));
+        if (video != null) return Math.max(0, video.getCurrentPosition());
+        return 0;
+    }
+
+    int duration() {
+        if (adaptivePlayer != null) return (int) Math.max(0L, Math.min(Integer.MAX_VALUE, adaptivePlayer.getDuration()));
+        if (video != null) return Math.max(0, video.getDuration());
+        return 0;
+    }
+
+    void seek(int position) {
+        seekInternal(position, true);
+    }
+
+    private void seekInternal(int position, boolean userInitiated) {
+        int clamped = Math.max(0, position);
+        long dur = duration();
+        if (userInitiated && dur > 0 && (long) clamped * 100L < dur * 85L) {
+            userSoughtBelowThreshold = true;
+        }
+        if (adaptivePlayer != null) adaptivePlayer.seekTo(clamped);
+        else if (video != null) video.seekTo(clamped);
+        CinemaLinkServer.playbackChanged();
+        if (userInitiated && dur > 0) {
+            saveStreamProgressAtAsync((long) clamped, false);
+        }
+    }
+
+    void toggle() {
+        if (adaptivePlayer != null) {
+            adaptivePlayer.setPlayWhenReady(!adaptivePlayer.getPlayWhenReady());
+            return;
+        }
+        if (video == null) return;
+        CinemaLinkServer.playbackChanged();
+        if (playing()) {
+            video.pause();
+            keepScreenOn(false);
+            updateMediaSessionState(PlaybackStateCompat.STATE_PAUSED);
+            abandonVideoAudioFocus();
+            saveStreamProgressAsync(false);
+        } else {
+            requestVideoAudioFocus();
+            video.start();
+            keepScreenOn(true);
+            updateMediaSessionState(PlaybackStateCompat.STATE_PLAYING);
+        }
+    }
+
+    void speed(float speed) {
+        currentSpeedPercent = Math.max(50, Math.min(200, Math.round(speed * 100f)));
+        refreshOsdLabels();
+        if (adaptivePlayer != null) {
+            adaptivePlayer.setPlaybackSpeed(speed);
+            return;
+        }
+        if (player == null || video == null) return;
+        boolean wasPlaying = playing();
+        try {
+            player.setPlaybackParams(player.getPlaybackParams().setSpeed(speed));
+            if (!wasPlaying) video.pause();
+        } catch (IllegalArgumentException | IllegalStateException error) {
+            android.util.Log.w("CinemaHls", "Could not change playback speed", error);
+        }
+    }
+
+    private void clearSubtitles() {
+        subtitleRevision++;
+        lastSubtitleBytes = null;
+        lastSubtitleExt = null;
+        subtitleDelayMs = 0L;
+        externalSubtitlesEnabled = false;
+        secondarySubtitlesEnabled = false;
+        externalCues = java.util.Collections.emptyList();
+        secondaryCues = java.util.Collections.emptyList();
+        progressHandler.removeCallbacks(subtitleTicker);
+        if (externalSubtitleView != null) {
+            externalSubtitleView.setText(null);
+            externalSubtitleView.setVisibility(View.GONE);
+        }
+        if (secondarySubtitleView != null) {
+            secondarySubtitleView.setText(null);
+            secondarySubtitleView.setVisibility(View.GONE);
+        }
+        if (exoSubtitles != null) {
+            exoSubtitles.setText(null);
+            exoSubtitles.setVisibility(subtitleVisible ? View.VISIBLE : View.GONE);
+        }
+        if (videoViewSubtitles != null) {
+            videoViewSubtitles.setText(null);
+            videoViewSubtitles.setVisibility(subtitleVisible ? View.VISIBLE : View.GONE);
+        }
+        if (adaptivePlayer != null) {
+            // Disable embedded/intent text track without calling setMediaItem/prepare
+            adaptivePlayer.setTrackSelectionParameters(adaptivePlayer.getTrackSelectionParameters()
+                    .buildUpon()
+                    .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, true)
+                    .build());
+        } else if (player != null && subtitleTrack >= 0) {
+            try { player.deselectTrack(subtitleTrack); } catch (Exception ignored) {}
+            subtitleTrack = -1;
+        }
+    }
+
+    private void applyAllSubtitleStyles() {
+        if (bottomSubtitleStack != null && bottomSubtitleStack.getLayoutParams() instanceof FrameLayout.LayoutParams botLp) {
+            botLp.bottomMargin = Math.round(subtitleBottomMarginDp * getResources().getDisplayMetrics().density);
+            bottomSubtitleStack.setLayoutParams(botLp);
+        }
+        applySubtitleViewStyle(exoSubtitles);
+        applySubtitleViewStyle(videoViewSubtitles);
+        applySubtitleViewStyle(externalSubtitleView);
+        applySecondarySubtitleViewStyle();
+    }
+
+    void updateCastTitle(String newTitle) {
+        if (newTitle == null || newTitle.isBlank()) return;
+        if (getIntent() != null) getIntent().putExtra("title", newTitle);
+        if (mediaSession != null) {
+            mediaSession.setMetadata(new MediaMetadataCompat.Builder()
+                    .putString(MediaMetadataCompat.METADATA_KEY_TITLE, newTitle)
+                    .build());
+        }
+    }
+
+    org.json.JSONArray getSubtitleTracksJson() {
+        var arr = new org.json.JSONArray();
+        if (adaptivePlayer == null) return arr;
+        try {
+            var groups = adaptivePlayer.getCurrentTracks().getGroups();
+            int idx = 0;
+            for (var group : groups) {
+                if (group.getType() != androidx.media3.common.C.TRACK_TYPE_TEXT) continue;
+                for (int i = 0; i < group.length; i++) {
+                    var fmt = group.getTrackFormat(i);
+                    String label = fmt.label != null ? fmt.label : (fmt.language != null ? fmt.language : "Track " + (idx + 1));
+                    arr.put(new org.json.JSONObject()
+                            .put("index", idx)
+                            .put("label", label)
+                            .put("language", fmt.language != null ? fmt.language : "")
+                            .put("selected", group.isTrackSelected(i)));
+                    idx++;
+                }
+            }
+        } catch (Exception ignored) {}
+        return arr;
+    }
+
+    void selectEmbeddedSubtitleTrack(int targetIndex) {
+        subtitleRevision++;
+        if (adaptivePlayer == null) return;
+        try {
+            if (targetIndex < 0) {
+                adaptivePlayer.setTrackSelectionParameters(adaptivePlayer.getTrackSelectionParameters()
+                        .buildUpon().setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, true).build());
+                if (osdBar != null && osdBar.getVisibility() == View.VISIBLE) scheduleHideOsd();
+                return;
+            }
+            var groups = adaptivePlayer.getCurrentTracks().getGroups();
+            int idx = 0;
+            for (var group : groups) {
+                if (group.getType() != androidx.media3.common.C.TRACK_TYPE_TEXT) continue;
+                for (int i = 0; i < group.length; i++) {
+                    if (idx == targetIndex) {
+                        externalSubtitlesEnabled = false;
+                        if (externalSubtitleView != null) externalSubtitleView.setVisibility(View.GONE);
+                        subtitleVisible = true;
+                        adaptivePlayer.setTrackSelectionParameters(adaptivePlayer.getTrackSelectionParameters()
+                                .buildUpon()
+                                .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, false)
+                                .setOverrideForType(new androidx.media3.common.TrackSelectionOverride(
+                                        group.getMediaTrackGroup(), java.util.List.of(i)))
+                                .build());
+                        applyAllSubtitleStyles();
+                        if (osdBar != null && osdBar.getVisibility() == View.VISIBLE) scheduleHideOsd();
+                        return;
+                    }
+                    idx++;
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    void selectSecondaryEmbeddedSubtitleTrack(int targetIndex) {
+        if (targetIndex < 0) {
+            secondarySubtitlesEnabled = false;
+            secondaryCues = java.util.Collections.emptyList();
+            if (secondarySubtitleView != null) {
+                secondarySubtitleView.setText(null);
+                secondarySubtitleView.setVisibility(View.GONE);
+            }
+            if (osdBar != null && osdBar.getVisibility() == View.VISIBLE) scheduleHideOsd();
+            return;
+        }
+        if (externalSubtitlesEnabled && !externalCues.isEmpty()) {
+            secondaryCues = new java.util.ArrayList<>(externalCues);
+            secondarySubtitlesEnabled = dualSubtitlesAllowed();
+            subDisplayMode = secondarySubtitlesEnabled ? SUB_MODE_DUAL : SUB_MODE_PRIMARY;
+            selectEmbeddedSubtitleTrack(targetIndex);
+            applyAllSubtitleStyles();
+            updateExternalSubtitleNow();
+            return;
+        }
+        Toast.makeText(this,
+                CinemaUi.label(this,
+                        "اختر ترجمة خارجية كأساسية لدمج المدمجة كترجمة مزدوجة",
+                        "Select an external/stream subtitle as Primary to pair an embedded Dual track"),
+                Toast.LENGTH_LONG).show();
+    }
+
+    void applyPhoneSubtitleStyle(String action, int value) {
+        if (action == null) return;
+        switch (action) {
+            case "color" -> subtitleColor = value;
+            case "size" -> subtitleSizeSp = Math.max(12f, Math.min(48f, subtitleSizeSp + (value * 1.5f)));
+            case "position" -> subtitleBottomMarginDp = Math.max(8, Math.min(180, subtitleBottomMarginDp + (value * 2)));
+            case "background" -> subtitleOpaqueBg = !subtitleOpaqueBg;
+            case "visible" -> subtitleVisible = !subtitleVisible;
+            case "dual_position" -> {
+                dualSubtitlePosition = Math.max(0, Math.min(2, value));
+                androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+                        .edit().putInt("pref_dual_sub_position", dualSubtitlePosition).apply();
+                applyDualSubtitleLayout();
+            }
+            case "sub_mode" -> {
+                if (value == 3) {
+                    dualSubtitlePosition = (dualSubtitlePosition + 1) % 3;
+                    androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+                            .edit().putInt("pref_dual_sub_position", dualSubtitlePosition).apply();
+                    subtitleVisible = true;
+                    applyDualSubtitleLayout();
+                } else {
+                    setDualSubtitleMode(Math.max(0, Math.min(2, value)));
+                    return;
+                }
+            }
+            case "sub_clear_secondary" -> {
+                secondaryCues = java.util.Collections.emptyList();
+                secondarySubtitlesEnabled = false;
+                if (secondarySubtitleView != null) {
+                    secondarySubtitleView.setText(null);
+                    secondarySubtitleView.setVisibility(View.GONE);
+                }
+                if (externalSubtitlesEnabled) subDisplayMode = SUB_MODE_PRIMARY;
+            }
+            case "delay" -> {
+                subtitleDelayMs += value;
+                if (externalSubtitlesEnabled || secondarySubtitlesEnabled) {
+                    updateExternalSubtitleNow();
+                } else {
+                    String intentSub = getIntent() != null ? getIntent().getStringExtra("subtitle_url") : null;
+                    if (intentSub != null && (intentSub.startsWith("http://") || intentSub.startsWith("https://"))) {
+                        loadRemoteSubtitleAsync(intentSub, false);
+                    }
+                }
+            }
+            case "reset" -> {
+                subtitleDelayMs = 0L;
+                subtitleSizeSp = 20f;
+                subtitleColor = android.graphics.Color.WHITE;
+                subtitleBottomMarginDp = 32;
+                subtitleOpaqueBg = false;
+                subtitleVisible = true;
+                if (externalSubtitlesEnabled || secondarySubtitlesEnabled) {
+                    updateExternalSubtitleNow();
+                }
+            }
+        }
+        applyAllSubtitleStyles();
+        if (externalSubtitlesEnabled && externalSubtitleView != null) {
+            if (exoSubtitles != null) exoSubtitles.setVisibility(View.GONE);
+            if (videoViewSubtitles != null) videoViewSubtitles.setVisibility(View.GONE);
+        }
+    }
+
+    private void applySubtitleViewStyle(TextView view) {
+        if (view == null) return;
+        if (view == externalSubtitleView) {
+            boolean showPrimary = externalSubtitlesEnabled && !externalCues.isEmpty() && subDisplayMode != SUB_MODE_SECONDARY;
+            boolean hasText = view.getText() != null && view.getText().length() > 0;
+            view.setVisibility(showPrimary && subtitleVisible && hasText ? View.VISIBLE : View.GONE);
+        } else if (externalSubtitlesEnabled) {
+            view.setVisibility(View.GONE);
+        } else {
+            view.setVisibility(subtitleVisible ? View.VISIBLE : View.GONE);
+        }
+        view.setTextColor(subtitleColor);
+        view.setTextSize(subtitleSizeSp);
+        view.setBackgroundColor(subtitleOpaqueBg ? 0xAA000000 : android.graphics.Color.TRANSPARENT);
+        view.setPadding(subtitleOpaqueBg ? 18 : 0, subtitleOpaqueBg ? 8 : 0, subtitleOpaqueBg ? 18 : 0, subtitleOpaqueBg ? 8 : 0);
+        if (view.getLayoutParams() instanceof FrameLayout.LayoutParams lp) {
+            lp.bottomMargin = Math.round(subtitleBottomMarginDp * getResources().getDisplayMetrics().density);
+            view.setLayoutParams(lp);
+        }
+    }
+
+    private void applySecondarySubtitleViewStyle() {
+        if (secondarySubtitleView == null) return;
+        boolean showSec = secondarySubtitlesEnabled && !secondaryCues.isEmpty()
+                && subDisplayMode != SUB_MODE_PRIMARY;
+        boolean hasText = secondarySubtitleView.getText() != null && secondarySubtitleView.getText().length() > 0;
+        secondarySubtitleView.setVisibility(showSec && subtitleVisible && hasText ? View.VISIBLE : View.GONE);
+        secondarySubtitleView.setTextSize(Math.max(14f, subtitleSizeSp - 2f));
+        secondarySubtitleView.setBackgroundColor(subtitleOpaqueBg ? 0xAA000000 : android.graphics.Color.TRANSPARENT);
+        secondarySubtitleView.setPadding(subtitleOpaqueBg ? 18 : 0, subtitleOpaqueBg ? 8 : 0, subtitleOpaqueBg ? 18 : 0, subtitleOpaqueBg ? 8 : 0);
+    }
+
+    void setSubtitle(String extension, byte[] data) {
+        setSubtitle(extension, data, false);
+    }
+
+    void setSubtitle(String extension, byte[] data, boolean isSecondary) {
+        if (data == null || data.length == 0) return;
+        String resolvedExt = CinemaSubtitleCodec.sniffExtension(data, "." + (extension == null ? "" : extension));
+        var parsed = parseExternalCues(resolvedExt, data);
+        if (parsed.isEmpty()) return;
+        subtitleVisible = true;
+        if (isSecondary) {
+            secondaryCues = parsed;
+            secondarySubtitlesEnabled = dualSubtitlesAllowed();
+            subDisplayMode = !secondarySubtitlesEnabled ? SUB_MODE_PRIMARY
+                    : externalSubtitlesEnabled ? SUB_MODE_DUAL : SUB_MODE_SECONDARY;
+            applyAllSubtitleStyles();
+            updateExternalSubtitleNow();
+            progressHandler.removeCallbacks(subtitleTicker);
+            progressHandler.post(subtitleTicker);
+            if (osdBar != null && osdBar.getVisibility() == View.VISIBLE) scheduleHideOsd();
+            return;
+        }
+        subtitleRevision++;
+        lastSubtitleExt = resolvedExt;
+        lastSubtitleBytes = data;
+        externalCues = parsed;
+        externalSubtitlesEnabled = true;
+        subDisplayMode = secondarySubtitlesEnabled ? SUB_MODE_DUAL : SUB_MODE_PRIMARY;
+        if (exoSubtitles != null) {
+            exoSubtitles.setText(null);
+            exoSubtitles.setVisibility(View.GONE);
+        }
+        if (videoViewSubtitles != null) {
+            videoViewSubtitles.setText(null);
+            videoViewSubtitles.setVisibility(View.GONE);
+        }
+        if (adaptivePlayer != null) {
+            adaptivePlayer.setTrackSelectionParameters(adaptivePlayer.getTrackSelectionParameters()
+                    .buildUpon()
+                    .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, true)
+                    .build());
+        }
+        applyAllSubtitleStyles();
+        updateExternalSubtitleNow();
+        progressHandler.removeCallbacks(subtitleTicker);
+        progressHandler.post(subtitleTicker);
+        if (osdBar != null && osdBar.getVisibility() == View.VISIBLE) scheduleHideOsd();
+    }
+
+    private void loadRemoteSecondarySubtitleAsync(String subUrl) {
+        loadRemoteSubtitleAsync(subUrl, true);
+    }
+
+    private void applySubtitleOverlayWithoutRestart(String extension, byte[] rawData) {
+        setSubtitle(extension, rawData, false);
+    }
+
+    private void updateExternalSubtitleNow() {
+        long posMs = position();
+        long lookupMs = posMs - subtitleDelayMs;
+        if (posMs < 0 || lookupMs < 0) {
+            if (externalSubtitleView != null) {
+                externalSubtitleView.setText(null);
+                externalSubtitleView.setVisibility(View.GONE);
+            }
+            if (secondarySubtitleView != null) {
+                secondarySubtitleView.setText(null);
+                secondarySubtitleView.setVisibility(View.GONE);
+            }
+            return;
+        }
+        String primaryTxt = (externalSubtitlesEnabled && !externalCues.isEmpty() && subDisplayMode != SUB_MODE_SECONDARY)
+                ? findActiveCueText(externalCues, lookupMs) : null;
+        String secondaryTxt = (secondarySubtitlesEnabled && !secondaryCues.isEmpty() && subDisplayMode != SUB_MODE_PRIMARY)
+                ? findActiveCueText(secondaryCues, lookupMs) : null;
+
+        if (externalSubtitleView != null) {
+            externalSubtitleView.setText(primaryTxt);
+            boolean showP = subtitleVisible && primaryTxt != null && !primaryTxt.isEmpty();
+            externalSubtitleView.setVisibility(showP ? View.VISIBLE : View.GONE);
+        }
+        if (secondarySubtitleView != null) {
+            secondarySubtitleView.setText(secondaryTxt);
+            boolean showS = subtitleVisible && secondaryTxt != null && !secondaryTxt.isEmpty();
+            secondarySubtitleView.setVisibility(showS ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    private String findActiveCueText(java.util.List<ExternalCue> cues, long lookupMs) {
+        StringBuilder sb = null;
+        for (int i = 0; i < cues.size(); i++) {
+            ExternalCue c = cues.get(i);
+            if (c.startMs() > lookupMs) break;
+            if (lookupMs <= c.endMs() && !c.text().isEmpty()) {
+                if (playbackFilters != null) playbackFilters.observeSubtitle(c.text(),
+                        c.startMs() + subtitleDelayMs, c.endMs() + subtitleDelayMs);
+                if (sb == null) sb = new StringBuilder(c.text());
+                else sb.append('\n').append(c.text());
+            }
+        }
+        return sb != null ? sb.toString() : null;
+    }
+
+    private static java.util.List<ExternalCue> parseExternalCues(String extension, byte[] rawData) {
+        if (rawData == null || rawData.length == 0) return java.util.Collections.emptyList();
+        String text = new String(rawData, java.nio.charset.StandardCharsets.UTF_8);
+        if (!text.isEmpty() && text.charAt(0) == '\uFEFF') text = text.substring(1);
+        var cues = new java.util.ArrayList<ExternalCue>();
+        if ("ass".equals(extension) || "ssa".equals(extension)) {
+            for (String line : text.split("\\r?\\n")) {
+                if (!line.startsWith("Dialogue:")) continue;
+                String[] parts = line.substring(9).split(",", 10);
+                if (parts.length < 10) continue;
+                long start = parseAssTimeMs(parts[1].trim());
+                long end = parseAssTimeMs(parts[2].trim());
+                String body = CinemaSubtitleText.displayText(parts[9]).trim();
+                if (start >= 0 && end >= start && !body.isEmpty()) {
+                    cues.add(new ExternalCue(start, end, body));
+                }
+            }
+            cues.sort(java.util.Comparator.comparingLong(ExternalCue::startMs));
+            return cues;
+        }
+        var timeLinePattern = java.util.regex.Pattern.compile(
+                "(?:(\\d{1,2}):)?(\\d{2}):(\\d{2})[.,](\\d{3})\\s*-->\\s*(?:(\\d{1,2}):)?(\\d{2}):(\\d{2})[.,](\\d{3})");
+        String[] lines = text.split("\\r?\\n");
+        int i = 0;
+        while (i < lines.length) {
+            String line = lines[i].trim();
+            var m = timeLinePattern.matcher(line);
+            if (!m.find()) {
+                i++;
+                continue;
+            }
+            long start = parseSrtVttGroupMs(m.group(1), m.group(2), m.group(3), m.group(4));
+            long end = parseSrtVttGroupMs(m.group(5), m.group(6), m.group(7), m.group(8));
+            i++;
+            StringBuilder body = new StringBuilder();
+            while (i < lines.length) {
+                String content = lines[i].trim();
+                if (content.isEmpty()) break;
+                if (timeLinePattern.matcher(content).find()) break;
+                String cleaned = CinemaSubtitleText.displayText(content.replaceAll("<[^>]+>", ""))
+                        .replace("&amp;", "&").replace("&lt;", "<")
+                        .replace("&gt;", ">").replace("&nbsp;", " ")
+                        .trim();
+                if (!cleaned.isEmpty()) {
+                    if (body.length() > 0) body.append('\n');
+                    body.append(cleaned);
+                }
+                i++;
+            }
+            if (start >= 0 && end >= start && body.length() > 0) {
+                cues.add(new ExternalCue(start, end, body.toString()));
+            }
+        }
+        cues.sort(java.util.Comparator.comparingLong(ExternalCue::startMs));
+        return cues;
+    }
+
+    private static long parseSrtVttGroupMs(String hrsStr, String minsStr, String secsStr, String msStr) {
+        long h = hrsStr != null ? Long.parseLong(hrsStr) : 0L;
+        long m = Long.parseLong(minsStr);
+        long s = Long.parseLong(secsStr);
+        long ms = Long.parseLong(msStr);
+        return ((h * 3600L + m * 60L + s) * 1000L) + ms;
+    }
+
+    private static long parseAssTimeMs(String raw) {
+        var m = java.util.regex.Pattern.compile("(\\d{1,2}):(\\d{2}):(\\d{2})[.,](\\d{2,3})").matcher(raw);
+        if (!m.find()) return -1L;
+        long h = Long.parseLong(m.group(1));
+        long mins = Long.parseLong(m.group(2));
+        long s = Long.parseLong(m.group(3));
+        String frac = m.group(4);
+        long ms = frac.length() == 2 ? Long.parseLong(frac) * 10L : Long.parseLong(frac);
+        return ((h * 3600L + mins * 60L + s) * 1000L) + ms;
+    }
+
+    private void loadChapterMetadata(androidx.media3.common.Tracks tracks) {
+        if (playbackFilters == null) return;
+        for (var group : tracks.getGroups()) {
+            for (int i = 0; i < group.length; i++) {
+                if (group.isTrackSelected(i)) playbackFilters.addChapterMetadata(group.getTrackFormat(i).metadata);
+            }
+        }
+    }
+
+    @Override public void finish() {
+        if (!isFinishing()) {
+            final String resultKey = com.archos.mediacenter.video.utils.PlayUtils.EXTRA_EPISODE_RESULT;
+            final String indexKey = com.archos.mediacenter.video.utils.PlayUtils.EXTRA_EPISODE_INDEX;
+            if (getIntent().getBooleanExtra(resultKey, false)) {
+                int index = getIntent().getIntExtra(indexKey, -1);
+                long[] ids = getIntent().getLongArrayExtra(com.archos.mediacenter.video.utils.PlayUtils.EXTRA_EPISODE_IDS);
+                if (ids != null && index >= 0 && index < ids.length) {
+                    int total = duration();
+                    int elapsed = position();
+                    if (total > 0 && elapsed > 0) {
+                        long bookmark = elapsed * 100L >= total * 85L
+                                ? com.archos.mediacenter.video.player.PlayerActivity.LAST_POSITION_END : elapsed;
+                        CinemaMediaTime.rememberState(ids[index], getIntent().getData(), total, bookmark);
+                    }
+                    setResult(RESULT_OK, new Intent().putExtra("current_episode_id", ids[index]).putExtra(indexKey, index));
+                }
+            }
+            View content = findViewById(android.R.id.content);
+            if (content != null) content.setVisibility(View.INVISIBLE);
+            getWindow().setWindowAnimations(0);
+        }
+        super.finish();
+        overridePendingTransition(0, 0);
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (isFinishing() || isLiveCast()) return;
+        if (playbackFilters == null) {
+            playbackFilters = new CinemaPlaybackFilters(this, this::position, this::duration,
+                    () -> playing() && !live(), target -> seekInternal(target, false));
+        }
+        playbackFilters.setMedia(getIntent().getData(), getIntent().getLongExtra("cinema_filter_video_id", -1), getIntent());
+        playbackFilters.resume();
+        if (adaptivePlayer != null) loadChapterMetadata(adaptivePlayer.getCurrentTracks());
+    }
+
+    @Override protected void onPause() {
+        if (playbackFilters != null) playbackFilters.pause();
+        saveStreamProgressAsync(false);
+        super.onPause();
+    }
+
+    @Override protected void onStop() {
+        progressHandler.removeCallbacks(periodicProgressSave);
+        progressHandler.removeCallbacks(subtitleTicker);
+        progressHandler.removeCallbacks(hideOsd);
+        progressHandler.removeCallbacks(updateSeekHud);
+        if (seekHud != null) seekHud.setVisibility(View.GONE);
+        if (pendingRetryRunnable != null) {
+            progressHandler.removeCallbacks(pendingRetryRunnable);
+            pendingRetryRunnable = null;
+        }
+        saveStreamProgressAsync(false);
+        keepScreenOn(false);
+        updateMediaSessionState(PlaybackStateCompat.STATE_STOPPED);
+        abandonVideoAudioFocus();
+        if (adaptivePlayer != null) adaptivePlayer.pause();
+        else if (video != null) video.pause();
+        player = null;
+        super.onStop();
+    }
+
+    @Override protected void onDestroy() {
+        progressHandler.removeCallbacksAndMessages(null);
+        saveStreamProgressAsync(false);
+        progressIo.shutdown();
+        keepScreenOn(false);
+        abandonVideoAudioFocus();
+        updateMediaSessionState(PlaybackStateCompat.STATE_NONE);
+        if (mediaSession != null) {
+            mediaSession.setActive(false);
+            mediaSession.release();
+            mediaSession = null;
+        }
+        if (torrentPreparation != null) torrentPreparation.dismiss();
+        if (adaptivePlayer != null) adaptivePlayer.release();
+        else if (video != null) video.stopPlayback();
+        if (localTorrent != null) localTorrent.release();
+        super.onDestroy();
+    }
+}

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/nested_scroll_view"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fadeScrollbars="false"
+    android:minWidth="@dimen/min_width_dialog"
+    android:padding="@dimen/dialog_padding"
+    android:scrollbars="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <ImageView
+            android:layout_width="96dp"
+            android:layout_height="96dp"
+            android:layout_gravity="center_horizontal"
+            android:importantForAccessibility="no"
+            android:src="@mipmap/cinema_manager_icon" />
+
+        <TextView
+            android:id="@+id/version"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            tools:text="1.0" />
+
+        <TextView
+            style="?attr/textAppearanceBodyMedium"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/about_description" />
+        <TextView
+            style="?attr/textAppearanceBodySmall"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/about_third_party_notice" />
+        <TextView
+            style="?attr/textAppearanceBodyMedium"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/cinema_open_source_free" />
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/source_link"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:text="@string/cinema_source_code" />
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/licenses_link"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:text="@string/cinema_third_party_licenses" />
+    </LinearLayout>
+</androidx.core.widget.NestedScrollView>

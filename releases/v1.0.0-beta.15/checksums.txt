@@ -1,0 +1,2 @@
+6d404c2ab8ba12cfb157df83c27a2a14fd299657827de1ab3e060feb6236a235  LocalCinema-TV-v1.0.0-beta.15.apk
+f4a656a07af750a0e727dbda21b4ff1d129c080dae4f408fc414038fed2aea05  LocalCinema-Manager-Phone-v1.0.0-beta.15.apk

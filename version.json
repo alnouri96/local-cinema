@@ -1,0 +1,26 @@
+{
+  "tv": {
+    "latestVersionCode": 15,
+    "latestVersionName": "1.0.0-beta.15",
+    "versionCode": 15,
+    "versionName": "1.0.0-beta.15",
+    "releaseDate": "2026-11-22",
+    "fileName": "LocalCinema-TV-v1.0.0-beta.15.apk",
+    "apkUrl": "https://github.com/alnouri96/meedx/releases/download/v1.0.0-beta.15/LocalCinema-TV-v1.0.0-beta.15.apk",
+    "sizeBytes": 44915313,
+    "sha256": "6d404c2ab8ba12cfb157df83c27a2a14fd299657827de1ab3e060feb6236a235",
+    "changelog": "TV Live refreshes the Iraqi Nexonic playlist automatically. Search for a country and save favorite countries or channels. TR TV&Mov combines streams from enabled add-ons. Watch a trailer on YouTube or choose a source by language, quality, size, and seed count. Torrent playback prepares the first pieces and the media index before starting. Press Back to leave a live channel and return to the channel list. Set a preferred audio language. Open the source code and third-party licenses from Settings."
+  },
+  "phone": {
+    "latestVersionCode": 15,
+    "latestVersionName": "1.0.0-beta.15",
+    "versionCode": 15,
+    "versionName": "1.0.0-beta.15",
+    "releaseDate": "2026-11-22",
+    "fileName": "LocalCinema-Manager-Phone-v1.0.0-beta.15.apk",
+    "apkUrl": "https://github.com/alnouri96/meedx/releases/download/v1.0.0-beta.15/LocalCinema-Manager-Phone-v1.0.0-beta.15.apk",
+    "sizeBytes": 111383262,
+    "sha256": "f4a656a07af750a0e727dbda21b4ff1d129c080dae4f408fc414038fed2aea05",
+    "changelog": "The floating remote stays available across tabs and while live channels play. Swipe down on the remote header to close it. The browser toolbar opens RSS. The Downloader tab opens Download Center. Fixed a browser startup crash in the optimized release build. Movie posters and music covers are larger. Use music settings to show or hide track information on the TV and set how long it stays visible. Sync supported settings and channel favorites from TV Hub. Find the source code and third-party licenses in About. About shows the Local Cinema Manager logo and credits MEEDX. It identifies LibreTorrent as part of Download Center."
+  }
+}

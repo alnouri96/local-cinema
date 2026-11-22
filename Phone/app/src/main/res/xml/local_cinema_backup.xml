@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <include domain="sharedpref" path="com.meedx.localcinema.manager_preferences.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="meedx_stremio_addons.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="cinema_live_channels.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="cinema_music.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="cinema_library.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="cinema_browser.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="cinema_floating_dpad_v1.xml" requireFlags="clientSideEncryption" />
+    <include domain="database" path="phone_watch_store.db" requireFlags="clientSideEncryption" />
+    <include domain="database" path="libretorrent.db" requireFlags="clientSideEncryption" />
+</full-backup-content>

@@ -1,0 +1,9 @@
+// settings.gradle
+rootProject.name = 'LocalCinema'  // Official root project name
+
+// Define library modules with absolute paths
+include ':FileCoreLibrary'
+project(':FileCoreLibrary').projectDir = new File(settingsDir.parentFile, 'FileCoreLibrary')
+
+include ':MediaLib'
+project(':MediaLib').projectDir = new File(settingsDir.parentFile, 'MediaLib')

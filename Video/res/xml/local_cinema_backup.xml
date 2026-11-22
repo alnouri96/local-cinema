@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <include domain="sharedpref" path="com.meedx.localcinema.tv_preferences.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="meedx_stremio_addons.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="cinema_live_channels.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="cinema_addon_state.xml" requireFlags="clientSideEncryption" />
+    <include domain="database" path="cinema_watch_store.db" requireFlags="clientSideEncryption" />
+</full-backup-content>

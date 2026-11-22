@@ -1,0 +1,9 @@
+<resources>
+    <string name="locale_app">App Language</string>
+    <string name="locale_system">System default</string>
+    <string name="locale_ar">Arabic</string>
+    <string name="locale_en">English</string>
+    <string name="locale_metadata">Metadata &amp; Posters Language</string>
+    <string name="locale_match">Auto — Match App Language</string>
+    <string name="locale_refreshing">Refreshing film information and posters…</string>
+</resources>

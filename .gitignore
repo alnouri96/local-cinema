@@ -1,0 +1,71 @@
+# Android & Gradle build outputs
+**/build/
+**/.gradle/
+.gradle/
+.build-cache/
+deliverables/
+local.properties
+
+# Extracted native binaries (regenerated automatically by script/build-cinema.ps1)
+MediaLib/libs/
+
+# Compiled binaries & archives
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+*.zip
+*.tar.gz
+
+# Logs & temporary files
+*.log
+build-*.log
+*.tmp
+*.temp
+*.bak
+*~
+
+/.codex/skills/**/__pycache__/
+/.agents/skills/**/__pycache__/
+
+# Private signing & credentials
+release/config.ini
+**/keystore.properties
+**/sentry.properties
+**/nova.json
+**/nova-amazon.json
+*.jks
+*.keystore
+client_secret_*.json
+
+# SDK / NDK local folders
+android-sdk/
+android-ndk/
+
+# IDE & OS files
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local release and development artifacts
+/releases/
+**/.cxx/
+**/local.properties
+**/.coverage
+/screen/
+key.properties
+
+# Generated Graphify report and cache
+graphify-out/
+.graphify_tmp/
+.agent/graph/graph.json
+.agent/graph/graph.html
+.agent/graph/cache/
+.agent/graph/.manifest*
+.agent/graph/.needs_update
+.agent/graph/.cloud-cta-shown
+.gemini/
+.agents/workflows/

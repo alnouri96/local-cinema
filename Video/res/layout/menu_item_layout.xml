@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<com.archos.mediacenter.video.player.tvmenu.TVMenuItem
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="horizontal"
+    android:layout_width="match_parent"
+    android:layout_height="80dp"
+    android:padding="1dp"
+    android:focusable="true"
+    android:id="@+id/test">
+
+    <TextView
+        android:id="@+id/info_text"
+        android:layout_width="match_parent"
+        android:maxLines="2"
+        android:ellipsize="end"
+        android:background="@null"
+        android:layout_height="match_parent"
+        android:gravity="start|center_vertical"
+        android:textDirection="locale"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:textColor="#ffffff"
+        android:textSize="@dimen/tv_menu_font_size"
+        android:buttonTint="#ffedffff" />
+
+</com.archos.mediacenter.video.player.tvmenu.TVMenuItem>

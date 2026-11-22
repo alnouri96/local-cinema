@@ -1,0 +1,10 @@
+{
+  "manifest_version": 2,
+  "name": "Local Cinema Video Discovery",
+  "version": "2.0",
+  "browser_specific_settings": {"gecko": {"id": "video-discovery@localcinema"}},
+  "permissions": ["tabs", "nativeMessaging", "nativeMessagingFromContent", "geckoViewAddons", "webRequest", "<all_urls>"],
+  "background": {"scripts": ["network.js"]},
+  "content_scripts": [{"matches": ["http://*/*", "https://*/*"], "js": ["discover.js"], "run_at": "document_start", "all_frames": true}]
+}
+

@@ -1,0 +1,171 @@
+// Copyright 2024 Courville Software
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package com.archos.mediacenter.video.utils;
+
+import com.archos.mediacenter.video.R;
+
+import android.content.Context;
+
+import com.squareup.picasso.Downloader;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.security.KeyManagementException;
+import java.security.KeyStore;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
+import java.util.Enumeration;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
+
+import okhttp3.OkHttpClient;
+import okhttp3.Response;
+import okhttp3.Request;
+
+// okhttp3 downloader with shared 200MB disk cache and optional letsencrypt trust for <= 7.1
+public class TrustingOkHttp3Downloader implements Downloader {
+    private static final long DISK_CACHE_BYTES = 200L * 1024L * 1024L;
+    private final Context context;
+    private final boolean trusting;
+    private static volatile OkHttpClient cachedStandardClient;
+    private static volatile OkHttpClient cachedTrustingClient;
+
+    public TrustingOkHttp3Downloader(Context context) {
+        this(context, true);
+    }
+
+    public TrustingOkHttp3Downloader(Context context, boolean trusting) {
+        this.context = context.getApplicationContext();
+        this.trusting = trusting;
+    }
+
+    public static java.io.File getPosterHttpCacheDir(Context c) {
+        return new java.io.File(c.getApplicationContext().getCacheDir(), "cinema_posters_http_cache");
+    }
+
+    @Override
+    public Response load(Request request) throws IOException {
+        OkHttpClient client = trusting ? getTrustingClient() : getStandardClient();
+        return client.newCall(request).execute();
+    }
+
+    @Override
+    public void shutdown() {
+        // Keep shared cache intact for the lifetime of the app
+    }
+
+    private okhttp3.Cache buildDiskCache() {
+        java.io.File dir = getPosterHttpCacheDir(context);
+        if (!dir.isDirectory()) dir.mkdirs();
+        return new okhttp3.Cache(dir, DISK_CACHE_BYTES);
+    }
+
+    private OkHttpClient getStandardClient() {
+        OkHttpClient c = cachedStandardClient;
+        if (c == null) {
+            synchronized (TrustingOkHttp3Downloader.class) {
+                c = cachedStandardClient;
+                if (c == null) {
+                    c = new OkHttpClient.Builder()
+                            .cache(buildDiskCache())
+                            .connectTimeout(6, java.util.concurrent.TimeUnit.SECONDS)
+                            .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                            .build();
+                    cachedStandardClient = c;
+                }
+            }
+        }
+        return c;
+    }
+
+    private OkHttpClient getTrustingClient() {
+        OkHttpClient c = cachedTrustingClient;
+        if (c != null) return c;
+        synchronized (TrustingOkHttp3Downloader.class) {
+            if (cachedTrustingClient != null) return cachedTrustingClient;
+            cachedTrustingClient = getOkHttpClient();
+            return cachedTrustingClient;
+        }
+    }
+
+    private OkHttpClient getOkHttpClient() {
+        try {
+            // Load LetsEncrypt certificates from raw resources
+            CertificateFactory certificateFactory = CertificateFactory.getInstance("X.509");
+            InputStream certInputStream1 = context.getResources().openRawResource(R.raw.isrg_root_x1);
+            Certificate certificate1 = certificateFactory.generateCertificate(certInputStream1);
+            certInputStream1.close();
+
+            InputStream certInputStream2 = context.getResources().openRawResource(R.raw.isrg_root_x2);
+            Certificate certificate2 = certificateFactory.generateCertificate(certInputStream2);
+            certInputStream2.close();
+
+            // Load the system's default KeyStore (AndroidCAStore)
+            KeyStore systemKeyStore = KeyStore.getInstance("AndroidCAStore");
+            systemKeyStore.load(null);
+
+            // Create a custom KeyStore with the system's CA certificates and add the custom certificates
+            KeyStore customKeyStore = KeyStore.getInstance(KeyStore.getDefaultType());
+            customKeyStore.load(null);
+
+            // Copy all system certificates into the custom KeyStore
+            Enumeration<String> aliases = systemKeyStore.aliases();
+            while (aliases.hasMoreElements()) {
+                String alias = aliases.nextElement();
+                if (systemKeyStore.isCertificateEntry(alias)) {
+                    Certificate systemCert = systemKeyStore.getCertificate(alias);
+                    customKeyStore.setCertificateEntry(alias, systemCert);
+                }
+            }
+
+            // Add the custom certificates to the custom KeyStore
+            customKeyStore.setCertificateEntry("isrg_root_x1", certificate1);
+            customKeyStore.setCertificateEntry("isrg_root_x2", certificate2);
+
+            // Create a TrustManager that trusts the system and custom certificates
+            TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            trustManagerFactory.init(customKeyStore);
+
+            // Build the OkHttpClient with the custom TrustManager + 200MB Disk Cache
+            OkHttpClient.Builder builder = new OkHttpClient.Builder()
+                    .cache(buildDiskCache())
+                    .connectTimeout(6, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS);
+
+            SSLContext sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(null, trustManagerFactory.getTrustManagers(), null);
+
+            // Check if the first TrustManager is an X509TrustManager
+            if (trustManagerFactory.getTrustManagers()[0] instanceof X509TrustManager x509TrustManager) {
+                builder.sslSocketFactory(sslContext.getSocketFactory(), x509TrustManager);
+            } else {
+                // Handle the case where the TrustManager is not X509TrustManager (unlikely)
+                throw new RuntimeException("Unexpected TrustManager type");
+            }
+
+            return builder.build();
+        } catch (CertificateException | IOException | KeyStoreException | NoSuchAlgorithmException | KeyManagementException e) {
+            throw new RuntimeException(e);
+        }
+    }
+}

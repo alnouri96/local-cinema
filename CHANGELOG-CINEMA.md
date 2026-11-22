@@ -1,0 +1,274 @@
+# Local Cinema release notes
+
+## Local Cinema v1.0.0-beta.15 (`versionCode = 15`, 2026-11-22)
+
+### English
+
+#### TV
+
+- TV Live refreshes the Iraqi Nexonic playlist automatically. Search for a country and save favorite countries or channels.
+- TR TV&Mov combines streams from enabled add-ons. Watch a trailer on YouTube or choose a source by language, quality, size, and seed count.
+- Torrent playback prepares the first pieces and the media index before starting. Press Back to leave a live channel and return to the channel list.
+- Set a preferred audio language. Open the source code and third-party licenses from Settings.
+
+#### Phone
+
+- The floating remote stays available across tabs and while live channels play. Swipe down on the remote header to close it.
+- The browser toolbar opens RSS. The Downloader tab opens Download Center. Fixed a browser startup crash in the optimized release build.
+- Movie posters and music covers are larger. Use music settings to show or hide track information on the TV and set how long it stays visible.
+- Sync supported settings and channel favorites from TV Hub. Find the source code and third-party licenses in About.
+
+- About shows the Local Cinema Manager logo and credits MEEDX. It identifies LibreTorrent as part of Download Center.
+- Help, support, and patch-note links open the Local Cinema site.
+Both apps are open source and free. [Source for these APKs](https://github.com/alnouri96/local-cinema/tree/v1.0.0-beta.15) · [Third-party licenses](https://github.com/alnouri96/local-cinema/blob/v1.0.0-beta.15/docs/THIRD_PARTY.md).
+
+<div dir="rtl" align="right">
+
+### العربية
+
+#### التلفاز
+
+- يحدّث البث المباشر قائمة Nexonic العراقية تلقائيًا. ابحث عن دولة واحفظ الدول والقنوات المفضلة.
+- تجمع واجهة TR TV&Mov مصادر الإضافات المفعّلة. شاهد الإعلان على يوتيوب أو اختر المصدر حسب اللغة والجودة والحجم وعدد المشاركين.
+- يهيّئ مشغّل التورنت القطع الأولى وفهرس الفيديو قبل التشغيل. اضغط رجوع لمغادرة البث المباشر والعودة إلى قائمة القنوات.
+- اختر لغة الصوت المفضلة. افتح الكود المصدري وتراخيص الجهات الخارجية من الإعدادات.
+
+#### الهاتف
+
+- يبقى الريموت العائم متاحًا بين التبويبات وأثناء مشاهدة القنوات المباشرة. اسحب رأس لوحة الريموت للأسفل لإغلاقها.
+- افتح خلاصات RSS من شريط المتصفح ومركز التحميل من تبويب «داونلودر». أُصلح انهيار المتصفح عند بدء تشغيل نسخة Release.
+- تظهر بوسترات الأفلام وأغلفة الموسيقى بحجم أكبر. تحكم في عرض معلومات المقطوعة على التلفاز ومدته من إعدادات الموسيقى.
+- زامن الإعدادات المدعومة والقنوات المفضلة من TV Hub. اعثر على الكود المصدري وتراخيص الجهات الخارجية في «حول التطبيق».
+
+- تعرض نافذة «حول التطبيق» شعار Local Cinema Manager وتنسب التطوير إلى MEEDX. وتوضح دور LibreTorrent في مركز التحميل.
+- تفتح روابط المساعدة والدعم وسجل التحديثات موقع Local Cinema.
+التطبيقان مفتوحا المصدر ومجانيان بالكامل. [الكود المطابق للحزمتين](https://github.com/alnouri96/local-cinema/tree/v1.0.0-beta.15) · [تراخيص الجهات الخارجية](https://github.com/alnouri96/local-cinema/blob/v1.0.0-beta.15/docs/THIRD_PARTY.md).
+
+</div>
+
+## Local Cinema v1.0.0-beta.14 (`versionCode = 14`, 2026-11-21)
+
+### English
+
+- Press OK once to play an episode. Hold OK or press Menu to open its options.
+- Continue Watching matches titles with their saved progress more reliably and clears entries when a season is complete.
+- Turn Skip Ads on or off in playback controls. Family Watch is marked “Coming Soon.”
+- Fixed a crash when the TV app receives a cast while in the background.
+- The subtitle picker remembers Dual Subs and shows each track on one line. A single control toggles Dual Subs.
+- Casting uses one media notification while keeping the CPU and Wi-Fi awake during background playback.
+- Stop playback from the Local Media mini-bar or the notification shade. The phone switches from music controls to the active video card when playback starts on the TV.
+- Hold Seek or Volume on the floating remote to repeat the action. The connection indicator follows the TV connection across tabs.
+- Type Arabic or English directly into TV fields. Backspace and cursor movement work as you type, without a Send button.
+- Scroll inside the Subtitles sheet without closing it. TV Hub connection cards hide the Trakt username.
+- Video Grabber detects direct video and subtitle links. Support for relaying protected streams and embeds that require access tokens is planned for a future release.
+
+### العربية
+
+- اضغط زر OK مرة واحدة لتشغيل الحلقة. اضغط مطولًا أو استخدم زر القائمة لعرض الخيارات.
+- تعرض «متابعة المشاهدة» تقدّم العمل بدقة أكبر وتزيل إدخال الموسم عند اكتماله.
+- يمكن تشغيل «تخطي الإعلانات» أو إيقافه من أدوات المشغّل. تظهر «المشاهدة العائلية» بحالة «قريبًا».
+- أُصلح انهيار تطبيق التلفاز عند استقبال بث وهو في الخلفية.
+- يحفظ منتقي الترجمات إعداد الترجمة المزدوجة ويعرض كل مسار في سطر واحد. يتحكم زر واحد في تفعيلها.
+- يعرض الهاتف إشعار وسائط واحدًا للبث ويحافظ على نشاط المعالج واتصال Wi-Fi أثناء التشغيل في الخلفية.
+- أوقف التشغيل من شريط الوسائط المصغّر أو درج الإشعارات. ينتقل الهاتف من واجهة الموسيقى إلى بطاقة الفيديو عند بدء التشغيل على التلفاز.
+- يكرّر الريموت العائم التقديم والترجيع وتغيير مستوى الصوت عند الضغط المطوّل. يعكس مؤشر الاتصال حالة التلفاز عبر التبويبات.
+- تصل الكتابة بالعربية والإنجليزية مباشرة إلى حقل التلفاز. يعمل الحذف وتحريك المؤشر فورًا دون زر إرسال.
+- يمكن التمرير داخل نافذة الترجمات دون إغلاقها. تخفي بطاقات الاتصال في TV Hub اسم حساب Trakt.
+- تلتقط أداة Video Grabber روابط الفيديو والترجمة المباشرة. دعم تمرير البث المحمي والمشغّلات التي تتطلب رموز وصول مؤجل إلى إصدار لاحق.
+
+## Local Cinema v1.0.0-beta.13 (`versionCode = 13`, 2026-11-20)
+
+### English
+- Home builds and sorts library rows dynamically from each direct top-level folder under your SMB share (`Cartoon`, `Movies`, `OTHERS`, `Shows`, and any new folder) using the exact folder name without splitting `Shows` or `Movies` into per-series rows or duplicating rows.
+- SMB indexing and deep recursive scanning (`RECURSION_LIMIT = 20`) unify `IP` and `Hostname` paths (`coveredByHost`, `smbRelativeKey`, `canonicalUriKey`) so switching between server IP and computer name never duplicates shortcuts, cards, or episodes.
+- Series cards merge duplicate entries that differ only by a year suffix like `(2022)` and combine folder prefix queries with `SCRAPER_SHOW_ID` so all seasons and episodes appear together and refresh automatically when scanning finishes.
+- Clicking a season poster card in the `Show` tab switches directly to that season tab and focuses the in-progress episode or `E1` while blocking async metadata callbacks from stealing focus back to top tabs.
+- The `Subtitles` action chip hides on the `Show` tab and on the full-season poster card (`Watch season`), and appears only when an individual episode card is focused.
+- Returning from a movie or series detail screen keeps posters displayed in `0ms` from a 16MB in-memory bitmap cache and updates watched badges in place with `DiffUtil` instead of clearing adapters.
+- SMB browsing and indexing run in strict read-only mode unless you trigger a manual file operation, blocking automatic creation of `Movies` subfolders inside network shares.
+
+### العربية
+- تبني الشاشة الرئيسية صفوف المكتبة وترتّبها ديناميكياً من كل مجلد فرعي مباشر تحت المشاركة (`Cartoon` و `Movies` و `OTHERS` و `Shows` وأي مجلد جديد) بنفس اسم المجلد الفعلي دون تقسيم `Shows` أو `Movies` إلى صفوف فرعية أو تكرارها.
+- يوحّد الفحص العميق المتكرر لمشاركات SMB (`RECURSION_LIMIT = 20`) المسارات بين عنوان `IP` واسم الجهاز `Hostname` لمنع تكرار المجلدات المفهرسة أو البطاقات أو الحلقات.
+- تدمج واجهة المسلسلات البطاقات المزدوجة التي تختلف بوجود سنة الإصدار مثل `(2022)` وتجمع استعلام المجلد مع `SCRAPER_SHOW_ID` لعرض جميع المواسم والحلقات في صفحة واحدة مع تحديث تلقائي فور انتهاء الفحص.
+- ينقل الضغط على أي بوستر موسم في تبويب `Show` الواجهة فوراً إلى تبويب ذلك الموسم ويضع التركيز مباشرة على الحلقة قيد المشاهدة أو الحلقة الأولى `E1` مع منع الاستدعاءات الخلفية من سرقة التركيز.
+- يختفي زر الترجمة `Subtitles` في تبويب `Show` وعند الوقوف على بطاقة بوستر الموسم الكامل (`Watch season`)، ويظهر فقط عند التركيز على بطاقة حلقة فردية.
+- تحافظ العودة من صفحة التفاصيل إلى الشاشة الرئيسية على البوسترات المعروضة في `0ms` عبر كاش ذاكرة بحجم 16MB وتحدّث شارات المشاهدة موضعياً عبر `DiffUtil` دون وميض رمادي.
+- تعمل عمليات تصفح وفحص مشاركات `smb://` بوضع القراءة فقط وتمنع إنشاء أي مجلدات `Movies` تلقائياً داخل مشاركات الشبكة.
+
+## Local Cinema v1.0.0-beta.12 (`versionCode = 12`, 2026-11-19)
+
+### English
+- Starting playback directly from a season row opens the episode player with no intermediate dialog. Exiting playback restores focus to that episode card.
+- Player controls add Previous Episode and Next Episode buttons during series playback. Episode rows hide the trailer button so trailers stay on the show page.
+- Subtitle selection restarts the player HUD auto-hide timer so both bars hide cleanly after playback resumes.
+- Focusing a season card loads the season trailer first and falls back to the show trailer when absent.
+- Continue Watching cards show season and episode badges on posters and start episodes directly on click. Focusing an episode displays the show title, episode title, and remaining time in the top header.
+- Player services write exact millisecond positions to local storage every five seconds during playback, after seeks, on pause, and on exit.
+- Movies and episodes mark as watched automatically at 85% progress. Reopening a completed item briefly without a seek below 85% keeps it out of Continue Watching.
+- Local millisecond resume timestamps stay protected against rounded percentage estimates from Trakt unless remote progress is clearly newer.
+- Artwork loading fetches Arabic and English metadata together and caches images in a 200MB HTTP disk cache. Parallel workers decode posters to card size and display fallback artwork with no black cards.
+- Settings adds a Storage & Cache page that displays cache usage in megabytes with options to clear posters and metadata cache or all temporary app cache.
+- Show, season, and movie screens align cleanly in Arabic RTL layout without revealing the season row below episodes. The Back button closes the sidebar rail, returns to Home top, or focuses the Exit button in the exit confirmation dialog.
+- Phone playback groups built-in tracks under one Embedded Subtitles button that appears only when embedded tracks exist.
+- Horizontal touchpad swipes on Phone send 10-second or 30-second seek commands with light haptic feedback and cancel long-press hold detection on finger motion.
+
+### العربية
+- يبدأ النقر على أي حلقة داخل صف الموسم تشغيلها مباشرة دون شاشة وسيطة، ويعود التركيز إلى بطاقة الحلقة نفسها عند الخروج.
+- يضيف مشغل الشاشة زري الحلقة السابقة والحلقة التالية أثناء عرض المسلسلات، بينما يقتصر زر الإعلان على واجهة المسلسل الرئيسية دون صفوف الحلقات.
+- يعيد اختيار أي ترجمة تفعيل مؤقت الإخفاء التلقائي لواجهة المشغل حتى يختفي الشريط العلوي وشريط التقدم تلقائياً بعد الاستئناف.
+- يجلب التركيز على بطاقة أي موسم إعلان الموسم أولاً، ويعتمد إعلان المسلسل بديلاً تلقائياً عند غياب إعلان خاص بالموسم.
+- تعرض بطاقات متابعة المشاهدة شارة الموسم والحلقة وتعمل مباشرة عند النقر، مع إظهار اسم المسلسل واسم الحلقة والوقت المتبقي في الهيدر العلوي.
+- يحفظ المشغل موضع التشغيل الدقيق بالملي ثانية على القرص كل خمس ثوانٍ وعند التقديم والترجيع والإيقاف والخروج، ويستأنف التشغيل من الثانية نفسها بدقة.
+- تكتمل الأفلام والحلقات تلقائياً عند بلوغ نسبة خمسة وثمانين في المئة، ولا تعود العناصر المكتملة إلى متابعة المشاهدة عند فتحها بالخطأ والخروج دون ترجيع المؤشر.
+- يحمي النظام موضع الاستئناف المحلي الدقيق من الاستبدال بنسب Trakt التقريبية ما لم يكن التقدم السحابي أحدث بفارق واضح.
+- يجلب كاش الصور بيانات اللغتين العربية والإنجليزية في طلب واحد، ويستخدم مخزناً قرصياً بسعة مئتي ميجابايت مع فك تشفير بأبعاد البطاقات لعرض فوري دون بطاقات سوداء.
+- يضيف قسم الإعدادات صفحة التخزين والكاش لعرض الحجم الفعلي بالميجابايت ومسح كاش البوسترات والبيانات أو كاش التطبيق كاملاً دون المساس بسجل المشاهدة.
+- أُصلحت محاذاة الواجهة العربية ومنع ظهور صف المواسم أسفل الحلقات عند التصفح يساراً، كما يطوي زر الرجوع القائمة الجانبية أو يعود لأعلى الرئيسية أو يفتح نافذة التأكيد مع تحديد زر الخروج تلقائياً.
+- يجمع تطبيق الهاتف الترجمات المدمجة في زر واحد يظهر عند توفرها فقط ويفتح قائمة مستقلة لاختيار الترجمة الأساسية أو المزدوجة.
+- يستجيب السحب الأفقي على لوحة اللمس للتقديم والترجيع الفوري بمقدار عشر أو ثلاثين ثانية مع اهتزاز خفيف، ويلغي مؤقت الضغط المطوّل فور تحرك الإصبع.
+
+## Local Cinema v1.0.0-beta.11 (`versionCode = 11`) — 2026-11-19
+
+### English
+- Extracted `TvHubMusicController`, `TvHubSubtitlesController`, `TvHubLibraryController`, and `TvHubConnectionController` from `TvHubActivity`.
+- Split `CinemaBrowser` into `CinemaBrowserSettingsSheet` and `CinemaBrowserMediaBridge` to separate settings UI from media discovery.
+- Set `CinemaBrowser` startup to a `100%` mobile viewport and added Desktop and Mobile mode switching.
+- Added a persistent `50%–150%` Page Zoom slider in `CinemaBrowserSettingsSheet` and `discover.js`, alongside the `BrowserExtensions` manager.
+- Capped the GeckoView disk cache at `100MB` and purged temporary stream files at startup and after each cast through `CinemaCacheManager`. This reduces installed phone app storage from `1.54GB` to `514MB`.
+- Added a `Storage & Cache` section (`StorageCacheHeaderPreference`) in Settings with live metrics and a `Clear Cache` button that keeps logins, bookmarks, and TV pairing.
+- Suspended background browser tabs with `GeckoSession.setActive(false)`, tied `playbackPoll` and WebSocket reconnect timers to foreground state, and stopped idle HTTP media servers when no cast is active.
+- Updated Primary, Dual, and Off subtitle buttons in `TvHubSubtitlesController` with Gold (`#E5B94C`) and Crimson (`#EF4444`) active fills and borders.
+- Assigned positive `900M+` synthetic MediaDB IDs in `CinemaHomeFragment` and `CinemaWatchlistActivity` on TV. Removed duplicate subtitle overlays and restricted Trakt OAuth 2.0 PKCE sync to manual requests or setting changes.
+
+### العربية
+- فصل وحدات التحكم `TvHubMusicController` و `TvHubSubtitlesController` و `TvHubLibraryController` و `TvHubConnectionController` عن `TvHubActivity`.
+- تقسيم المتصفح `CinemaBrowser` إلى `CinemaBrowserSettingsSheet` لإعدادات العرض و `CinemaBrowserMediaBridge` لاكتشاف الوسائط.
+- ضبط متصفح `CinemaBrowser` ليفتح بأبعاد الهاتف الطبيعية بنسبة `100%` مع التبديل المباشر بين وضعي الهاتف وسطح المكتب.
+- إضافة شريط تمرير دائم لتكبير الصفحة بنسبة `50%–150%` داخل `CinemaBrowserSettingsSheet` و `discover.js` إلى جانب مدير الإضافات `BrowserExtensions`.
+- تحديد سقف الكاش لمحرك `GeckoView` عند `100MB` وحذف ملفات البث والترجمة المؤقتة تلقائياً عند التشغيل وبعد انتهاء البث عبر `CinemaCacheManager`. يقلّص هذا الإجراء حجم التطبيق من `1.54GB` إلى `514MB`.
+- إضافة قسم التخزين والكاش (`Storage & Cache`) داخل الإعدادات عبر `StorageCacheHeaderPreference` مع زر `Clear Cache` لتنظيف الملفات المؤقتة مع الحفاظ على الحسابات والمفضلة والاقتران.
+- إيقاف نشاط جلسات المتصفح في الخلفية عبر `GeckoSession.setActive(false)`، وربط مؤقتات `playbackPoll` وإعادة اتصال WebSocket بحالة الواجهة، وإغلاق خوادم البث المحلية عند الخمول.
+- تلوين أزرار تفعيل الترجمة الأساسية (`Primary`) والمزدوجة (`Dual`) والإيقاف (`Off`) في `TvHubSubtitlesController` باللونين الذهبي (`#E5B94C`) والأحمر القرمزي (`#EF4444`).
+- تثبيت معرّفات موجبة (`900M+`) للعناصر السحابية على التلفاز داخل `CinemaHomeFragment` و `CinemaWatchlistActivity`، ومنع تكرار طبقات الترجمة، وقصر مزامنة `Trakt OAuth 2.0 PKCE` على التغيير الفعلي أو الطلب اليدوي.
+
+## User revision v7 — 8 November 2026
+
+- Reorganize the native in-player subtitle appearance panel for TV remotes.
+- Add opt-in automatic black/white text contrast from bounded in-memory video
+  samples, hysteresis, inverse outline and safe fallback; keep manual palettes.
+- Preserve manual colour and styled text when automatic mode is disabled, and
+  stop sampling with the activity lifecycle. No frame storage or network service.
+
+## User revision v6 — 8 November 2026
+
+- Merge the details subtitle capsule into the Subtitles action, with embedded
+  tracks first, file-folder/Subsource actions, and Left/Right/Back dismissal.
+- Make measured audio interactive and place it left of video dimensions; persist
+  explicit per-file choices into NOVA's existing track-selection lifecycle.
+- Use circular film action states and a thicker, larger gold portrait focus ring.
+- Add a cinematic native series/seasons browser with real episode stills, episode
+  detail links, Watch/Resume and restored focus; refresh playback state on return.
+
+## User revision v5
+
+- Center closed navigation icons and increase drawer opacity; restore 0–9 digits.
+- Keep runtime units explicit and use measured file duration with h/m/s display.
+- Reveal resolved titles instead of flashing temporary names; circular crew focus.
+- Add poster-size manual file-selection cards under `other videos`, with DPAD flow.
+- Search Subsource on entry and directly load subtitles for unique verified identities;
+  keep ambiguous title selection and explicit download confirmation.
+- Consolidate original NOVA settings beneath System.
+
+## User revision v4
+
+- Split home into Continue Watching, recent movies and recent TV shows; migrate
+  existing order once and scroll/focus the target row on vertical DPAD movement.
+- Use Arabic-Indic display digits and RTL date while retaining stored values.
+- Remove circular idle icon tiles and increase overlay transparency.
+- Add an anchored subtitle dropdown beside Trailer with actual folder/Subsource actions.
+- Remove provisional calculated technical labels; show measured pixel dimensions,
+  reported audio and native format without guessing Main 10/HDR from filenames.
+
+## Soft Black / Gold and provider revision
+
+- Studied the installed Plex 2026.20.0 using actual ADB remote input; recorded
+  observed navigation, source-rating presentation and geometry in PLEX_UI_STUDY.md.
+- Applied soft black surfaces, selective gold focus, compact five-action rail
+  and an expanded menu containing only actual user libraries.
+- Added independent provider-id-first matching, cached TMDb film/episode details,
+  English artwork priority, certification, cast/crew and actual episode identity.
+- Added optional personal-use IMDb dataset download and separately encrypted OMDb
+  key settings; source-labelled ratings never substitute one provider for another.
+- Verified final build, installation, real TMDb/IMDb results, exact episode matching,
+  regression smoke checks and preserved Subsource access on the attached TV.
+- See METADATA_PROVIDERS.md for sources, licences and untested live OMDb limits.
+
+- Added an independent Android TV package and provider authorities.
+- Replaced the TV home with a real-library cinematic hero, poster rows, western
+  clock/date digits, palette shading and a focus-expanding left navigation rail.
+- Added persistent home row order/visibility, poster size/density and appearance controls.
+- Added cinematic film details, English logos, cast portraits, watchlist and
+  original NOVA playback/watched actions; reliable available trailers open YouTube.
+- Added explicit Subsource Arabic search/download, evidence-based release ranking,
+  encrypted key management, TXT import, pagination, limits and retry handling.
+- Added safe subtitle ZIP/text processing, adjacent-storage/local fallback,
+  per-media bindings, remote-friendly file selection and Arabic track priority.
+- Preserved the upstream engine, protocols, scanner and advanced settings.
+- Fixed encoded SMB paths used by JCIFS and removed a scanner dependency on a
+  nullable global application context.
+- Preserved Android's BKS provider while adding supplemental crypto algorithms,
+  fixing a reproducible TLS initialization failure on the attached television.
+- Added a checksum-verified Windows ARMv7 build helper, device smoke checks,
+  standalone subtitle-matching checks and EGM component documentation.
+
+## Supplemental native TV design revision
+
+- Installed project-local UI UX Pro Max and Better Design skills; added DESIGN.md.
+- Set English as the development default while retaining selectable Arabic.
+- Added native design tokens, vector navigation/action icons, ripple/press states,
+  dark rounded dialogs with explicit initial focus, and a detail navigation rail.
+- Rebalanced hero, synopsis, action rows and circular cast at 1080p; aligned remote
+  row navigation and retained focus after home updates and appearance changes.
+- Added source-labelled TMDB ratings, English film/director enrichment and actual
+  file-probed video/audio/subtitle-availability capsules with a session cache.
+- Applied neutral dark theme aliases to retained NOVA network/advanced screens.
+
+## UI v8 final — 2026-11-08
+User approved final delivery: matched subtitle panels, lighter player menu focus transitions, and audio/resolution capsule height parity. See docs/UI-V8-FINAL.md and HANDOFF.md for checks and continuation instructions.
+
+## Subtitle automation preview — 2026-11-08
+- Correct pre-play embedded subtitle persistence; stale saved language no longer overrides explicit track choices.
+- Automatic Arabic embedded-first selection, then authorized Subsource fallback on workers with identity/release ranking and no-overwrite SMB/private storage.
+- Persist provider selection and pin saved Arabic subtitle before other Subsource results.
+- See docs/archive/SUBTITLE-AUTO-PREVIEW.md for live tests and limits; pending user review before final packaging.
+
+
+## Watchlist preview — 2026-11-08
+- Replace text-only entries with a native poster grid, selected artwork backdrop and gold focus ring.
+- Preserve real saved membership and details return focus; identify show/season/episode for episode entries.
+- Add long-OK/Menu contextual actions, loading skeletons and empty/error recovery.
+- See docs/archive/WATCHLIST-PREVIEW.md for actual device evidence and untested states. Pending final user review.
+
+
+## Trailer discovery preview — 2026-11-08
+- Add verified trailer action to series pages; inherit the series trailer in episode details opened from Continue Watching.
+- Make film/episode Trailer action visibly labelled; retain nearby subtitle action and native focus.
+- Reuse English fallback for the same provider identity; continue rejecting unverified videos.
+- See docs/archive/TRAILER-PREVIEW.md for live YouTube-link and UI checks. Pending final user review.
+
+## Final v9 — 2026-11-08
+User approved final delivery and safe temporary-file cleanup after subtitle automation, Watchlist and trailer review. See docs/FINAL-V9.md and HANDOFF.md. Full source snapshot includes all initialized recursive submodules and existing licences. Rebuild from extracted source succeeded; private runtime state and signing keys are excluded.
+
+Final packaging note: local temporary-file deletion was rejected by automatic execution review (blocked by policy), including the narrower named-file attempt. No deletion was performed; caches/private scratch state are excluded from the final archives. See CLEANUP.json in the delivery.
+
+
+## Fresh-start hotfix preview — 2026-11-08
+- Fix optional IMDb null unboxing that crashed details after clearing data; unavailable rating providers no longer block opening media.
+- Only reorder badges that were actually added, including the zero-vote case.
+- Restore empty-home navigation to manual file cards and distinguish missing sources from saved folders awaiting matching.
+- Actual clean-state library/metadata, movie/episode details and SMB playback checks: docs/archive/FRESH-START-FIX.md. Historical v9 remains unchanged; pending user review before a new final release.
+
+
+## Final v10 — 2026-11-08
+User confirmed the fresh-start repair works and approved final packaging. Fix null unboxing of absent IMDb scores and invalid-badge reordering, with clean-state movie/episode/SMB and optional-rating regression checks. Retain previous subtitle, Watchlist and trailer improvements. Current final delivery: deliverables/final-v10/.
