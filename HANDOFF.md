@@ -17,6 +17,10 @@ Start with [AGENTS.md](AGENTS.md), [the current status](docs/CONTINUATION.md), a
 - Build and stage the APKs under `releases/<tag>/`. Run the key audit and compare the Android crash buffers before and after installing in place. Use the configured phone and TV device serials from the local ADB environment.
 - Keep full sync manual or driven by supported settings changes. Android backup XML defines which local settings and favorites the system backup can copy. Preserve the distinction between video, music, Library, and Local Media. Keep ports `8765`, `8766`, and `8080`.
 
+## Published status
+
+[Local Cinema v1.0.0-beta.15](https://github.com/alnouri96/meedx/releases/tag/v1.0.0-beta.15) is GitHub Latest. Both apps are open source and free. The [corresponding source tag](https://github.com/alnouri96/local-cinema/tree/v1.0.0-beta.15) is public. The old development repository remains private and archived. Develop from the public checkout rather than pushing the legacy Git history.
+
 ## Current work
 
 - See [release notes](CHANGELOG-CINEMA.md) for the beta.15 changes, including Iraq live channels, favorites, torrent preparation, and the floating remote.

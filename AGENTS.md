@@ -4,7 +4,7 @@ Local Cinema TV uses `com.meedx.localcinema.tv`. Local Cinema Manager uses `com.
 
 ## Current state
 
-- Published `v1.0.0-beta.14` (`versionCode = 14`) on 2026-11-21. It is the public GitHub Latest.
+- Published `v1.0.0-beta.15` (`versionCode = 15`) on 2026-11-22. It is the public GitHub Latest.
 - Read [the current handoff](docs/CONTINUATION.md) for local work and verification. Use [the release procedure](docs/RELEASE.md) for builds and publication.
 - [Release notes](CHANGELOG-CINEMA.md) and `releases/<tag>/checksums.txt` record each release. Older handoffs are in the private archive.
 
@@ -45,7 +45,7 @@ For UI/UX tasks, use [UI UX Pro Max](.codex/skills/ui-ux-pro-max/SKILL.md) and a
 
 ## Website and distribution
 
-- The publication repository for app source is `alnouri96/local-cinema`. Its integration branch for this cycle is `upgrade-6.6.4`. Keep the legacy development history in its private archive.
+- The public repository for app source is `alnouri96/local-cinema`. Its integration branch for this cycle is `upgrade-6.6.4`. Keep the legacy development history in its private archive.
 - Public downloads, OTA and the website use `alnouri96/meedx`. The site's publication branch is `main`. Build both APKs in this repository. Keep APKs and ZIP archives out of the website checkout.
 - The OTA client uses `https://meedx.pages.dev/api/version.json`. Sync the website from `version.json`, the staged hashes, and bilingual release notes. Follow [the release procedure](docs/RELEASE.md) and the website runbook.
 - Publish each approved public Android release as a regular GitHub release with `--latest`. Keep the beta suffix in the version name when applicable. Confirm the Latest tag, app manifest, and live OTA agree.
