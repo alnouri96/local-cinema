@@ -546,6 +546,28 @@ public final class CinemaLinkServer extends WebSocketServer {
         });
     }
 
+    public static void broadcastLiveTvPreferences(android.content.Context context) {
+        CinemaLinkServer server = instance;
+        if (server == null || context == null) return;
+        android.content.Context app = context.getApplicationContext();
+        server.syncIo.execute(() -> {
+            try {
+                String payload = new JSONObject()
+                        .put("type", com.meedx.providers.LiveTvPreferences.PREFS_PACKET)
+                        .put(com.meedx.providers.LiveTvPreferences.COUNTRY_FIELD,
+                                com.meedx.providers.LiveTvPreferences.country(app))
+                        .put(com.meedx.providers.LiveTvPreferences.FAVORITE_COUNTRIES_FIELD,
+                                com.meedx.providers.LiveTvPreferences.exportFavoriteCountriesJson(app))
+                        .toString();
+                for (WebSocket phone : server.phones.values()) {
+                    if (phone != null && phone.isOpen()) {
+                        try { phone.send(payload); } catch (Exception ignored) {}
+                    }
+                }
+            } catch (Exception ignored) {}
+        });
+    }
+
     private void sendFavoriteChannels(WebSocket socket, JSONObject state) {
         if (socket == null || !socket.isOpen() || state.length() == 0) return;
         try {
@@ -672,6 +694,8 @@ public final class CinemaLinkServer extends WebSocketServer {
             String countryField = com.meedx.providers.LiveTvPreferences.COUNTRY_FIELD;
             String country = command.optString(countryField);
             boolean liveCountryApplied = com.meedx.providers.LiveTvPreferences.saveCountry(libraryContext, country);
+            com.meedx.providers.LiveTvPreferences.importFavoriteCountriesJson(
+                    libraryContext, command.optJSONArray(com.meedx.providers.LiveTvPreferences.FAVORITE_COUNTRIES_FIELD));
             JSONObject incomingFavorites = command.optJSONObject(LiveChannelFavorites.FIELD);
             if (LiveChannelFavorites.merge(libraryContext, incomingFavorites)) broadcastFavoriteChannels(libraryContext);
             org.json.JSONArray addons = command.optJSONArray("addons");
@@ -844,6 +868,10 @@ public final class CinemaLinkServer extends WebSocketServer {
                         .put("exported_at", System.currentTimeMillis())
                         .put("tv_prefs", tvPrefs)
                         .put("tv_link_options", linkOptions)
+                        .put(com.meedx.providers.LiveTvPreferences.COUNTRY_FIELD,
+                                com.meedx.providers.LiveTvPreferences.country(libraryContext))
+                        .put(com.meedx.providers.LiveTvPreferences.FAVORITE_COUNTRIES_FIELD,
+                                com.meedx.providers.LiveTvPreferences.exportFavoriteCountriesJson(libraryContext))
                         .put("addons", com.meedx.providers.StremioAddons.exportJson(libraryContext))
                         .put("watch_records", CinemaWatchStore.exportRecentSyncRecords(libraryContext, 500));
                 JSONObject apiKeys = buildApiKeysSyncPayload(libraryContext);
@@ -890,6 +918,10 @@ public final class CinemaLinkServer extends WebSocketServer {
                 }
                 JSONObject apiKeys = command.optJSONObject("api_keys");
                 if (apiKeys != null) applyApiKeysSyncBlocking(apiKeys);
+                String restoredCountry = command.optString(com.meedx.providers.LiveTvPreferences.COUNTRY_FIELD, "");
+                if (!restoredCountry.isBlank()) com.meedx.providers.LiveTvPreferences.saveCountry(libraryContext, restoredCountry);
+                com.meedx.providers.LiveTvPreferences.importFavoriteCountriesJson(
+                        libraryContext, command.optJSONArray(com.meedx.providers.LiveTvPreferences.FAVORITE_COUNTRIES_FIELD));
 
                 org.json.JSONArray addons = command.optJSONArray("addons");
                 if (addons != null) com.meedx.providers.StremioAddons.mergeRemoteJson(libraryContext, addons);

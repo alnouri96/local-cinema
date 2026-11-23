@@ -134,7 +134,12 @@ public class SubtitlesDownloaderActivity2 extends AppCompatActivity {
                 else
                     mFriendlyFileName = null;
                 if (com.meedx.providers.ProviderKeys.get(this, com.meedx.providers.ProviderKeys.OPEN_SUBTITLES).isEmpty()) {
-                    Toast.makeText(this, com.meedx.providers.ProviderKeys.missing(this), Toast.LENGTH_LONG).show();
+                    Intent fallback = new Intent(this, com.archos.mediacenter.video.leanback.cinema.SubsourceSearchActivity.class);
+                    if (fileUrl != null && !fileUrl.isEmpty()) fallback.setData(Uri.parse(fileUrl));
+                    if (mFriendlyFileName != null && !mFriendlyFileName.isEmpty()) fallback.putExtra("title", mFriendlyFileName);
+                    fallback.putExtra("both_providers", true);
+                    fallback.addFlags(Intent.FLAG_ACTIVITY_FORWARD_RESULT);
+                    startActivity(fallback);
                     finish();
                     return;
                 }

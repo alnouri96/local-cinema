@@ -197,7 +197,7 @@ public final class CinemaAmbientYoutubeActivity extends LeanbackActivity {
         status.setPaddingRelative(dp(4), dp(4), dp(4), dp(6));
         page.addView(status);
 
-        // Modern 4-column Video Grid with Zero Focus-Ring Clipping
+        // Modern 4-column Video Grid with Zero Focus-Ring Clipping & Safe Viewport Boundary
         grid = new RecyclerView(this);
         grid.setClipChildren(false);
         grid.setClipToPadding(false);
@@ -206,7 +206,11 @@ public final class CinemaAmbientYoutubeActivity extends LeanbackActivity {
         grid.setLayoutManager(new GridLayoutManager(this, cols));
         grid.setItemAnimator(null);
         grid.setAdapter(new Videos());
-        page.addView(grid, new LinearLayout.LayoutParams(-1, 0, 1f));
+        FrameLayout viewport = new FrameLayout(this);
+        viewport.setClipChildren(true);
+        viewport.setClipToPadding(true);
+        viewport.addView(grid, new FrameLayout.LayoutParams(-1, -1));
+        page.addView(viewport, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override public void handleOnBackPressed() {

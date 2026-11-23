@@ -178,6 +178,14 @@ public final class LocalCinemaBackupManager {
         JSONArray addons = StremioAddons.exportJson(context);
         root.put("addons", addons);
 
+        // Unified Live TV Preferred Countries
+        JSONObject liveTvPrefs = new JSONObject();
+        liveTvPrefs.put(com.meedx.providers.LiveTvPreferences.COUNTRY_FIELD,
+                com.meedx.providers.LiveTvPreferences.country(context));
+        liveTvPrefs.put(com.meedx.providers.LiveTvPreferences.FAVORITE_COUNTRIES_FIELD,
+                com.meedx.providers.LiveTvPreferences.exportFavoriteCountriesJson(context));
+        root.put("live_tv_prefs", liveTvPrefs);
+
         // Phone block
         JSONObject phone = new JSONObject();
         phone.put("watch_records", PhoneWatchStore.exportRecentSyncRecords(context, 1500));
@@ -225,6 +233,15 @@ public final class LocalCinemaBackupManager {
         JSONArray addons = root.optJSONArray("addons");
         if (addons != null) {
             StremioAddons.mergeRemoteJson(context, addons);
+        }
+
+        // 2b. Restore Live TV Preferred Countries on Phone
+        JSONObject liveTvPrefs = root.optJSONObject("live_tv_prefs");
+        if (liveTvPrefs != null) {
+            String restoredCountry = liveTvPrefs.optString(com.meedx.providers.LiveTvPreferences.COUNTRY_FIELD, "");
+            if (!restoredCountry.isBlank()) com.meedx.providers.LiveTvPreferences.saveCountry(context, restoredCountry);
+            com.meedx.providers.LiveTvPreferences.importFavoriteCountriesJson(
+                    context, liveTvPrefs.optJSONArray(com.meedx.providers.LiveTvPreferences.FAVORITE_COUNTRIES_FIELD));
         }
 
         // 3. Restore Phone Watch Records, Watchlist, & Preferences
@@ -276,6 +293,12 @@ public final class LocalCinemaBackupManager {
         }
         if (tv != null && tv.optJSONObject("tv_link_options") != null) {
             tvRestoreCmd.put("tv_link_options", tv.optJSONObject("tv_link_options"));
+        }
+        if (liveTvPrefs != null) {
+            String restoredCountry = liveTvPrefs.optString(com.meedx.providers.LiveTvPreferences.COUNTRY_FIELD, "");
+            if (!restoredCountry.isBlank()) tvRestoreCmd.put(com.meedx.providers.LiveTvPreferences.COUNTRY_FIELD, restoredCountry);
+            JSONArray favCountries = liveTvPrefs.optJSONArray(com.meedx.providers.LiveTvPreferences.FAVORITE_COUNTRIES_FIELD);
+            if (favCountries != null) tvRestoreCmd.put(com.meedx.providers.LiveTvPreferences.FAVORITE_COUNTRIES_FIELD, favCountries);
         }
         JSONObject tvKeys = tv != null && tv.optJSONObject("api_keys") != null ? tv.optJSONObject("api_keys") : apiKeys;
         if (tvKeys != null && tvKeys.length() > 0) {

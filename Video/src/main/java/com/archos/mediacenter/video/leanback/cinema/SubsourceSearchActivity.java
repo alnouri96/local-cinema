@@ -72,28 +72,49 @@ public class SubsourceSearchActivity extends LeanbackActivity {
                     if(video==null&&getIntent().getData()!=null)video=new NonIndexedVideo(getIntent().getData(),getIntent().getData(),getIntent().getStringExtra("title"),null);
                 }
                 if(video==null)throw new Exception();
+                String intentTitle=cleanTitle(getIntent().getStringExtra("title"));
+                String intentHeading=cleanTitle(getIntent().getStringExtra("addon_heading"));
+                String intentImdb=cleanTitle(getIntent().getStringExtra("imdb_id"));
+                int intentSeason=getIntent().getIntExtra("season",-1);
+                int intentEpisode=getIntent().getIntExtra("episode",-1);
+                if(intentImdb.matches("tt[0-9]+"))imdb=intentImdb;
+                if(intentSeason>0)season=intentSeason;
+                if(intentEpisode>0)episode=intentEpisode;
                 if(video instanceof Movie movie)year=movie.getYear();
                 if(video instanceof Episode ep){season=ep.getSeasonNumber();episode=ep.getEpisodeNumber();}
-                BaseTags tags=video.getFullScraperTags(getApplicationContext());if(tags!=null)imdb=tags.getImdbId();
-                searchTitle=video.getName();
-                if(video instanceof Movie movie&&!arabic(this))try{CinemaArtwork.Art art=CinemaArtwork.load(getApplicationContext(),movie.getOnlineId(),false,"en");if(art!=null&&art.title()!=null&&!art.title().isBlank())searchTitle=art.title();}catch(Exception ignored){}
+                BaseTags tags=video.getFullScraperTags(getApplicationContext());if(tags!=null&&(imdb==null||imdb.isBlank()))imdb=tags.getImdbId();
+                searchTitle=cleanTitle(video.getName());
+                if(video instanceof Movie movie&&!arabic(this))try{CinemaArtwork.Art art=CinemaArtwork.load(getApplicationContext(),movie.getOnlineId(),false,"en");if(art!=null&&!cleanTitle(art.title()).isEmpty())searchTitle=cleanTitle(art.title());}catch(Exception ignored){}
                 if(tags instanceof com.archos.mediascraper.EpisodeTags ep){
                     com.archos.mediascraper.ShowTags show=com.archos.mediascraper.TagsFactory.buildShowTags(getApplicationContext(),ep.getShowId());
-                    if(show!=null){imdb=show.getImdbId();searchTitle=show.getTitle();}
+                    if(show!=null){if(imdb==null||imdb.isBlank())imdb=show.getImdbId();if(!cleanTitle(show.getTitle()).isEmpty())searchTitle=cleanTitle(show.getTitle());}
                 }
-                if(!video.hasScraperData()){
-                    com.archos.mediascraper.preprocess.SearchInfo parsed=com.archos.mediascraper.preprocess.SearchPreprocessor.instance().parseFileBased(video.getFileUri(),video.getFileUri());
-                    if(parsed instanceof com.archos.mediascraper.preprocess.MovieSearchInfo movie){searchTitle=movie.getName();try{year=Integer.parseInt(movie.getYear());}catch(Exception ignored){}}
-                    if(parsed instanceof com.archos.mediascraper.preprocess.TvShowSearchInfo show){searchTitle=show.getShowName();season=show.getSeason();episode=show.getEpisode();}
+                Uri uri=video.getFileUri();
+                boolean isHttp=uri!=null&&("http".equalsIgnoreCase(uri.getScheme())||"https".equalsIgnoreCase(uri.getScheme()));
+                if(!video.hasScraperData()&&!isHttp){
+                    com.archos.mediascraper.preprocess.SearchInfo parsed=com.archos.mediascraper.preprocess.SearchPreprocessor.instance().parseFileBased(uri,uri);
+                    if(parsed instanceof com.archos.mediascraper.preprocess.MovieSearchInfo movie){String n=cleanTitle(movie.getName());if(!n.isEmpty())searchTitle=n;try{year=Integer.parseInt(movie.getYear());}catch(Exception ignored){}}
+                    if(parsed instanceof com.archos.mediascraper.preprocess.TvShowSearchInfo show){String n=cleanTitle(show.getShowName());if(!n.isEmpty())searchTitle=n;if(season<0)season=show.getSeason();if(episode<0)episode=show.getEpisode();}
                 }
+                if(!intentHeading.isEmpty()&&(searchTitle.isEmpty()||isHttp||"video".equalsIgnoreCase(searchTitle)))searchTitle=intentHeading;
+                else if(!intentTitle.isEmpty()&&(searchTitle.isEmpty()||isHttp||"video".equalsIgnoreCase(searchTitle)))searchTitle=stripEpisodeSuffix(intentTitle);
+                if(searchTitle.isEmpty())searchTitle=stripEpisodeSuffix(intentTitle);
                 if(video.isIndexed())try(Cursor fps=getContentResolver().query(com.archos.mediaprovider.video.VideoStore.Video.Media.EXTERNAL_CONTENT_URI,
                         new String[]{com.archos.mediaprovider.video.VideoStore.Video.VideoColumns.ARCHOS_FRAMES_PER_THOUSAND_SECONDS},"_id=?",new String[]{Long.toString(video.getId())},null)){
                     if(fps!=null&&fps.moveToFirst()&&fps.getDouble(0)>0)videoFps=fps.getDouble(0)/1000.0;
                 }catch(Exception ignored){/* Unknown frame rate is not treated as evidence. */}
-                handler.post(()->{if(isDestroyed())return;query.setText(searchTitle);search();});
+                handler.post(()->{
+                    if(isDestroyed())return;
+                    query.setText(searchTitle);
+                    query.setSelection(query.getText().length());
+                    if(!searchTitle.isEmpty()||(imdb!=null&&imdb.matches("tt[0-9]+")))search();
+                    else{status.setText(l("اكتب اسم الفيلم أو المسلسل ثم اضغط بحث","Type the movie or show title and press Search"));query.requestFocus();}
+                });
             }catch(Exception e){message(l("تعذر قراءة معلومات الفيديو","Could not read video information"));}
         });
     }
+    private static String cleanTitle(String raw){if(raw==null)return "";String t=raw.trim();return (t.isEmpty()||"null".equalsIgnoreCase(t))?"":t;}
+    private static String stripEpisodeSuffix(String title){return title==null?"":title.replaceAll("(?i)\\s*S\\d{1,2}\\s*E\\d{1,3}.*$","").trim();}
     private TextView button(LinearLayout parent,String text,Runnable action){TextView t=CinemaUi.text(this,CinemaTokens.BODY,false);t.setText(text);t.setPadding(dp(this,16),dp(this,11),dp(this,16),dp(this,11));focusable(t);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.topMargin=dp(this,8);parent.addView(t,p);t.setOnClickListener(v->action.run());return t;}
     private String languageLabel(){
         return l("لغة البحث · ","Search language · ")+CinemaAutoSubtitles.languageLabel(language);

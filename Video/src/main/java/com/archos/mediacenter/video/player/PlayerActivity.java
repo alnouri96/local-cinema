@@ -2156,8 +2156,10 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                 .setTitle(com.archos.mediacenter.video.leanback.cinema.CinemaUi.label(this,"الترجمة الثانية","Secondary subtitle"))
                 .setItems(ui,(dialog,which)->{
                     switch(which){
-                        case 0 -> startActivityForResult(new Intent(this,com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleBrowserActivity.class)
-                                .setData(video).putExtra("secondary_subtitle",true),SECONDARY_SUBTITLE_REQUEST);
+                        case 0 -> startActivityForResult(new Intent(this,com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.class)
+                                .putExtra(com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.EXTRA_FILTER_MODE,
+                                        com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.FILTER_SUBTITLES_ONLY)
+                                .putExtra("secondary_subtitle",true),SECONDARY_SUBTITLE_REQUEST);
                         case 1 -> mSecondarySubtitle.showAppearance();
                         case 2 -> mSecondarySubtitle.clear();
                     }
@@ -4224,16 +4226,18 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                                     android.widget.Toast.LENGTH_LONG).show();
                         } else {
                             Intent subIntent = new Intent(Intent.ACTION_MAIN);
-                            subIntent.setClass(mContext, com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleBrowserActivity.class);
-                            subIntent.setData(uri);
+                            subIntent.setClass(mContext, com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.class);
+                            subIntent.putExtra(com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.EXTRA_FILTER_MODE,
+                                    com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.FILTER_SUBTITLES_ONLY);
                             startActivityForResult(subIntent, SUBTITLE_REQUEST);
                         }
                     }).show();
             return;
         }
         Intent subIntent = new Intent(Intent.ACTION_MAIN);
-        subIntent.setClass(mContext, com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleBrowserActivity.class);
-        subIntent.setData(uri);
+        subIntent.setClass(mContext, com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.class);
+        subIntent.putExtra(com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.EXTRA_FILTER_MODE,
+                com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.FILTER_SUBTITLES_ONLY);
         startActivityForResult(subIntent, SUBTITLE_REQUEST);
     }
 

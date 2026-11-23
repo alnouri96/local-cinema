@@ -141,17 +141,24 @@ public final class StremioAddons {
         public final long sizeBytes;
         public final int seeds;
         public final List<String> languages;
+        public final String userAgent;
+        public final String referer;
 
         public Stream(String addonName, String title, String quality, String url, String format) {
             this(addonName, title, quality, url, format, -1, 0, -1);
         }
 
         Stream(String addonName, String title, String quality, String url, String format, int fileIndex, long sizeBytes, int seeds) {
-            this(addonName, title, quality, url, format, fileIndex, sizeBytes, seeds, List.of());
+            this(addonName, title, quality, url, format, fileIndex, sizeBytes, seeds, List.of(), "", "");
         }
 
         Stream(String addonName, String title, String quality, String url, String format, int fileIndex,
                long sizeBytes, int seeds, List<String> languages) {
+            this(addonName, title, quality, url, format, fileIndex, sizeBytes, seeds, languages, "", "");
+        }
+
+        Stream(String addonName, String title, String quality, String url, String format, int fileIndex,
+               long sizeBytes, int seeds, List<String> languages, String userAgent, String referer) {
             this.languages = languages;
             this.seeds = seeds;
             this.fileIndex = fileIndex;
@@ -161,6 +168,8 @@ public final class StremioAddons {
             this.quality = quality;
             this.url = url;
             this.format = format;
+            this.userAgent = userAgent == null ? "" : userAgent;
+            this.referer = referer == null ? "" : referer;
         }
 
         public boolean torrent() { return "torrent".equals(format); }
@@ -475,7 +484,7 @@ public final class StremioAddons {
 
     private static boolean unsupportedMovieProvider(String name) {
         String key = name.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
-        return key.equals("besttorrents") || key.startsWith("fayatv") || key.equals("watchhub");
+        return key.equals("watchhub");
     }
 
     public static String localizedDescription(Object raw, Context context) {
@@ -600,7 +609,11 @@ public final class StremioAddons {
         prefs(context).edit().putString(KEY_ADDONS, arr.toString()).commit();
     }
 
-    public record Poster(String id, String type, String title, String image, String backdrop, String description, String year, double rating, String released, JSONArray genres, String imdb, long tmdb) {}
+    public record Poster(String id, String type, String title, String image, String backdrop, String description, String year, double rating, String released, JSONArray genres, String imdb, long tmdb, String posterShape) {
+        public Poster(String id, String type, String title, String image, String backdrop, String description, String year, double rating, String released, JSONArray genres, String imdb, long tmdb) {
+            this(id, type, title, image, backdrop, description, year, rating, released, genres, imdb, tmdb, "");
+        }
+    }
     public record EpisodeChoice(int season, int episode, String title, String streamId) {
         public EpisodeChoice(int season, int episode, String title) { this(season, episode, title, ""); }
     }
@@ -973,12 +986,13 @@ public final class StremioAddons {
             if (id.isBlank() || title.isBlank() || (!needle.isBlank() && !title.toLowerCase(Locale.ROOT).contains(needle))) continue;
             String poster = optStr(row, "poster");
             if (poster.isBlank()) poster = optStr(row, "logo");
+            String posterShape = optStr(row, "posterShape");
             String imdb = id.matches("tt[0-9]+") ? id : optStr(row, "imdb_id");
             out.putIfAbsent(effectiveType + ":" + id, new Poster(id, effectiveType, title, poster,
                     optStr(row, "background"), optStr(row, "description"),
                     year(optStr(row, "releaseInfo").isBlank() ? optStr(row, "year") : optStr(row, "releaseInfo")),
                     rating(row.optDouble("imdbRating", 0.0)), date(optStr(row, "released")), row.optJSONArray("genres"),
-                    imdb, row.optLong("tmdb_id", 0)));
+                    imdb, row.optLong("tmdb_id", 0), posterShape));
         }
     }
 
@@ -1099,7 +1113,12 @@ public final class StremioAddons {
     }
 
     public static List<String> arabicSubtitleUrls(Context context, String imdb, int season, int episode) {
+        return subtitleUrls(context, imdb, season, episode, "ar");
+    }
+
+    public static List<String> subtitleUrls(Context context, String imdb, int season, int episode, String languageCode) {
         if (imdb == null || !imdb.matches("tt[0-9]+")) return List.of();
+        String target = languageCode == null || languageCode.isBlank() ? "ar" : languageCode.trim().toLowerCase(Locale.ROOT);
         var urls = new java.util.LinkedHashSet<String>();
         String resource = episode > 0 ? "/subtitles/series/" + imdb + ":" + season + ":" + episode
                 : "/subtitles/movie/" + imdb;
@@ -1108,21 +1127,37 @@ public final class StremioAddons {
             if (!capabilities(addon).subtitles()) continue;
             try {
                 JSONArray rows = new JSONObject(fetchText(addon.baseUrl + resource + ".json")).optJSONArray("subtitles");
-                for (int i = 0; rows != null && i < rows.length() && urls.size() < 5; i++) {
+                for (int i = 0; rows != null && i < rows.length() && urls.size() < 6; i++) {
                     JSONObject row = rows.optJSONObject(i);
                     if (row == null) continue;
                     String language = row.optString("lang").toLowerCase(Locale.ROOT);
                     String url = row.optString("url");
-                    if ((language.equals("ar") || language.equals("ara") || language.equals("arabic")
-                            || language.startsWith("ar-")) && isHttpUrl(url)) urls.add(url);
+                    if (subtitleLangMatches(language, target) && isHttpUrl(url)) urls.add(url);
                 }
             } catch (Exception ignored) {}
         }
         if (urls.isEmpty() && !Thread.currentThread().isInterrupted()) {
-            ZeroConfigSubtitles.search(imdb, episode > 0, season, episode, "ar").stream().limit(5)
+            ZeroConfigSubtitles.search(imdb, episode > 0, season, episode, target).stream().limit(6)
                     .map(subtitle -> subtitle.url).filter(StremioAddons::isHttpUrl).forEach(urls::add);
         }
         return List.copyOf(urls);
+    }
+
+    private static boolean subtitleLangMatches(String lang, String target) {
+        if (lang == null || lang.isBlank()) return false;
+        if (target.isEmpty()) return true;
+        if (lang.equals(target) || lang.startsWith(target + "-") || lang.startsWith(target + "_")) return true;
+        return switch (target) {
+            case "ar", "ara", "arabic" -> lang.equals("ar") || lang.equals("ara") || lang.equals("arabic") || lang.startsWith("ar-");
+            case "en", "eng", "english" -> lang.equals("en") || lang.equals("eng") || lang.equals("english") || lang.startsWith("en-");
+            case "fr", "fre", "fra", "french" -> lang.equals("fr") || lang.equals("fre") || lang.equals("fra") || lang.equals("french") || lang.startsWith("fr-");
+            case "es", "spa", "spanish" -> lang.equals("es") || lang.equals("spa") || lang.equals("spanish") || lang.startsWith("es-");
+            case "de", "ger", "deu", "german" -> lang.equals("de") || lang.equals("ger") || lang.equals("deu") || lang.equals("german") || lang.startsWith("de-");
+            case "tr", "tur", "turkish" -> lang.equals("tr") || lang.equals("tur") || lang.equals("turkish") || lang.startsWith("tr-");
+            case "fa", "per", "fas", "persian" -> lang.equals("fa") || lang.equals("per") || lang.equals("fas") || lang.equals("persian") || lang.startsWith("fa-");
+            case "ku", "kur", "kurdish" -> lang.equals("ku") || lang.equals("kur") || lang.equals("kurdish") || lang.startsWith("ku-");
+            default -> lang.contains(target);
+        };
     }
 
     private static boolean supportedType(String type) {
@@ -1154,8 +1189,9 @@ public final class StremioAddons {
                 + (series && !fullEpisodeId ? suffix : "") + ".json";
         Addon targetOnly = (only != null && mayStream(only)) ? only : null;
         var addons = list(context).stream().filter(item -> item.enabled && mayStream(item)
-                && (targetOnly == null || targetOnly.manifestUrl.equalsIgnoreCase(item.manifestUrl))
-                && acceptsStream(item, type, id))
+                && (targetOnly != null
+                        ? targetOnly.manifestUrl.equalsIgnoreCase(item.manifestUrl)
+                        : acceptsStream(item, type, id)))
                 .collect(java.util.stream.Collectors.toList());
         var statuses = new java.util.concurrent.ConcurrentHashMap<String, StreamHealth>();
         var tasks = addons.stream().<java.util.concurrent.Callable<List<Stream>>>map(addon -> () -> {
@@ -1203,9 +1239,12 @@ public final class StremioAddons {
 
     private static boolean matchesManifest(JSONArray values, String value, boolean prefix) {
         if (values == null || values.length() == 0) return true;
+        String lowerVal = value == null ? "" : value.toLowerCase(Locale.ROOT);
         for (int i = 0; i < values.length(); i++) {
             String rule = values.optString(i);
-            if (prefix ? value.startsWith(rule) : value.equals(rule)) return true;
+            if (rule == null || rule.isBlank()) continue;
+            String lowerRule = rule.toLowerCase(Locale.ROOT);
+            if (prefix ? lowerVal.startsWith(lowerRule) : lowerVal.equals(lowerRule)) return true;
         }
         return false;
     }
@@ -1253,8 +1292,14 @@ public final class StremioAddons {
             for (int i = 0; streams != null && i < Math.min(streams.length(), 80); i++) {
                 JSONObject row = streams.optJSONObject(i);
                 if (row == null) continue;
-                String url = row.optString("url");
-                if (url.isBlank() && isTorrentMagnet(row.optString("externalUrl"))) url = row.optString("externalUrl");
+                String url = optStr(row, "url");
+                if (url.isBlank()) url = optStr(row, "streamUrl");
+                if (url.isBlank()) {
+                    String ext = optStr(row, "externalUrl");
+                    if (isTorrentMagnet(ext) || (isHttpUrl(ext) && ext.toLowerCase(Locale.ROOT).matches(".*\\.(m3u8|mpd|ts|mp4|mkv|webm)(\\?.*)?$"))) {
+                        url = ext;
+                    }
+                }
                 String hash = row.optString("infoHash");
                 if (url.isBlank() && hash.matches("(?i)[a-f0-9]{40}")) {
                     var magnet = new StringBuilder("magnet:?xt=urn:btih:").append(hash);
@@ -1277,12 +1322,27 @@ public final class StremioAddons {
                 String title = (row.optString("name") + " " + row.optString("title", row.optString("description")))
                         .replace('\n', ' ').trim();
                 JSONObject hints = row.optJSONObject("behaviorHints");
+                String streamUa = "";
+                String streamReferer = "";
+                if (hints != null) {
+                    JSONObject proxyHeaders = hints.optJSONObject("proxyHeaders");
+                    JSONObject reqHeaders = proxyHeaders != null ? proxyHeaders.optJSONObject("request") : null;
+                    if (reqHeaders != null) {
+                        var keys = reqHeaders.keys();
+                        while (keys.hasNext()) {
+                            String k = keys.next();
+                            if ("user-agent".equalsIgnoreCase(k)) streamUa = optStr(reqHeaders, k);
+                            else if ("referer".equalsIgnoreCase(k) || "referrer".equalsIgnoreCase(k)) streamReferer = optStr(reqHeaders, k);
+                        }
+                    }
+                }
                 long size = row.optLong("size", hints == null ? 0 : hints.optLong("videoSize"));
                 if (size <= 0) size = displaySize(row.optString("size") + " " + title + " " + (hints == null ? "" : hints.optString("filename")));
                 String metadata = title + " " + (hints == null ? "" : hints.optString("filename"));
                 String languages = row.optString("language", row.optString("languages", ""));
                 results.add(new Stream(addon.name, title, extractQuality(metadata), url, format,
-                        Math.max(-1, row.optInt("fileIdx", -1)), Math.max(0, size), seeds(row, hints, title), extractLanguages(languages + " " + metadata)));
+                        Math.max(-1, row.optInt("fileIdx", -1)), Math.max(0, size), seeds(row, hints, title),
+                        extractLanguages(languages + " " + metadata), streamUa, streamReferer));
             }
         } catch (HttpFailure failure) {
             if (failure.code == 401 || failure.code == 403 || failure.code == 410 || failure.code == 429) {
@@ -1379,7 +1439,11 @@ public final class StremioAddons {
                 connection.setConnectTimeout(4500);
                 connection.setReadTimeout(4500);
                 connection.setInstanceFollowRedirects(false);
-                connection.setRequestProperty("User-Agent", USER_AGENT);
+                connection.setRequestProperty("User-Agent",
+                        stream.userAgent != null && !stream.userAgent.isBlank() ? stream.userAgent : USER_AGENT);
+                if (stream.referer != null && !stream.referer.isBlank()) {
+                    connection.setRequestProperty("Referer", stream.referer);
+                }
                 if (!playlist) connection.setRequestProperty("Range", "bytes=0-1023");
                 int status = connection.getResponseCode();
                 if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
@@ -1462,7 +1526,7 @@ public final class StremioAddons {
             connection.setReadTimeout(timeout);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("User-Agent", USER_AGENT);
-            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("Accept", "application/json, application/xml, text/xml, */*;q=0.8");
             try {
                 int code = connection.getResponseCode();
                 if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {

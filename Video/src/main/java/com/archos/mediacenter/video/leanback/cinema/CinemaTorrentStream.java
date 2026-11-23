@@ -29,19 +29,33 @@ import java.util.Arrays;
 import java.util.Set;
 
 final class CinemaTorrentStream {
+    record Status(int percent, int seeds, int peers, long downloadBytesPerSec, boolean metadataReady) {}
+
     private static final int MIB = 1024 * 1024;
-    private static final int START_MIN_BYTES = 2 * MIB;
-    private static final int START_MAX_BYTES = 5 * MIB;
-    private static final int READ_AHEAD_BYTES = 20 * MIB;
-    private static final int READER_REFILL_BYTES = 4 * MIB;
+    private static final int START_MIN_BYTES = (int) (1.25 * MIB);
+    private static final int START_MAX_BYTES = 3 * MIB;
+    private static final int READ_AHEAD_BYTES = 24 * MIB;
+    private static final int READER_REFILL_BYTES = 5 * MIB;
     private static final int INDEX_BYTES = MIB / 2;
-    private static final long SPEED_SAMPLE_MS = 750;
-    private static final long START_RATE_BYTES_PER_SECOND = MIB / 3;
-    private static final long METADATA_TIMEOUT_MS = 65_000;
-    private static final long PIECE_IDLE_MS = 65_000;
-    private static final long PIECE_LIMIT_MS = 120_000;
-    private static final long PEER_REFRESH_MS = 15_000;
-    private static final int PIECE_PRIORITY_STEP_MS = 120;
+    private static final long SPEED_SAMPLE_MS = 600;
+    private static final long START_RATE_BYTES_PER_SECOND = 220 * 1024;
+    private static final long METADATA_TIMEOUT_MS = 55_000;
+    private static final long PIECE_IDLE_MS = 55_000;
+    private static final long PIECE_LIMIT_MS = 110_000;
+    private static final long PEER_REFRESH_MS = 6_000;
+    private static final int PIECE_PRIORITY_STEP_MS = 60;
+    private static final String[] FAST_PUBLIC_TRACKERS = {
+            "udp://tracker.opentrackr.org:1337/announce",
+            "udp://open.stealth.si:80/announce",
+            "udp://tracker.torrent.eu.org:451/announce",
+            "udp://exodus.desync.com:6969/announce",
+            "udp://open.demonii.com:1337/announce",
+            "udp://explodie.org:6969/announce",
+            "udp://tracker.tiny-vps.com:6969/announce",
+            "http://tracker.opentrackr.org:1337/announce"
+    };
+    private static final String DHT_BOOTSTRAP_NODES =
+            "router.bittorrent.com:6881,router.utorrent.com:6881,dht.transmissionbt.com:6881,dht.aelitis.com:6881";
     static final String PREPARED_TOKEN = "prepared_torrent";
     private static final ConcurrentHashMap<String, CinemaTorrentStream> PREPARED = new ConcurrentHashMap<>();
     private static final long STORAGE_RESERVE = 64L * 1024 * 1024;
@@ -67,8 +81,21 @@ final class CinemaTorrentStream {
 
     CinemaTorrentStream(Context context, String magnet, int fileIndex) {
         this.context = context.getApplicationContext();
-        this.magnet = nativeMagnet(magnet);
+        this.magnet = augmentTrackers(nativeMagnet(magnet));
         this.fileIndex = fileIndex;
+    }
+
+    private static String augmentTrackers(String rawMagnet) {
+        if (rawMagnet == null || !rawMagnet.startsWith("magnet:?")) return rawMagnet;
+        String lower = rawMagnet.toLowerCase(java.util.Locale.ROOT);
+        var sb = new StringBuilder(rawMagnet);
+        for (String tracker : FAST_PUBLIC_TRACKERS) {
+            String encoded = Uri.encode(tracker);
+            if (!lower.contains(encoded.toLowerCase(java.util.Locale.ROOT)) && sb.length() + encoded.length() + 4 < 7600) {
+                sb.append("&tr=").append(encoded);
+            }
+        }
+        return sb.toString();
     }
 
     String offerToPlayer() {
@@ -85,17 +112,36 @@ final class CinemaTorrentStream {
     }
 
     void prepare(IntConsumer progress) throws IOException {
-        progress.accept(0);
-        startIfNeeded();
-        preload(progress);
+        prepareWithStatus(s -> progress.accept(s.percent()));
+    }
+
+    void prepareWithStatus(java.util.function.Consumer<Status> listener) throws IOException {
+        listener.accept(new Status(0, 0, 0, 0L, false));
+        startIfNeeded(listener);
+        preload(listener);
         synchronized (lifecycle) {
             checkActive();
             if (http == null) http = new CinemaTorrentHttpServer(this, fileSize, mediaFile.getName());
         }
-        progress.accept(100);
+        listener.accept(currentStatus(100, true));
     }
 
-    private void preload(IntConsumer progress) throws IOException {
+    private Status currentStatus(int percent, boolean metadataReady) {
+        int seeds = 0;
+        int peers = 0;
+        long rate = 0L;
+        if (handle != null && handle.isValid()) {
+            try {
+                var st = handle.status();
+                seeds = Math.max(st.numSeeds(), st.listSeeds());
+                peers = st.numPeers();
+                rate = Math.max(0L, st.downloadPayloadRate());
+            } catch (Exception ignored) {}
+        }
+        return new Status(percent, seeds, peers, rate, metadataReady);
+    }
+
+    private void preload(java.util.function.Consumer<Status> listener) throws IOException {
         long min = Math.min(fileSize, START_MIN_BYTES);
         long max = Math.min(fileSize, START_MAX_BYTES);
         long contiguous = 0;
@@ -105,22 +151,24 @@ final class CinemaTorrentStream {
         long sampledAt = started;
         long previousSample = 0;
         long previousDownloaded = 0;
+        long lastUiEmit = 0L;
         int steadySamples = 0;
-        int shown = 0;
+        int shown = 1;
         synchronized (lifecycle) {
             prioritizeWindow(0, max);
         }
         while (true) {
             checkActive();
             long now = SystemClock.elapsedRealtime();
+            long totalDone;
             synchronized (lifecycle) {
                 checkActive();
                 while (contiguous < max && handle.havePiece(pieceAt(contiguous))) {
                     contiguous = Math.min(max, contiguous + bytesInPiece(contiguous));
                 }
-                long downloaded = handle.status().totalDone();
-                if (downloaded > previousDownloaded) {
-                    previousDownloaded = downloaded;
+                totalDone = handle.status().totalDone();
+                if (totalDone > previousDownloaded) {
+                    previousDownloaded = totalDone;
                     idleUntil = now + PIECE_IDLE_MS;
                 }
                 nextAnnounce = refreshPeers(nextAnnounce);
@@ -132,17 +180,20 @@ final class CinemaTorrentStream {
                 sampledAt = now;
                 previousSample = contiguous;
             }
-            if (contiguous >= max || (contiguous >= min && steadySamples >= 2)) {
+            if (contiguous >= max || (contiguous >= min && steadySamples >= 1)) {
                 synchronized (lifecycle) {
                     checkActive();
                     prioritizeWindow(0, READ_AHEAD_BYTES);
                 }
                 return;
             }
-            int percent = Math.min(99, (int) (contiguous * 100 / max));
-            if (percent > shown) {
+            // Blend contiguous verified pieces with partial bytes in-flight so progress smoothly advances
+            long effectiveBytes = Math.min(max, Math.max(contiguous, Math.min(max - 1, totalDone)));
+            int percent = Math.max(shown, Math.min(99, (int) (effectiveBytes * 100 / Math.max(1L, max))));
+            if (percent > shown || now - lastUiEmit >= 350L) {
                 shown = percent;
-                progress.accept(percent);
+                lastUiEmit = now;
+                listener.accept(currentStatus(percent, true));
             }
             if (now >= Math.min(idleUntil, started + PIECE_LIMIT_MS)) {
                 throw new Failure(com.archos.mediacenter.video.R.string.addon_torrent_peers);
@@ -183,7 +234,7 @@ final class CinemaTorrentStream {
         return FILE_SELECTION.matcher(magnet).replaceFirst("");
     }
 
-    private void startIfNeeded() throws IOException {
+    private void startIfNeeded(java.util.function.Consumer<Status> listener) throws IOException {
         synchronized (lifecycle) {
             checkActive();
             if (handle != null) return;
@@ -191,9 +242,23 @@ final class CinemaTorrentStream {
             try {
                 directory = createCacheDirectory();
                 SettingsPack settings = new SettingsPack();
-                settings.connectionsLimit(320);
+                settings.connectionsLimit(500);
+                settings.setEnableDht(true);
+                settings.setBoolean(org.libtorrent4j.swig.settings_pack.bool_types.enable_lsd.swigValue(), true);
+                settings.setBoolean(org.libtorrent4j.swig.settings_pack.bool_types.enable_upnp.swigValue(), true);
+                settings.setBoolean(org.libtorrent4j.swig.settings_pack.bool_types.enable_natpmp.swigValue(), true);
+                settings.setBoolean(org.libtorrent4j.swig.settings_pack.bool_types.announce_to_all_trackers.swigValue(), true);
                 settings.setBoolean(org.libtorrent4j.swig.settings_pack.bool_types.announce_to_all_tiers.swigValue(), true);
                 settings.setBoolean(org.libtorrent4j.swig.settings_pack.bool_types.prioritize_partial_pieces.swigValue(), true);
+                settings.setBoolean(org.libtorrent4j.swig.settings_pack.bool_types.strict_end_game_mode.swigValue(), true);
+                settings.setBoolean(org.libtorrent4j.swig.settings_pack.bool_types.allow_multiple_connections_per_ip.swigValue(), true);
+                settings.setInteger(org.libtorrent4j.swig.settings_pack.int_types.connection_speed.swigValue(), 120);
+                settings.setInteger(org.libtorrent4j.swig.settings_pack.int_types.peer_connect_timeout.swigValue(), 5);
+                settings.setInteger(org.libtorrent4j.swig.settings_pack.int_types.request_timeout.swigValue(), 8);
+                settings.setInteger(org.libtorrent4j.swig.settings_pack.int_types.piece_timeout.swigValue(), 10);
+                settings.setInteger(org.libtorrent4j.swig.settings_pack.int_types.max_out_request_queue.swigValue(), 1500);
+                settings.setInteger(org.libtorrent4j.swig.settings_pack.int_types.mixed_mode_algorithm.swigValue(), 0);
+                settings.setString(org.libtorrent4j.swig.settings_pack.string_types.dht_bootstrap_nodes.swigValue(), DHT_BOOTSTRAP_NODES);
                 settings.setMaxMetadataSize(4 * 1024 * 1024);
                 settings.listenInterfaces("0.0.0.0:0,[::]:0");
                 manager = new SessionManager();
@@ -211,15 +276,22 @@ final class CinemaTorrentStream {
                 }
                 if (handle == null) throw new IOException("Torrent could not start");
                 handle.unsetFlags(TorrentFlags.AUTO_MANAGED);
-                handle.swig().set_max_connections(180);
+                handle.swig().set_max_connections(250);
                 handle.resume();
+                handle.forceReannounce();
                 handle.forceDHTAnnounce();
 
                 TorrentInfo info = handle.torrentFile();
                 long nextAnnounce = SystemClock.elapsedRealtime() + PEER_REFRESH_MS;
+                long lastEmit = 0L;
                 deadline = SystemClock.elapsedRealtime() + METADATA_TIMEOUT_MS;
                 while ((info == null || !info.isValid()) && SystemClock.elapsedRealtime() < deadline) {
                     checkActive();
+                    long now = SystemClock.elapsedRealtime();
+                    if (now - lastEmit >= 400L) {
+                        lastEmit = now;
+                        listener.accept(currentStatus(0, false));
+                    }
                     nextAnnounce = refreshPeers(nextAnnounce);
                     sleep();
                     info = handle.torrentFile();
@@ -381,7 +453,7 @@ final class CinemaTorrentStream {
     private long refreshPeers(long nextAnnounce) {
         long now = SystemClock.elapsedRealtime();
         if (now < nextAnnounce) return nextAnnounce;
-        if (handle.status().numPeers() == 0) {
+        if (handle.status().numPeers() < 4) {
             handle.forceReannounce();
             handle.forceDHTAnnounce();
         }

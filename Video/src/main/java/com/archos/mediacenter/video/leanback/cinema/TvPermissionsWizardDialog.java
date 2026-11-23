@@ -202,7 +202,28 @@ public final class TvPermissionsWizardDialog {
 
         outer.addView(actions);
 
-        dlg.setContentView(outer);
+        android.widget.FrameLayout framed = new android.widget.FrameLayout(activity);
+        GradientDrawable framedBg = new GradientDrawable();
+        framedBg.setColor(0xff171717);
+        framedBg.setStroke(dp(activity, 2), CinemaTokens.GOLD);
+        framedBg.setCornerRadius(dp(activity, 16));
+        framed.setBackground(framedBg);
+        framed.setClipToOutline(true);
+
+        android.widget.ImageView artBg = new android.widget.ImageView(activity);
+        artBg.setScaleType(android.widget.ImageView.ScaleType.CENTER_CROP);
+        artBg.setImageResource(CinemaArtStorage.randomBuiltInResId());
+        artBg.setAlpha(0.24f);
+        framed.addView(artBg, new android.widget.FrameLayout.LayoutParams(-1, -1));
+
+        View artScrim = new View(activity);
+        artScrim.setBackgroundColor(0xC8171717);
+        framed.addView(artScrim, new android.widget.FrameLayout.LayoutParams(-1, -1));
+
+        outer.setBackground(null);
+        framed.addView(outer, new android.widget.FrameLayout.LayoutParams(-1, -2));
+
+        dlg.setContentView(framed);
         dlg.setOnDismissListener(d -> prefs.edit().putBoolean(PREF_SHOWN, true).apply());
         Window w = dlg.getWindow();
         if (w != null) {

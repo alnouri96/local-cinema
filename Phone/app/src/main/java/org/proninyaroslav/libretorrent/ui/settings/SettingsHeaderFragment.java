@@ -110,7 +110,6 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
                             if (isAdded()) {
                                 String msg = l("تم حفظ النسخة الاحتياطية في Google Drive ✓", "Unified backup saved to Google Drive ✓");
                                 setGoogleStatus(msg, false);
-                                CinemaSnackBanner.show(requireActivity(), msg);
                             }
                         });
                     } catch (Exception e) {
@@ -494,7 +493,6 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
                                             + (hadLive ? "\n(Included live TV + Phone data)"
                                             : "\n(Included Phone data)"));
                             setGoogleStatus(msg, false);
-                            CinemaSnackBanner.show(requireActivity(), msg);
                         }
                     });
                 } catch (LocalCinemaBackupManager.DriveAuthRecoverableException rec) {
@@ -565,7 +563,6 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
                         "\nTV settings could not be applied. Retry when the TV is online.")
                     : ""));
             setGoogleStatus(msg, false);
-            CinemaSnackBanner.show(requireActivity(), msg);
         });
     }
 
@@ -611,7 +608,6 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
                         if (!isAdded()) return;
                         String msg = l("تم تسجيل الخروج من حساب Google ✓", "Signed out of Google account ✓");
                         setGoogleStatus(msg, false);
-                        CinemaSnackBanner.show(requireActivity(), msg);
                     });
         } catch (Exception e) {
             setGoogleStatus(l("تعذّر تسجيل الخروج: ", "Sign-out failed: ") + e.getMessage(), true);

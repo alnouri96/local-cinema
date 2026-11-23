@@ -68,6 +68,9 @@ public final class CinemaArtModeActivity extends LeanbackActivity {
             for (int i = 0; i < saved.length(); i++) list.add(saved.getString(i));
             paths = List.copyOf(list);
         } catch (org.json.JSONException ignored) {}
+        if (paths.isEmpty()) {
+            paths = CinemaArtStorage.builtInUris(this);
+        }
 
         var root = new FrameLayout(this);
         root.setLayoutDirection(CinemaUi.arabic(this) ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
@@ -194,9 +197,18 @@ public final class CinemaArtModeActivity extends LeanbackActivity {
         return super.onKeyUp(key, event);
     }
 
+    private void restoreDefaultGallery() {
+        paths = CinemaArtStorage.builtInUris(this);
+        settings.edit().remove("images").apply();
+        index = -1;
+        errors = 0;
+        showingImage = false;
+        if (started) next(false);
+    }
+
     private void openSettings() {
         main.removeCallbacks(slide);
-        CinemaArtSettingsSheet.show(this, settings, this::chooseImages, this::update);
+        CinemaArtSettingsSheet.show(this, settings, this::chooseImages, this::restoreDefaultGallery, this::update);
         scheduleSlide();
     }
 

@@ -48,6 +48,10 @@ final class CinemaFileOperations {
         boolean isVideo() {
             return !directory && isVideoName(name);
         }
+
+        boolean isSubtitle() {
+            return !directory && isSubtitleName(name);
+        }
     }
 
     interface ProgressListener {
@@ -74,6 +78,11 @@ final class CinemaFileOperations {
     static boolean isVideoName(String name) {
         if (name == null) return false;
         return name.matches("(?i).*\\.(mkv|avi|mp4|m4v|mov|ts|m2ts|webm|mpg|mpeg|wmv|vob|3gp|flv)$");
+    }
+
+    static boolean isSubtitleName(String name) {
+        if (name == null) return false;
+        return name.matches("(?i).*\\.(srt|ass|ssa|vtt|sub|smi)$");
     }
 
     static String mimeTypeFor(String name) {

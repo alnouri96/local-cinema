@@ -11,6 +11,7 @@ import android.os.Environment;
 import android.provider.MediaStore;
 
 import com.archos.filecorelibrary.FileEditorFactory;
+import com.archos.mediacenter.video.R;
 
 import java.io.File;
 import java.io.IOException;
@@ -23,8 +24,29 @@ import java.util.Locale;
 final class CinemaArtStorage {
     static final String RELATIVE_PATH = Environment.DIRECTORY_PICTURES + "/LocalCinemaArt/";
     static final Uri GALLERY = Uri.parse("localcinema://art-gallery");
+    static final int[] BUILT_IN_DRAWABLES = {
+            R.drawable.ic_art_gallery_deer,
+            R.drawable.ic_art_gallery_landscape,
+            R.drawable.ic_art_gallery_still_life,
+            R.drawable.ic_art_gallery_horses,
+            R.drawable.ic_art_gallery_ocean
+    };
 
     record Photo(String name, Uri uri, long size, long changed) {}
+
+    static List<String> builtInUris(Context context) {
+        String pkg = context.getPackageName();
+        var out = new ArrayList<String>(BUILT_IN_DRAWABLES.length);
+        for (int resId : BUILT_IN_DRAWABLES) {
+            out.add("android.resource://" + pkg + "/" + resId);
+        }
+        return List.copyOf(out);
+    }
+
+    static int randomBuiltInResId() {
+        int idx = (int) (Math.abs(System.currentTimeMillis() / 10_000L) % BUILT_IN_DRAWABLES.length);
+        return BUILT_IN_DRAWABLES[idx];
+    }
 
     static String mime(String name) {
         int dot = name.lastIndexOf('.');
@@ -38,7 +60,9 @@ final class CinemaArtStorage {
     }
 
     static InputStream open(Context context, Uri uri) throws Exception {
-        if ("content".equals(uri.getScheme())) return context.getContentResolver().openInputStream(uri);
+        if ("content".equals(uri.getScheme()) || "android.resource".equals(uri.getScheme())) {
+            return context.getContentResolver().openInputStream(uri);
+        }
         return FileEditorFactory.getFileEditorForUrl(uri, context).getInputStream();
     }
 

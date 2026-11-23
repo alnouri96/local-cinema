@@ -53,6 +53,7 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
     public static final String EXTRA_FILTER_MODE = "cinema_filter_mode";
     public static final String FILTER_ALL = "all";
     public static final String FILTER_IMAGES_ONLY = "images";
+    public static final String FILTER_SUBTITLES_ONLY = "subtitles";
     static final String IMAGE_MODE = "cinema_image_mode";
     static final String SELECTED_IMAGES = "cinema_selected_images";
 
@@ -66,6 +67,7 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
     private List<Item> clipboard = List.of();
     private boolean clipboardMove;
     private boolean imagesOnly;
+    private boolean subtitlesOnly;
     private boolean selectMode;
     private boolean transferring;
 
@@ -102,6 +104,7 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
         String filterMode = getIntent().getStringExtra(EXTRA_FILTER_MODE);
         imagesOnly = getIntent().getBooleanExtra(IMAGE_MODE, false)
                 || FILTER_IMAGES_ONLY.equalsIgnoreCase(filterMode);
+        subtitlesOnly = FILTER_SUBTITLES_ONLY.equalsIgnoreCase(filterMode);
         selectMode = imagesOnly;
         requestStoragePermissions();
 
@@ -193,7 +196,11 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
         files.setItemAnimator(null);
         adapter = new Files();
         files.setAdapter(adapter);
-        page.addView(files, new LinearLayout.LayoutParams(-1, 0, 1));
+        FrameLayout filesViewport = new FrameLayout(this);
+        filesViewport.setClipChildren(true);
+        filesViewport.setClipToPadding(true);
+        filesViewport.addView(files, new FrameLayout.LayoutParams(-1, -1));
+        page.addView(filesViewport, new LinearLayout.LayoutParams(-1, 0, 1));
 
         refreshActionStrip();
         updateLayout();
@@ -570,6 +577,7 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
             try {
                 if (folder == null) {
                     result.addAll(CinemaFileOperations.listRootSources(this, imagesOnly));
+                    if (subtitlesOnly) result.removeIf(item -> CinemaArtStorage.GALLERY.equals(item.uri()));
                 } else if (CinemaArtStorage.GALLERY.equals(folder.uri())) {
                     for (var photo : CinemaArtStorage.gallery(this)) {
                         result.add(new Item(photo.name(), photo.uri(), false, photo.changed(), photo.size()));
@@ -580,6 +588,7 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
                         if (name == null || ".".equals(name) || "..".equals(name)) continue;
                         boolean directory = file.isDirectory();
                         if (imagesOnly && !directory && !CinemaFileOperations.isImageName(name)) continue;
+                        if (subtitlesOnly && !directory && !CinemaFileOperations.isSubtitleName(name)) continue;
                         result.add(new Item(name, file.getUri(), directory, file.lastModified(),
                                 directory ? 0 : file.getComputedLength()));
                     }
@@ -646,6 +655,8 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
         }
         if (entry.directory()) {
             enterDirectory(entry);
+        } else if (subtitlesOnly && entry.isSubtitle()) {
+            setResultAndFinish(entry.uri());
         } else if (imagesOnly) {
             toggleMarked(entry);
         } else if (entry.isImage()) {
@@ -876,10 +887,15 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
             holder.icon.setColorFilter(null);
 
             int fallbackIcon = entry.directory() ? R.drawable.cinema_folder
+                    : entry.isSubtitle() ? R.drawable.cinema_subtitles
                     : entry.isImage() ? android.R.drawable.ic_menu_gallery : R.drawable.cinema_play_movie;
             if (entry.directory()) {
                 holder.icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
                 holder.icon.setImageResource(fallbackIcon);
+                holder.icon.setColorFilter(CinemaTokens.GOLD);
+            } else if (entry.isSubtitle()) {
+                holder.icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                holder.icon.setImageResource(R.drawable.cinema_subtitles);
                 holder.icon.setColorFilter(CinemaTokens.GOLD);
             } else if (entry.isImage()) {
                 holder.icon.setScaleType(ImageView.ScaleType.CENTER_CROP);

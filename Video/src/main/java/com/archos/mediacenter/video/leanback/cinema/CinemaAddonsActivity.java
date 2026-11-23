@@ -252,15 +252,31 @@ public final class CinemaAddonsActivity extends FragmentActivity {
     }
 
     private boolean isChannelCatalog() {
-        return "tv".equalsIgnoreCase(selectedCatalogType)
-                || "channel".equalsIgnoreCase(selectedCatalogType)
-                || "sport".equalsIgnoreCase(selectedCatalogType);
+        if (isLiveChannelType(selectedCatalogType)) return true;
+        if ("movie".equalsIgnoreCase(selectedCatalogType) || "series".equalsIgnoreCase(selectedCatalogType)
+                || "anime".equalsIgnoreCase(selectedCatalogType)) return false;
+        if (selectedAddon != null && !streamOnlyBrowse) {
+            String hay = (selectedAddon.name + " " + selectedAddon.id + " " + (selectedCatalog == null ? "" : selectedCatalog))
+                    .toLowerCase(java.util.Locale.ROOT);
+            return hay.contains("faya") || hay.contains("iptv") || hay.contains("sport")
+                    || hay.contains("live") || hay.contains("channel");
+        }
+        return false;
+    }
+
+    private static boolean isLiveChannelType(String type) {
+        if (type == null || type.isBlank()) return false;
+        return switch (type.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "tv", "channel", "channels", "sport", "sports", "live", "event", "events", "iptv", "radio" -> true;
+            default -> false;
+        };
     }
 
     private static boolean isChannelPoster(StremioAddons.Poster poster) {
-        if (poster == null || poster.type() == null) return false;
-        String t = poster.type();
-        return "tv".equalsIgnoreCase(t) || "channel".equalsIgnoreCase(t) || "sport".equalsIgnoreCase(t);
+        if (poster == null) return false;
+        if (isLiveChannelType(poster.type())) return true;
+        String shape = poster.posterShape();
+        return "square".equalsIgnoreCase(shape) || "landscape".equalsIgnoreCase(shape);
     }
 
     private void openLive(boolean custom) {
@@ -330,8 +346,8 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         search.setId(View.generateViewId());
         grid.setNextFocusUpId(search.getId());
         var viewport = new FrameLayout(this);
-        viewport.setClipChildren(false);
-        viewport.setClipToPadding(false);
+        viewport.setClipChildren(true);
+        viewport.setClipToPadding(true);
         viewport.addView(grid, new FrameLayout.LayoutParams(-1, -1));
         root.addView(viewport, new LinearLayout.LayoutParams(-1, 0, 1));
         moreStatus = CinemaUi.text(this, 14, true);
@@ -527,10 +543,10 @@ public final class CinemaAddonsActivity extends FragmentActivity {
     private void applyPosterFocus(View tile, boolean focused) {
         tile.animate().cancel();
         tile.setForeground(focused ? CinemaUi.posterFocusRing(this, 3f) : null);
-        tile.setElevation(focused ? dp(3) : 0f);
-        tile.setTranslationZ(0f);
-        tile.setScaleX(focused ? 1.04f : 1f);
-        tile.setScaleY(focused ? 1.04f : 1f);
+        tile.setElevation(focused ? dp(4) : 0f);
+        tile.setTranslationZ(focused ? dp(2) : 0f);
+        tile.setScaleX(focused ? 1.035f : 1f);
+        tile.setScaleY(focused ? 1.035f : 1f);
     }
 
     private String posterMetadata(StremioAddons.Poster poster) {
@@ -575,15 +591,7 @@ public final class CinemaAddonsActivity extends FragmentActivity {
     }
 
     private void showPosterActions(StremioAddons.Poster poster) {
-        if (isChannelPoster(poster)) {
-            selectPoster(selectedAddon, poster);
-            return;
-        }
-        CinemaUi.showDialogWithButtonFocus(CinemaUi.dialog(this)
-                .setTitle(poster.title())
-                .setPositiveButton(R.string.addon_watch_now, (dialog, which) -> selectPoster(selectedAddon, poster))
-                .setNegativeButton(R.string.addon_watch_trailer, (dialog, which) -> openTrailer(poster)),
-                android.content.DialogInterface.BUTTON_POSITIVE);
+        selectPoster(selectedAddon, poster);
     }
 
     private void openTrailer(StremioAddons.Poster poster) {
@@ -642,7 +650,38 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         }
         var panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPaddingRelative(dp(16), dp(8), dp(16), dp(8));
+        panel.setLayoutDirection(CinemaUi.arabic(this) ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+        panel.setClipChildren(false);
+        panel.setClipToPadding(false);
+        panel.setPaddingRelative(dp(18), dp(14), dp(18), dp(10));
+
+        // Redesigned top header with Title + interactive Trailer & Audio/Languages controls
+        var topHeader = new LinearLayout(this);
+        topHeader.setOrientation(LinearLayout.HORIZONTAL);
+        topHeader.setGravity(Gravity.CENTER_VERTICAL);
+        topHeader.setClipChildren(false);
+        topHeader.setClipToPadding(false);
+        var headerLp = new LinearLayout.LayoutParams(-1, -2);
+        headerLp.bottomMargin = dp(12);
+        panel.addView(topHeader, headerLp);
+
+        var titleView = CinemaUi.text(this, 21, true);
+        titleView.setText(poster.title());
+        titleView.setTextColor(Color.WHITE);
+        titleView.setMaxLines(2);
+        titleView.setEllipsize(TextUtils.TruncateAt.END);
+        topHeader.addView(titleView, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        var trailerPill = dialogActionPill(getString(R.string.cinema_trailer_short), R.drawable.cinema_trailer);
+        var trailerLp = new LinearLayout.LayoutParams(-2, dp(40));
+        trailerLp.setMarginStart(dp(10));
+        topHeader.addView(trailerPill, trailerLp);
+
+        var langPill = dialogActionPill(getString(R.string.cinema_audio_lang_short), R.drawable.cinema_ic_audio);
+        var langLp = new LinearLayout.LayoutParams(-2, dp(40));
+        langLp.setMarginStart(dp(8));
+        topHeader.addView(langPill, langLp);
+
         var list = new ListView(this);
         list.setId(View.generateViewId());
         list.setDivider(null);
@@ -651,17 +690,26 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         list.setDrawSelectorOnTop(true);
 
         var strip = new LinearLayout(this);
+        strip.setClipChildren(false);
+        strip.setClipToPadding(false);
         if (seasons.size() > 1) {
             var scroll = new HorizontalScrollView(this);
             scroll.setHorizontalScrollBarEnabled(false);
+            scroll.setClipChildren(false);
+            scroll.setClipToPadding(false);
             scroll.addView(strip, new FrameLayout.LayoutParams(-2, -2));
             panel.addView(scroll, new LinearLayout.LayoutParams(-1, dp(54)));
         }
         int height = Math.min(310, getResources().getConfiguration().screenHeightDp / 2);
         panel.addView(list, new LinearLayout.LayoutParams(-1, dp(height)));
 
-        var dialog = CinemaUi.dialog(this).setTitle(poster.title()).setView(panel)
+        var dialog = CinemaUi.dialog(this).setView(panel)
                 .setNegativeButton(android.R.string.cancel, null).create();
+        trailerPill.setOnClickListener(v -> {
+            dialog.dismiss();
+            openTrailer(poster);
+        });
+        langPill.setOnClickListener(v -> CinemaLanguagePreferences.showDialog(this, null));
         int openingSeason = seasons.firstKey();
         var tabs = new TreeMap<Integer, TextView>();
         java.util.function.IntConsumer selectSeason = season -> {
@@ -714,10 +762,47 @@ public final class CinemaAddonsActivity extends FragmentActivity {
                 tabs.put(number, tab);
             }
         }
+        if (tabs.isEmpty()) {
+            trailerPill.setNextFocusDownId(list.getId());
+            langPill.setNextFocusDownId(list.getId());
+            list.setNextFocusUpId(trailerPill.getId());
+        }
         selectSeason.accept(openingSeason);
         dialog.show();
         View focus = tabs.containsKey(openingSeason) ? tabs.get(openingSeason) : list;
         focus.requestFocus();
+    }
+
+    private TextView dialogActionPill(String label, int iconRes) {
+        var pill = CinemaUi.text(this, 13, true);
+        pill.setId(View.generateViewId());
+        pill.setText(label);
+        pill.setTextColor(Color.WHITE);
+        pill.setGravity(Gravity.CENTER);
+        pill.setSingleLine();
+        pill.setFocusable(true);
+        pill.setClickable(true);
+        pill.setPaddingRelative(dp(12), 0, dp(12), 0);
+        var drawable = getDrawable(iconRes);
+        if (drawable != null) {
+            drawable = drawable.mutate();
+            drawable.setTint(GOLD);
+            int sz = dp(16);
+            drawable.setBounds(0, 0, sz, sz);
+            pill.setCompoundDrawablesRelative(drawable, null, null, null);
+            pill.setCompoundDrawablePadding(dp(6));
+        }
+        var states = new android.graphics.drawable.StateListDrawable();
+        var focusedBg = CinemaUi.rounded(0xff3d2e14, dp(12), GOLD);
+        focusedBg.setStroke(dp(2), GOLD);
+        states.addState(new int[]{android.R.attr.state_focused}, focusedBg);
+        states.addState(new int[]{}, CinemaUi.rounded(0xff25211c, dp(12), 0xff5a4a33));
+        pill.setBackground(states);
+        pill.setOnFocusChangeListener((v, focused) -> {
+            pill.setTextColor(focused ? GOLD : Color.WHITE);
+            v.animate().scaleX(focused ? 1.04f : 1f).scaleY(focused ? 1.04f : 1f).setDuration(100).start();
+        });
+        return pill;
     }
 
     private String episodeLabel(StremioAddons.EpisodeChoice episode) {

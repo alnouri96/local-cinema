@@ -25,7 +25,7 @@ git clone --recurse-submodules https://github.com/alnouri96/local-cinema.git
 | [MediaLib](MediaLib/) and [FileCoreLibrary](FileCoreLibrary/) | Media indexing, playback integration, and file access |
 | [shared-providers](shared-providers/) and [shared-updater](shared-updater/) | Provider clients and app updates |
 
-Start with [AGENTS.md](AGENTS.md) and [the current handoff](docs/CONTINUATION.md). Use the [release procedure](docs/RELEASE.md) to build signed APKs and verify them on both devices. See [third-party sources and licenses](docs/THIRD_PARTY.md) for attribution.
+Start with [AGENTS.md](AGENTS.md) and [HANDOFF.md](HANDOFF.md). Use the [release procedure](docs/RELEASE.md) to build signed APKs and verify them on both devices. See [third-party sources and licenses](docs/THIRD_PARTY.md) for attribution.
 
 ## Website and releases
 

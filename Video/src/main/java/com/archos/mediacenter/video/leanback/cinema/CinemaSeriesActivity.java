@@ -124,11 +124,13 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
         restartChip=CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_restart),com.archos.mediacenter.video.R.drawable.cinema_restart,()->{Episode e=currentEpisode();if((showMode&&selectedShowSeason!=null)||(!showMode&&focusedSeasonEpisode==null)){List<Episode> season=actionEpisodes();if(!season.isEmpty())playEpisode(season.get(0),true,true);}else if(e!=null)playEpisode(e,true,showMode);});
         listChip=CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_add_to_watchlist),com.archos.mediacenter.video.R.drawable.cinema_watchlist,()->{CinemaWatchlistActivity.toggleEpisodes(this,actionEpisodes());refreshActions();});
         trailerButton=CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_watch_series_trailer),com.archos.mediacenter.video.R.drawable.cinema_trailer,this::launchSeriesTrailer);
-        trailerButton.setVisibility(showMode?View.VISIBLE:View.GONE);
+        trailerButton.setVisibility(View.VISIBLE);
+        CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_audio_tracks),com.archos.mediacenter.video.R.drawable.cinema_ic_audio,()->CinemaPreferredAudio.choose(this,()->{}));
         seenChip=CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_mark_as_watched),
                 com.archos.mediacenter.video.R.drawable.cinema_check,this::toggleWatched);
         subsChip=CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_subtitles_cinemaseriesactivity),com.archos.mediacenter.video.R.drawable.cinema_subtitles,()->{});
         subsChip.setOnClickListener(v->subtitleMenu(subsChip));
+        CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_pref_languages_title),com.archos.mediacenter.video.R.drawable.cinema_globe,()->CinemaLanguagePreferences.showDialog(this,null));
         moreChip=CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_more),com.archos.mediacenter.video.R.drawable.cinema_more,()->{});
         moreChip.setOnClickListener(v->moreMenu(moreChip));
         for(int n=0;n<actions.getChildCount();n++){
@@ -202,6 +204,23 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent resultData) {
         super.onActivityResult(requestCode, resultCode, resultData);
+        if (requestCode == 914 && resultCode == RESULT_OK && resultData != null && resultData.getData() != null) {
+            Episode ep = currentEpisode();
+            Uri subUri = resultData.getData();
+            if (ep != null && ep.getFileUri() != null) {
+                io.execute(() -> {
+                    try (SubtitleStorage storage = new SubtitleStorage(this)) {
+                        storage.bind(ep.getFileUri(), subUri);
+                        handler.post(() -> {
+                            if (!isDestroyed()) Toast.makeText(this,
+                                    getString(com.archos.mediacenter.video.R.string.cinema_subtitle_choice_saved_for_playback),
+                                    Toast.LENGTH_SHORT).show();
+                        });
+                    } catch (Exception ignored) {}
+                });
+            }
+            return;
+        }
         if (requestCode != 412 && requestCode != 415) return;
         returningEpisode = requestCode == 415 ? launchedEpisode : null;
         launchedEpisode = null;
@@ -250,10 +269,12 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
         if(episode==null)return;
         CinemaActionMenu.show(anchor,
                 new CinemaActionMenu.Action(this.getString(com.archos.mediacenter.video.R.string.cinema_choose_from_episode_folder),()->{
-                    Intent intent=new Intent(this,CinemaSubtitleBrowserActivity.class);
-                    intent.setData(episode.getFileUri());
-                    startActivity(intent);
+                    Intent intent=new Intent(this,CinemaFileBrowserActivity.class);
+                    intent.putExtra(CinemaFileBrowserActivity.EXTRA_FILTER_MODE, CinemaFileBrowserActivity.FILTER_SUBTITLES_ONLY);
+                    startActivityForResult(intent, 914);
                 }),
+                new CinemaActionMenu.Action(this.getString(com.archos.mediacenter.video.R.string.cinema_pref_languages_title),
+                        () -> CinemaLanguagePreferences.showDialog(this, null)),
                 new CinemaActionMenu.Action(SubtitleSources.label(this), () -> SubtitleSources.search(this, episode)),
                 new CinemaActionMenu.Action(SubtitleSources.title(this), () -> SubtitleSources.settings(this)));
     }

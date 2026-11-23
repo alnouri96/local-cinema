@@ -154,7 +154,11 @@ final class CinemaAddonsSectionController {
         grid.setLayoutManager(new GridLayoutManager(host, GRID_COLUMNS));
         adapter = new TileAdapter();
         grid.setAdapter(adapter);
-        root.addView(grid, new LinearLayout.LayoutParams(-1, 0, 1f));
+        var viewport = new FrameLayout(host);
+        viewport.setClipChildren(true);
+        viewport.setClipToPadding(true);
+        viewport.addView(grid, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(viewport, new LinearLayout.LayoutParams(-1, 0, 1f));
         refresh(selected);
     }
 

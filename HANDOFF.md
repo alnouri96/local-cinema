@@ -1,33 +1,19 @@
 # Local Cinema handoff
 
-Start with [AGENTS.md](AGENTS.md), [the current status](docs/CONTINUATION.md), and [the release procedure](docs/RELEASE.md).
+Start with [AGENTS.md](AGENTS.md) and [docs/RELEASE.md](docs/RELEASE.md).
 
-## Repositories and architecture
+## Published status (`Latest`)
 
-- [Local Cinema](https://github.com/alnouri96/local-cinema) holds corresponding Android source. Use `upgrade-6.6.4` for this integration cycle and named tags for released APKs. The old source repository has a separate private archive.
-- `Video/` builds the Android TV app (`com.meedx.localcinema.tv`). It uses Leanback for browsing, with local playback, add-ons, and live channels.
-- `Phone/` builds Local Cinema Manager (`com.meedx.localcinema.manager`). It contains TV Hub, the floating remote, GeckoView, downloads, and phone music playback.
-- `shared-providers/` contains Trakt PKCE and add-on integrations. `shared-updater/` parses the OTA feed, verifies downloads, and checks the official APK signer. See [third-party licenses](docs/THIRD_PARTY.md).
-- [MEEDX WEB](https://github.com/alnouri96/meedx) contains the website source and public Release assets. The website uses Cloudflare Pages direct upload and publishes from `main`.
+- Public GitHub Latest: [`v1.0.0-beta.15`](https://github.com/alnouri96/meedx/releases/tag/v1.0.0-beta.15) (`versionCode = 15`, 2026-11-22), matching source tag `v1.0.0-beta.15` (`a6d07bf8`) on `alnouri96/local-cinema` and live OTA at `https://meedx.pages.dev/api/version.json`.
+- MEEDX WEB production: commit `38b29386` ([Pages deployment](https://c8878e15.meedx.pages.dev)). Keep published APKs and checksums unchanged.
 
-## Delivery and device checks
+## Active local work (`v1.0.0-beta.16`)
 
-- Both apps use [the MEEDX OTA feed](https://meedx.pages.dev/api/version.json). It uses bilingual notes and serves APK links from the public distribution repository. Match the feed, signed APKs, source tag, and GitHub Latest.
-- Release builds use R8. Official builds check the installed certificate against the release signer. Keep signing configuration local. Separately signed verification builds can use `-PlocalCinemaOfficialSigner=false`.
-- Build and stage the APKs under `releases/<tag>/`. Run the key audit and compare the Android crash buffers before and after installing in place. Use the configured phone and TV device serials from the local ADB environment.
-- Keep full sync manual or driven by supported settings changes. Android backup XML defines which local settings and favorites the system backup can copy. Preserve the distinction between video, music, Library, and Local Media. Keep ports `8765`, `8766`, and `8080`.
+- Workspace: `G:/Local Cinema` (`upgrade-6.6.4`), **not published yet**.
+- Status: All 3 refinement batches for `v1.0.0-beta.16` (`versionCode = 16`) are built as signed Release APKs, passed `audit-provider-keys.py` (`PASS`), and installed in place on TV (`10.0.0.6:5555`) and Phone (`R5CY22YT4KZ`) with 0 new crashes.
 
-## Published status
+## Next steps
 
-[Local Cinema v1.0.0-beta.15](https://github.com/alnouri96/meedx/releases/tag/v1.0.0-beta.15) is GitHub Latest. Both apps are open source and free. The [corresponding source tag](https://github.com/alnouri96/local-cinema/tree/v1.0.0-beta.15) is public. The old development repository remains private and archived. Develop from the public checkout rather than pushing the legacy Git history.
-
-## Website update on 2026-11-22
-
-The home page links its wide product illustration to the app page. Downloads groups the two APKs and opens a bilingual changelog from either card. The current notes also appear on the app page, in the OTA feed, and on GitHub. The APKs and their checksums are unchanged. See [the Pages deployment](https://c8878e15.meedx.pages.dev).
-
-## Current work
-
-- See [release notes](CHANGELOG-CINEMA.md) for the beta.15 changes, including Iraq live channels, favorites, torrent preparation, and the floating remote.
-- Use [UI UX Pro Max](.codex/skills/ui-ux-pro-max/SKILL.md) and [the Local Cinema theme](.codex/skills/ui-ux-pro-max/LOCAL_CINEMA_THEME.md). Use Soft Black `#171717`, Gold `#E5A93B`, and White `#FFFFFF`. Check Arabic RTL, English LTR, and D-pad focus on TV.
-- Use the original artwork under the website's `public/assets/artwork/` and app-owned previews with demo data. Review all new screenshots for third-party artwork and personal data.
-- Download Center uses the existing download engine. Work on a unified engine remains separate.
+1. Complete user verification on TV and Phone for `v1.0.0-beta.16`.
+2. Commit reviewed changes cleanly in `G:/Local Cinema` (and sync `MEEDX WEB` docs/catalog when approved).
+3. Stage audited APKs under `releases/v1.0.0-beta.16/` and publish only upon explicit release approval following [docs/RELEASE.md](docs/RELEASE.md).

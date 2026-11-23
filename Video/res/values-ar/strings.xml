@@ -1405,4 +1405,16 @@
     <!-- YouTube 4K Ambient Screensaver -->
     <string name="cinema_ambient_categories">التصنيفات</string>
     <string name="cinema_ambient_subtitle_hint">اضغط موافق للتشغيل · اضغط مطوّلاً لإضافته أو إزالته من المفضلة</string>
+
+    <!-- Batch 3 Refinements: Art Mode, Preferred Languages, Torrent Metrics, Preferred Countries -->
+    <string name="cinema_art_default_gallery">استعادة المعرض الافتراضي</string>
+    <string name="cinema_pref_languages_title">أولوية اللغات</string>
+    <string name="cinema_pref_audio_lang">لغة الصوت المفضلة</string>
+    <string name="cinema_pref_primary_sub_lang">لغة الترجمة الأساسية</string>
+    <string name="cinema_pref_secondary_sub_lang">لغة الترجمة الثانوية</string>
+    <string name="cinema_lang_none">إيقاف</string>
+    <string name="cinema_trailer_short">التريلر</string>
+    <string name="cinema_audio_lang_short">الصوت واللغات</string>
+    <string name="addon_torrent_live_metrics">الموزعون: %1$d · المتصلون: %2$d · %3$s</string>
+    <string name="addon_edit_preferred_countries">تعديل الدول المفضلة</string>
 </resources>

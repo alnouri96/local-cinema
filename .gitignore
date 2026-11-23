@@ -57,15 +57,5 @@ Thumbs.db
 **/.coverage
 /screen/
 key.properties
-
-# Generated Graphify report and cache
-graphify-out/
-.graphify_tmp/
-.agent/graph/graph.json
-.agent/graph/graph.html
-.agent/graph/cache/
-.agent/graph/.manifest*
-.agent/graph/.needs_update
-.agent/graph/.cloud-cta-shown
 .gemini/
 .agents/workflows/

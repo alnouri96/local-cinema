@@ -1,32 +1,23 @@
 # Local Cinema Manager
 
-Start with [the root agent guide](../AGENTS.md). The Phone Gradle root is `Phone/` and the package ID is `com.meedx.localcinema.manager`.
+Start with [root AGENTS.md](../AGENTS.md). Gradle root: `Phone/`. Package ID: `com.meedx.localcinema.manager`.
 
-## Phone-Only File Map
+## Phone file map
 
-- **Core Hub & Casting (`Phone/app/src/main/java/org/proninyaroslav/libretorrent/cinema_hub/`):**
-  - Coordinator, Lifecycle, WebSocket Transport & Video Casting: `TvHubActivity.java`
-  - Standalone Music Player & Mini Bar: `TvHubMusicController.java`
-  - Active/Stream Subtitles, Dual Position & Search: `TvHubSubtitlesController.java`, `SubtitleMatch.java`
-  - Isolated Library, Eye Toggle, USB & Watchlist: `TvHubLibraryController.java`, `PhoneWatchStore.java`, `MobileLibraryServer.java`
-  - Pairing, Trakt PKCE, Addons, API Keys & Unified Cloud/Local Backup: `TvHubConnectionController.java`, `ApiKeyStore.java`, `LocalCinemaBackupManager.java`
-  - TV Remote & Touchpad: `FloatingTvDpadController.java`, `FloatingRemoteLayout.java`, `CinemaRemoteBridge.java`, `RemoteJoystick.java`
-  - Media / Photo Casting, Storage Cache & Services: `PhoneVideoServer.java`, `CinemaCacheManager.java`, `LocalMediaPanel.java`, `PhotoCastViewer.java`, `CastMediaForegroundService.java`, `MediaPlaybackNotificationService.java`, `CinemaGlassUi.java`, `../ui/settings/StorageCacheHeaderPreference.java`
-- **GeckoView Browser & Extensions:**
-  - Coordinator, Lifecycle, Viewport/Desktop/Zoom & Tabs: `CinemaBrowser.java`
-  - Browser Settings Sheet, Switches & Page Zoom Slider (`50%–150%`): `CinemaBrowserSettingsSheet.java`
-  - Video/Subtitle Discovery, Probing, Quality/Dual-Subtitle Sheets & TV Cast Handoff: `CinemaBrowserMediaBridge.java`
-  - Extensions, Tabs, Downloads & Favicons: `BrowserExtensions.java`, `BrowserTabsSheet.java`, `BrowserDownloadManager.java`, `SiteFaviconManager.java`, `../ui/NavBarFragment.java`
-  - WebExtension Content/Background Scripts (`Phone/app/src/main/assets/cinema-video/`): `discover.js`, `network.js`
-- **Shared Modules Used:** `../shared-providers/` (`TraktSyncClient.java`, `StremioAddons.java`, `ProviderKeys.java`, `ZeroConfigSubtitles.java`) and `../shared-updater/`.
+Base package: `Phone/app/src/main/java/org/proninyaroslav/libretorrent/`.
 
-## Build and test
+- **TV Hub, Casting & Services (`cinema_hub/`):** `TvHubActivity.java` (coordinator & WS client), `TvHubConnectionController.java` (pairing, Trakt PKCE, addons, keys, Live TV sync, cloud/local backup), `TvHubLibraryController.java`, `TvHubMusicController.java`, `TvHubSubtitlesController.java`, `LocalCinemaBackupManager.java`, `PhoneWatchStore.java`, `ApiKeyStore.java`, `SubtitleMatch.java`, `PhoneVideoServer.java`, `MobileLibraryServer.java`, `CinemaCacheManager.java`, `CinemaStorage.java`, `LocalMediaPanel.java`, `PhotoCastViewer.java`, `AudioSort.java`, `PlaybackArtworkView.java`, `PlaybackSeekBar.java`, `CinemaGlassUi.java`, `CinemaSnackBanner.java`, `MediaPlaybackNotificationService.java`, `PhonePermissionsWizardDialog.java`, `TvQrScannerActivity.java`, `ShareMediaActivity.java`, `VideoTorrentDefaults.java`
+- **Floating Remote & Touchpad (`cinema_hub/`):** `FloatingTvDpadController.java`, `FloatingRemoteLayout.java`, `CinemaRemoteBridge.java`, `RemoteJoystick.java`
+- **GeckoView Browser & Extensions (`cinema_hub/` & `assets/`):** `CinemaBrowser.java`, `CinemaBrowserSettingsSheet.java`, `CinemaBrowserMediaBridge.java`, `BrowserExtensions.java`, `BrowserTabsSheet.java`, `BrowserDownloadManager.java`, `SiteFaviconManager.java`, `ui/NavBarFragment.java`; WebExtension scripts in `Phone/app/src/main/assets/cinema-video/`: `discover.js`, `network.js`
+- **Settings & Torrent Engine (`ui/settings/` & `core/model/`):** `SettingsHeaderFragment.java`, `GoogleAccountHeaderPreference.java`, `StorageCacheHeaderPreference.java`, `SettingsFragment.java`, `CustomPreferenceFragment.java`; torrent core in `core/model/`: `TorrentEngine.java`, `session/TorrentSessionImpl.java`, `stream/TorrentStreamServer.java`
+- **Resources & Shared:** `Phone/app/src/main/res/values/strings.xml`, `Phone/app/src/main/res/values-ar/strings.xml`, `../shared-providers/`, `../shared-updater/`.
 
-Follow [the monorepo release procedure](../docs/RELEASE.md) for signed builds and both ADB targets. Use `:app:assembleBaseRelease` in this module. The staging script selects the arm64-v8a APK.
+## Build
 
-## Phone Guardrails
+Follow [docs/RELEASE.md](../docs/RELEASE.md). Build with `:app:assembleBaseRelease` (staging selects `arm64-v8a`).
 
-- Add every new user-facing label, button, title, message, dialog and accessibility description to both English `values/strings.xml` and Arabic `values-ar/strings.xml` in the owning app. Use resource IDs in code and preserve RTL/LTR behavior.
-- Trakt OAuth uses PKCE only (`client_id`: `ysZZKQ4X6LcHghcKf1ReOIsuzELNIcygal7ZUBYSwSE`, `localcinema://trakt-callback`, NO `client_secret`, Developer key UI hidden).
-- Phone-to-TV `FULL_SYNC_STATE` & Trakt syncs trigger ONLY on settings/addon/key changes or manual user tap — no auto-sync on resume/connect.
-- Preserve `Library` vs `Local media` isolation, the separate Music Player / Mini Bar, and custom browser features (video stream detection/casting, torrent/magnet routing, page zoom, unified `Extensions` sheet).
+## Phone guardrails
+
+- **Modularity & Reuse:** Keep new Phone features isolated in dedicated classes under `cinema_hub/` or `ui/settings/` and add them to this map immediately; avoid duplicating logic already provided by `shared-providers/` or existing controllers.
+- **Isolation & Browser:** Preserve `Library` vs `Local media` isolation, the standalone Music Player / Mini Bar, and GeckoView custom features (stream discovery/casting, torrent/magnet routing, page zoom, unified `Extensions` sheet).
+- **Quiet Cloud Sync:** Update inline status cards for cloud backup state; suppress redundant bottom snackbars or routine background sync notifications.

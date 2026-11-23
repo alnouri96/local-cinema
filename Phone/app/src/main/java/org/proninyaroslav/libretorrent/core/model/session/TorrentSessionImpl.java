@@ -1205,7 +1205,14 @@ public class TorrentSessionImpl extends SessionManager
         sp.maxPeerlistSize(settings.maxPeerListSize);
         sp.tickInterval(settings.tickInterval);
         sp.inactivityTimeout(settings.inactivityTimeout);
-        sp.connectionsLimit(settings.connectionsLimit);
+        sp.connectionsLimit(Math.max(settings.connectionsLimit, 300));
+        sp.setBoolean(settings_pack.bool_types.announce_to_all_trackers.swigValue(), true);
+        sp.setBoolean(settings_pack.bool_types.announce_to_all_tiers.swigValue(), true);
+        sp.setBoolean(settings_pack.bool_types.prioritize_partial_pieces.swigValue(), true);
+        sp.setBoolean(settings_pack.bool_types.strict_end_game_mode.swigValue(), true);
+        sp.setInteger(settings_pack.int_types.connection_speed.swigValue(), 100);
+        sp.setInteger(settings_pack.int_types.peer_connect_timeout.swigValue(), 5);
+        sp.setInteger(settings_pack.int_types.request_timeout.swigValue(), 10);
         sp.listenInterfaces(getIface(settings.inetAddress, settings.portRangeFirst));
         sp.setInteger(settings_pack.int_types.max_retry_port_bind.swigValue(),
                 settings.portRangeSecond - settings.portRangeFirst);

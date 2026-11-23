@@ -10,6 +10,8 @@ import java.util.Locale;
 public final class LiveTvPreferences {
     public static final String STORE = "cinema_live_channels";
     public static final String COUNTRY_FIELD = "live_tv_country";
+    public static final String FAVORITE_COUNTRIES_FIELD = "favorite_countries";
+    public static final String PREFS_PACKET = "LIVE_TV_COUNTRIES_SYNC";
     public static final String DEFAULT_COUNTRY = "IQ";
     private static final String[] COUNTRIES = Locale.getISOCountries();
 
@@ -27,6 +29,50 @@ public final class LiveTvPreferences {
     public static boolean saveCountry(Context context, String code) {
         if (!valid(code)) return false;
         store(context).edit().putString(COUNTRY_FIELD, code).apply();
+        return true;
+    }
+
+    public static java.util.Set<String> favoriteCountries(Context context) {
+        var raw = store(context).getStringSet(FAVORITE_COUNTRIES_FIELD, null);
+        var out = new java.util.LinkedHashSet<String>();
+        if (raw != null) {
+            for (String code : raw) {
+                if (valid(code)) out.add(code);
+            }
+        }
+        if (out.isEmpty()) out.add(country(context));
+        return out;
+    }
+
+    public static void saveFavoriteCountries(Context context, java.util.Collection<String> codes) {
+        var clean = new java.util.LinkedHashSet<String>();
+        if (codes != null) {
+            for (String code : codes) {
+                if (valid(code)) clean.add(code);
+            }
+        }
+        var editor = store(context).edit().putStringSet(FAVORITE_COUNTRIES_FIELD, clean);
+        if (!clean.isEmpty() && !clean.contains(country(context))) {
+            editor.putString(COUNTRY_FIELD, clean.iterator().next());
+        }
+        editor.apply();
+    }
+
+    public static org.json.JSONArray exportFavoriteCountriesJson(Context context) {
+        var arr = new org.json.JSONArray();
+        for (String code : favoriteCountries(context)) arr.put(code);
+        return arr;
+    }
+
+    public static boolean importFavoriteCountriesJson(Context context, org.json.JSONArray arr) {
+        if (context == null || arr == null) return false;
+        var clean = new java.util.LinkedHashSet<String>();
+        for (int i = 0; i < arr.length(); i++) {
+            String code = arr.optString(i, "").trim().toUpperCase(Locale.ROOT);
+            if (valid(code)) clean.add(code);
+        }
+        if (clean.isEmpty()) return false;
+        saveFavoriteCountries(context, clean);
         return true;
     }
 

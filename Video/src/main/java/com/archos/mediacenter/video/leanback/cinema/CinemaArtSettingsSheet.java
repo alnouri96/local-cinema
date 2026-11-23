@@ -30,10 +30,12 @@ final class CinemaArtSettingsSheet {
     private static final int GOLD = 0xffe5a93b;
     private static final int ROW = 0xff252423;
 
-    static void show(Activity activity, SharedPreferences settings, Runnable choose, Runnable update) {
+    static void show(Activity activity, SharedPreferences settings, Runnable choose, Runnable restoreDefault, Runnable update) {
         var rows = column(activity);
-        int inset = CinemaUi.dp(activity, 12);
-        rows.setPaddingRelative(inset, 0, inset, inset);
+        int inset = CinemaUi.dp(activity, 14);
+        rows.setPaddingRelative(inset, CinemaUi.dp(activity, 10), inset, inset);
+        rows.setClipChildren(false);
+        rows.setClipToPadding(false);
         var scroll = scrollable(activity, rows);
         var sheet = CinemaUi.dialog(activity).setTitle(R.string.cinema_art_settings).setView(scroll)
                 .setPositiveButton(android.R.string.ok, null).create();
@@ -51,6 +53,21 @@ final class CinemaArtSettingsSheet {
             sheet.dismiss();
             choose.run();
         });
+
+        if (restoreDefault != null) {
+            var defaults = new Button(activity);
+            defaults.setAllCaps(false);
+            defaults.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            defaults.setText(R.string.cinema_art_default_gallery);
+            defaults.setTextColor(Color.WHITE);
+            decorate(defaults);
+            CinemaUi.icon(defaults, R.drawable.cinema_ambient_frame);
+            addRow(rows, defaults);
+            defaults.setOnClickListener(v -> {
+                sheet.dismiss();
+                restoreDefault.run();
+            });
+        }
 
         var appearanceChoices = column(activity);
         rows.addView(appearanceChoices);
@@ -99,6 +116,8 @@ final class CinemaArtSettingsSheet {
     private static ScrollView scrollable(android.content.Context context, LinearLayout rows) {
         var scroll = new ScrollView(context);
         scroll.setVerticalScrollBarEnabled(false);
+        scroll.setClipChildren(false);
+        scroll.setClipToPadding(false);
         scroll.addView(rows, new ScrollView.LayoutParams(-1, -2));
         return scroll;
     }

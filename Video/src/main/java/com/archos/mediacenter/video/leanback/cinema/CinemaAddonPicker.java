@@ -138,9 +138,11 @@ final class CinemaAddonPicker {
                 return;
             }
             String imdb = validImdb(chosen.id()) ? chosen.id() : "";
-            boolean isLiveAddonChannel = "tv".equalsIgnoreCase(chosen.type())
-                    || "sport".equalsIgnoreCase(chosen.type())
-                    || "channel".equalsIgnoreCase(chosen.type());
+            String lowerType = chosen.type() == null ? "" : chosen.type().trim().toLowerCase(java.util.Locale.ROOT);
+            boolean isLiveAddonChannel = "tv".equals(lowerType) || "sport".equals(lowerType) || "sports".equals(lowerType)
+                    || "channel".equals(lowerType) || "channels".equals(lowerType)
+                    || "live".equals(lowerType) || "event".equals(lowerType) || "events".equals(lowerType)
+                    || "iptv".equals(lowerType);
             String streamKey = "addon:" + chosen.id() + (chosen.episode() > 0 ? ":s" + chosen.season() + "e" + chosen.episode() : "");
             String mediaType = isLiveAddonChannel ? chosen.type() : (chosen.episode() > 0 ? "episode" : "movie");
             long resume = isLiveAddonChannel ? 0L : CinemaWatchStore.findBestStreamResumeMs(app, streamKey, mediaType, imdb, chosen.tmdb(),
@@ -157,12 +159,13 @@ final class CinemaAddonPicker {
                             if (!loading.isShowing()) return;
                             loading.setOnDismissListener(null);
                             loading.dismiss();
-                            sheet.set(showSources(activity, chosen.title(), batch, (stream, closeSources) -> {
+                            sheet.set(showSources(activity, io, handler, chosen, isLiveAddonChannel, batch, (stream, closeSources) -> {
                                 if (!active.getAsBoolean()) return;
                                 trySource(activity, io, handler, stream, available::get, new java.util.HashSet<>(), active, (source, ready) -> {
                                     Intent play = new Intent(Intent.ACTION_VIEW, Uri.parse(source.url), activity, CinemaHlsActivity.class)
                                         .putExtra("format", source.format).putExtra("torrent_file_index", source.fileIndex)
-                                        .putExtra("subtitle_language", "ar").putExtra("addon_subtitles", !isLiveAddonChannel)
+                                        .putExtra("subtitle_language", CinemaLanguagePreferences.toIso2(CinemaLanguagePreferences.primarySubtitleLanguage(activity)))
+                                        .putExtra("addon_subtitles", !isLiveAddonChannel)
                                         .putExtra("title", chosen.title()).putExtra("stream_key", streamKey)
                                         .putExtra("media_type", mediaType).putExtra("imdb_id", imdb)
                                         .putExtra("tmdb_id", chosen.tmdb()).putExtra("season", chosen.season())
@@ -171,6 +174,12 @@ final class CinemaAddonPicker {
                                     if (isLiveAddonChannel) {
                                         play.putExtra(CinemaHlsActivity.LIVE_CHANNEL, true);
                                         play.putExtra("is_live_cast", true);
+                                    }
+                                    if (source.userAgent != null && !source.userAgent.isBlank()) {
+                                        play.putExtra(CinemaHlsActivity.CHANNEL_USER_AGENT, source.userAgent);
+                                    }
+                                    if (source.referer != null && !source.referer.isBlank()) {
+                                        play.putExtra(CinemaHlsActivity.CHANNEL_REFERER, source.referer);
                                     }
                                     if (ready != null) play.putExtra(CinemaTorrentStream.PREPARED_TOKEN, ready.offerToPlayer());
                                     closeSources.run();
@@ -254,6 +263,9 @@ final class CinemaAddonPicker {
             java.util.function.Consumer<CinemaTorrentStream> onReady, Runnable onAbort, java.util.function.IntConsumer onFailure) {
         var status = CinemaUi.text(activity, 16, false);
         status.setText(com.archos.mediacenter.video.R.string.addon_torrent_buffering);
+        var metrics = CinemaUi.text(activity, 14, true);
+        metrics.setTextColor(0xffe5a93b);
+        metrics.setPadding(0, CinemaUi.dp(activity, 4), 0, CinemaUi.dp(activity, 8));
         var progress = new android.widget.ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
         progress.setProgressTintList(android.content.res.ColorStateList.valueOf(0xffe5a93b));
         progress.setIndeterminate(true);
@@ -263,6 +275,7 @@ final class CinemaAddonPicker {
         int inset = CinemaUi.dp(activity, 24);
         content.setPadding(inset, inset / 2, inset, inset);
         content.addView(status);
+        content.addView(metrics);
         content.addView(progress, new android.widget.LinearLayout.LayoutParams(-1, CinemaUi.dp(activity, 20)));
         var dialog = CinemaUi.dialog(activity)
                 .setTitle(com.archos.mediacenter.video.R.string.addon_torrent_prepare)
@@ -270,11 +283,18 @@ final class CinemaAddonPicker {
         var main = new Handler(activity.getMainLooper());
         Runnable work = () -> {
             try {
-                torrent.prepare(percent -> main.post(() -> {
-                    if (!dialog.isShowing() || percent == 0) return;
-                    status.setText(activity.getString(com.archos.mediacenter.video.R.string.addon_torrent_progress, percent));
-                    progress.setIndeterminate(false);
-                    progress.setProgress(percent);
+                torrent.prepareWithStatus(state -> main.post(() -> {
+                    if (!dialog.isShowing()) return;
+                    String speed = android.text.format.Formatter.formatShortFileSize(activity, state.downloadBytesPerSec()) + "/s";
+                    metrics.setText(activity.getString(R.string.addon_torrent_live_metrics,
+                            state.seeds(), state.peers(), speed));
+                    if (state.metadataReady() && state.percent() > 0) {
+                        status.setText(activity.getString(R.string.addon_torrent_progress, state.percent()));
+                        progress.setIndeterminate(false);
+                        progress.setProgress(state.percent());
+                    } else {
+                        status.setText(R.string.addon_torrent_buffering);
+                    }
                 }));
                 main.post(() -> {
                     if (!dialog.isShowing() || activity.isFinishing() || activity.isDestroyed()) {
@@ -306,13 +326,49 @@ final class CinemaAddonPicker {
         return dialog;
     }
 
-    private static java.util.function.Consumer<List<StremioAddons.Stream>> showSources(Activity activity, String title,
-            List<StremioAddons.Stream> initial, java.util.function.BiConsumer<StremioAddons.Stream, Runnable> play, Runnable cancel) {
+    private static java.util.function.Consumer<List<StremioAddons.Stream>> showSources(Activity activity, ExecutorService io,
+            Handler handler, Selection chosen, boolean isLiveChannel, List<StremioAddons.Stream> initial,
+            java.util.function.BiConsumer<StremioAddons.Stream, Runnable> play, Runnable cancel) {
+        String title = chosen.title();
         var streams = new java.util.ArrayList<>(initial);
+        var container = new android.widget.LinearLayout(activity);
+        container.setOrientation(android.widget.LinearLayout.VERTICAL);
+        container.setLayoutDirection(CinemaUi.arabic(activity) ? android.view.View.LAYOUT_DIRECTION_RTL : android.view.View.LAYOUT_DIRECTION_LTR);
+        container.setClipChildren(false);
+        container.setClipToPadding(false);
+
+        var header = new android.widget.LinearLayout(activity);
+        header.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        header.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        header.setClipChildren(false);
+        header.setClipToPadding(false);
+        header.setPaddingRelative(CinemaUi.dp(activity, 18), CinemaUi.dp(activity, 12),
+                CinemaUi.dp(activity, 18), CinemaUi.dp(activity, 8));
+        var headingView = CinemaUi.text(activity, 19, true);
+        headingView.setText(activity.getString(R.string.addon_streams_for, title));
+        headingView.setTextColor(android.graphics.Color.WHITE);
+        headingView.setMaxLines(2);
+        headingView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        header.addView(headingView, new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
+
+        android.widget.TextView trailerBtn = null;
+        if (!isLiveChannel) {
+            trailerBtn = sourceHeaderPill(activity, activity.getString(R.string.cinema_trailer_short), R.drawable.cinema_trailer);
+            var trLp = new android.widget.LinearLayout.LayoutParams(-2, CinemaUi.dp(activity, 38));
+            trLp.setMarginStart(CinemaUi.dp(activity, 8));
+            header.addView(trailerBtn, trLp);
+        }
+        var langBtn = sourceHeaderPill(activity, activity.getString(R.string.cinema_audio_lang_short), R.drawable.cinema_ic_audio);
+        var lgLp = new android.widget.LinearLayout.LayoutParams(-2, CinemaUi.dp(activity, 38));
+        lgLp.setMarginStart(CinemaUi.dp(activity, 8));
+        header.addView(langBtn, lgLp);
+        container.addView(header, new android.widget.LinearLayout.LayoutParams(-1, -2));
+
         var list = new android.widget.ListView(activity);
+        list.setId(android.view.View.generateViewId());
         list.setBackgroundColor(0xff171717);
         list.setDivider(null);
-        list.setPadding(0, CinemaUi.dp(activity, 5), 0, CinemaUi.dp(activity, 6));
+        list.setPadding(CinemaUi.dp(activity, 12), CinemaUi.dp(activity, 6), CinemaUi.dp(activity, 12), CinemaUi.dp(activity, 8));
         list.setClipToPadding(false);
         var focus = new android.graphics.drawable.GradientDrawable();
         focus.setColor(android.graphics.Color.TRANSPARENT);
@@ -320,6 +376,15 @@ final class CinemaAddonPicker {
         focus.setStroke(CinemaUi.dp(activity, 2), 0xffe5a93b);
         list.setSelector(focus);
         list.setDrawSelectorOnTop(true);
+        container.addView(list, new android.widget.LinearLayout.LayoutParams(-1, 0, 1f));
+
+        if (trailerBtn != null) {
+            trailerBtn.setNextFocusDownId(list.getId());
+            list.setNextFocusUpId(trailerBtn.getId());
+        } else {
+            list.setNextFocusUpId(langBtn.getId());
+        }
+        langBtn.setNextFocusDownId(list.getId());
 
         var adapter = new android.widget.BaseAdapter() {
             @Override public int getCount() { return streams.size(); }
@@ -371,10 +436,23 @@ final class CinemaAddonPicker {
             }
         };
         list.setAdapter(adapter);
-        var dialog = CinemaUi.dialog(activity).setTitle(activity.getString(
-                com.archos.mediacenter.video.R.string.addon_streams_for, title)).setView(list)
+        var dialog = CinemaUi.dialog(activity).setView(container)
                 .setNegativeButton(android.R.string.cancel, null)
                 .setNeutralButton(R.string.addon_source_health, null).create();
+        langBtn.setOnClickListener(v -> CinemaLanguagePreferences.showDialog(activity, null));
+        if (trailerBtn != null) {
+            trailerBtn.setOnClickListener(v -> {
+                String trailerTitle = chosen.heading() != null && !chosen.heading().isBlank() ? chosen.heading() : title;
+                String imdbId = validImdb(chosen.id()) ? chosen.id() : "";
+                boolean isSeries = "series".equalsIgnoreCase(chosen.type()) || chosen.episode() > 0;
+                load(activity, io, handler, R.string.addon_trailer_loading, () ->
+                        com.meedx.providers.OpenTrailersProvider.resolveTrailerUrl(activity.getApplicationContext(),
+                                trailerTitle, 0, imdbId, isSeries), url -> {
+                    CinemaYouTubeLauncher.openUriOrSearch(activity,
+                            url == null || url.isBlank() ? null : Uri.parse(url), trailerTitle, 0);
+                });
+            });
+        }
         dialog.setOnDismissListener(d -> cancel.run());
         list.setOnItemClickListener((parent, row, index, id) -> {
             var stream = adapter.getItem(index);
@@ -409,6 +487,38 @@ final class CinemaAddonPicker {
             adapter.notifyDataSetChanged();
             if (selected != null) list.setSelection(Math.max(0, streams.indexOf(selected)));
         };
+    }
+
+    private static android.widget.TextView sourceHeaderPill(Activity host, String label, int iconRes) {
+        var pill = CinemaUi.text(host, 13, true);
+        pill.setId(android.view.View.generateViewId());
+        pill.setText(label);
+        pill.setTextColor(android.graphics.Color.WHITE);
+        pill.setGravity(android.view.Gravity.CENTER);
+        pill.setSingleLine();
+        pill.setFocusable(true);
+        pill.setClickable(true);
+        pill.setPaddingRelative(CinemaUi.dp(host, 12), 0, CinemaUi.dp(host, 12), 0);
+        var drawable = host.getDrawable(iconRes);
+        if (drawable != null) {
+            drawable = drawable.mutate();
+            drawable.setTint(0xffe5a93b);
+            int sz = CinemaUi.dp(host, 16);
+            drawable.setBounds(0, 0, sz, sz);
+            pill.setCompoundDrawablesRelative(drawable, null, null, null);
+            pill.setCompoundDrawablePadding(CinemaUi.dp(host, 6));
+        }
+        var states = new android.graphics.drawable.StateListDrawable();
+        var focusedBg = CinemaUi.rounded(0xff3d2e14, CinemaUi.dp(host, 12), 0xffe5a93b);
+        focusedBg.setStroke(CinemaUi.dp(host, 2), 0xffe5a93b);
+        states.addState(new int[]{android.R.attr.state_focused}, focusedBg);
+        states.addState(new int[]{}, CinemaUi.rounded(0xff25211c, CinemaUi.dp(host, 12), 0xff5a4a33));
+        pill.setBackground(states);
+        pill.setOnFocusChangeListener((v, focused) -> {
+            pill.setTextColor(focused ? 0xffe5a93b : android.graphics.Color.WHITE);
+            v.animate().scaleX(focused ? 1.04f : 1f).scaleY(focused ? 1.04f : 1f).setDuration(100).start();
+        });
+        return pill;
     }
 
     private static android.widget.TextView sourceBadge(Activity host) {

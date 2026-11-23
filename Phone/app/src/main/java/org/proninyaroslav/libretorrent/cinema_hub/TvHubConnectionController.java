@@ -100,6 +100,24 @@ final class TvHubConnectionController {
         if (LiveChannelFavorites.merge(host, state)) refreshFavoriteChannelsSummary();
     }
 
+    void onLiveTvPreferencesSynced(org.json.JSONObject payload) {
+        if (payload == null) return;
+        String code = payload.optString(com.meedx.providers.LiveTvPreferences.COUNTRY_FIELD, "");
+        if (!code.isBlank()) com.meedx.providers.LiveTvPreferences.saveCountry(host, code);
+        com.meedx.providers.LiveTvPreferences.importFavoriteCountriesJson(
+                host, payload.optJSONArray(com.meedx.providers.LiveTvPreferences.FAVORITE_COUNTRIES_FIELD));
+        refreshAddonsAndTraktCard();
+        var account = LocalCinemaBackupManager.getSignedInGoogleAccount(host);
+        if (account != null && account.getAccount() != null) {
+            host.watchSyncIo.execute(() -> {
+                try {
+                    var unified = LocalCinemaBackupManager.buildUnifiedBackup(host, null);
+                    LocalCinemaBackupManager.uploadToGoogleDrive(host, account, unified.toString(2));
+                } catch (Exception ignored) {}
+            });
+        }
+    }
+
     private void refreshFavoriteChannelsSummary() {
         if (favoriteChannelsSummaryView == null) return;
         int count = LiveChannelFavorites.active(host).size();
@@ -736,6 +754,8 @@ final class TvHubConnectionController {
                     .contains(com.meedx.providers.LiveTvPreferences.COUNTRY_FIELD)) {
                 payload.put(com.meedx.providers.LiveTvPreferences.COUNTRY_FIELD,
                         com.meedx.providers.LiveTvPreferences.country(host));
+                payload.put(com.meedx.providers.LiveTvPreferences.FAVORITE_COUNTRIES_FIELD,
+                        com.meedx.providers.LiveTvPreferences.exportFavoriteCountriesJson(host));
             }
             if (userTriggered) payload.put(LiveChannelFavorites.FIELD, LiveChannelFavorites.snapshot(host));
             ws.send(payload.toString());
@@ -893,7 +913,7 @@ final class TvHubConnectionController {
     void setBackupLiveStatus(String text, boolean isError) {
         if (backupLiveStatusView != null) {
             updateBanner(backupLiveStatusView, text, isError);
-        } else if (text != null && !text.isBlank()) {
+        } else if (isError && text != null && !text.isBlank()) {
             host.notifyStatus(text);
         }
     }

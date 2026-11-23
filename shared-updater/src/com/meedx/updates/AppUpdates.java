@@ -170,6 +170,26 @@ public final class AppUpdates {
         }
     }
 
+    private static View wrapWithArtBackdrop(Activity activity, boolean tv, View content) {
+        if (!tv) return content;
+        String[] artNames = {"ic_art_gallery_deer", "ic_art_gallery_landscape",
+                "ic_art_gallery_still_life", "ic_art_gallery_horses", "ic_art_gallery_ocean"};
+        int idx = (int) (Math.abs(System.currentTimeMillis() / 10_000L) % artNames.length);
+        int resId = activity.getResources().getIdentifier(artNames[idx], "drawable", activity.getPackageName());
+        if (resId == 0) return content;
+        var frame = new android.widget.FrameLayout(activity);
+        var art = new android.widget.ImageView(activity);
+        art.setScaleType(android.widget.ImageView.ScaleType.CENTER_CROP);
+        art.setImageResource(resId);
+        art.setAlpha(0.24f);
+        frame.addView(art, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        var scrim = new View(activity);
+        scrim.setBackgroundColor(0xC8171717);
+        frame.addView(scrim, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        frame.addView(content, new android.widget.FrameLayout.LayoutParams(-1, -2));
+        return frame;
+    }
+
     private static void offer(Activity activity, boolean tv, Release release, NoteLabels notes) {
         var card = new LinearLayout(activity);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -219,7 +239,7 @@ public final class AppUpdates {
         card.addView(scroll, new LinearLayout.LayoutParams(-1, -2));
 
         AlertDialog dialog = new AlertDialog.Builder(activity, android.R.style.Theme_Material_Dialog_Alert)
-                .setView(card)
+                .setView(wrapWithArtBackdrop(activity, tv, card))
                 .setNegativeButton(label(activity, "Later", "لاحقاً"), null)
                 .setPositiveButton(label(activity, "Update Now", "تحديث الآن"), null)
                 .show();

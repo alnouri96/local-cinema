@@ -1449,4 +1449,16 @@
     <!-- YouTube 4K Ambient Screensaver -->
     <string name="cinema_ambient_categories">Categories</string>
     <string name="cinema_ambient_subtitle_hint">Press OK to play · Long-press OK to add or remove from Favorites</string>
+
+    <!-- Batch 3 Refinements: Art Mode, Preferred Languages, Torrent Metrics, Preferred Countries -->
+    <string name="cinema_art_default_gallery">Restore Built-in Gallery</string>
+    <string name="cinema_pref_languages_title">Preferred Languages</string>
+    <string name="cinema_pref_audio_lang">Preferred Audio</string>
+    <string name="cinema_pref_primary_sub_lang">Primary Subtitles</string>
+    <string name="cinema_pref_secondary_sub_lang">Secondary Subtitles</string>
+    <string name="cinema_lang_none">Off</string>
+    <string name="cinema_trailer_short">Trailer</string>
+    <string name="cinema_audio_lang_short">Audio &amp; Lang</string>
+    <string name="addon_torrent_live_metrics">Seeds: %1$d · Peers: %2$d · %3$s</string>
+    <string name="addon_edit_preferred_countries">Manage Preferred Countries</string>
 </resources>

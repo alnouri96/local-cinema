@@ -65,9 +65,7 @@ public final class CinemaHlsActivity extends Activity {
     private int currentSpeedPercent = 100;
     private TextView osdRotateButton;
     private TextView osdSpeedButton;
-    private TextView osdRewindButton;
     private TextView osdPlayPauseButton;
-    private TextView osdForwardButton;
     private TextView osdSubtitleButton;
     private TextView osdLiveBadge;
     private androidx.media3.exoplayer.ExoPlayer adaptivePlayer;
@@ -572,12 +570,8 @@ public final class CinemaHlsActivity extends Activity {
         osdLiveBadge.setVisibility(View.GONE);
         osdBar.addView(osdLiveBadge, liveBadgeLp);
 
-        osdRewindButton = osdButton(ar ? "⏪ 10ث" : "⏪ 10s", () -> seek(Math.max(0, position() - 10000)));
-        osdBar.addView(osdRewindButton);
         osdPlayPauseButton = osdButton(ar ? "⏯ تشغيل/إيقاف" : "⏯ Play/Pause", this::toggle);
         osdBar.addView(osdPlayPauseButton);
-        osdForwardButton = osdButton(ar ? "10ث ⏩" : "10s ⏩", () -> seek(position() + 10000));
-        osdBar.addView(osdForwardButton);
         osdSubtitleButton = osdButton(ar ? "💬 الترجمة" : "💬 Subtitles", this::openSubtitleMenuFromRemote);
         osdBar.addView(osdSubtitleButton);
         osdRotateButton = osdButton(osdRotateLabel(ar), this::cycleManualRotationFromOsd);
@@ -605,16 +599,6 @@ public final class CinemaHlsActivity extends Activity {
     private void updateLiveControlsVisibility() {
         boolean isLive = isLiveChannelPlayback();
         int seekVis = isLive ? View.GONE : View.VISIBLE;
-        if (osdRewindButton != null) {
-            osdRewindButton.setVisibility(seekVis);
-            osdRewindButton.setFocusable(!isLive);
-            osdRewindButton.setEnabled(!isLive);
-        }
-        if (osdForwardButton != null) {
-            osdForwardButton.setVisibility(seekVis);
-            osdForwardButton.setFocusable(!isLive);
-            osdForwardButton.setEnabled(!isLive);
-        }
         if (osdSpeedButton != null) {
             osdSpeedButton.setVisibility(seekVis);
             osdSpeedButton.setFocusable(!isLive);
@@ -925,22 +909,30 @@ public final class CinemaHlsActivity extends Activity {
             });
         }
 
-        itemList.add("Subsource · " + CinemaUi.label(this, "البحث عن الترجمة", "Subtitles"));
+        String headingExtra = getIntent() != null ? getIntent().getStringExtra("addon_heading") : null;
+        String imdbExtra = getIntent() != null ? getIntent().getStringExtra("imdb_id") : null;
+        int seasonExtra = getIntent() != null ? getIntent().getIntExtra("season", -1) : -1;
+        int episodeExtra = getIntent() != null ? getIntent().getIntExtra("episode", -1) : -1;
+
+        itemList.add(CinemaUi.label(this, "بحث عن الترجمة · OpenSubtitles v3 و Subsource", "Search Subtitles · OpenSubtitles v3 & Subsource"));
         actionList.add(() -> {
             Intent search = new Intent(this, SubsourceSearchActivity.class);
             search.putExtra("title", titleFinal);
+            if (headingExtra != null && !headingExtra.isBlank()) search.putExtra("addon_heading", headingExtra);
+            if (imdbExtra != null && !imdbExtra.isBlank()) search.putExtra("imdb_id", imdbExtra);
+            if (seasonExtra > 0) search.putExtra("season", seasonExtra);
+            if (episodeExtra > 0) search.putExtra("episode", episodeExtra);
+            search.putExtra("both_providers", true);
             search.putExtra("video_id", -1L);
             if (data != null) search.setData(data);
             startActivityForResult(search, REQ_SUBSOURCE);
         });
 
-        itemList.add(getText(com.archos.mediacenter.video.R.string.get_subtitles_online).toString());
-        actionList.add(() -> {
-            Intent online = new Intent(this, com.archos.mediacenter.video.utils.SubtitlesDownloaderActivity2.class);
-            if (data != null) online.putExtra(com.archos.mediacenter.video.utils.SubtitlesDownloaderActivity2.FILE_URL, data.toString());
-            online.putExtra(com.archos.mediacenter.video.utils.SubtitlesDownloaderActivity2.FILE_NAME, titleFinal);
-            startActivityForResult(online, REQ_ONLINE_SUB);
-        });
+        itemList.add(getString(com.archos.mediacenter.video.R.string.cinema_pref_languages_title));
+        actionList.add(() -> CinemaLanguagePreferences.showDialog(this, () -> {
+            subtitleRevision++;
+            findArabicAddonSubtitles();
+        }));
 
         itemList.add(CinemaUi.label(this, "اختيار ترجمة من الهاتف 📱", "Select subtitles from Phone 📱"));
         actionList.add(() -> {
@@ -953,8 +945,8 @@ public final class CinemaHlsActivity extends Activity {
 
         itemList.add(CinemaUi.label(this, "اختيار ترجمة من تخزين الشاشة 📂", "Select subtitles on TV storage 📂"));
         actionList.add(() -> {
-            Intent browser = new Intent(this, CinemaSubtitleBrowserActivity.class);
-            if (data != null) browser.setData(data);
+            Intent browser = new Intent(this, CinemaFileBrowserActivity.class);
+            browser.putExtra(CinemaFileBrowserActivity.EXTRA_FILTER_MODE, CinemaFileBrowserActivity.FILTER_SUBTITLES_ONLY);
             startActivityForResult(browser, REQ_LOCAL_SUB);
         });
 
@@ -1037,9 +1029,15 @@ public final class CinemaHlsActivity extends Activity {
         int season = intent.getIntExtra("season", 0);
         int episode = intent.getIntExtra("episode", 0);
         int revision = subtitleRevision;
+        String primaryIso = CinemaLanguagePreferences.toIso2(CinemaLanguagePreferences.primarySubtitleLanguage(this));
+        if (primaryIso.isEmpty()) primaryIso = "ar";
+        String secondaryIso = CinemaLanguagePreferences.toIso2(CinemaLanguagePreferences.secondarySubtitleLanguage(this));
+        boolean wantDual = dualSubtitlesAllowed() && !secondaryIso.isEmpty() && !secondaryIso.equalsIgnoreCase(primaryIso);
+        final String pIso = primaryIso;
+        final String sIso = secondaryIso;
         new Thread(() -> {
-            var urls = com.meedx.providers.StremioAddons.arabicSubtitleUrls(getApplicationContext(), imdb, season, episode);
-            for (String url : urls) {
+            var primaryUrls = com.meedx.providers.StremioAddons.subtitleUrls(getApplicationContext(), imdb, season, episode, pIso);
+            for (String url : primaryUrls) {
                 if (isDestroyed() || isFinishing()) return;
                 try {
                     var subtitle = CinemaSubtitleCodec.downloadUnpackAndCache(this, url);
@@ -1049,10 +1047,26 @@ public final class CinemaHlsActivity extends Activity {
                             setSubtitle(subtitle.ext(), subtitle.utf8Bytes());
                         }
                     });
-                    return;
+                    break;
                 } catch (Exception ignored) {}
             }
-        }, "addon-arabic-subtitle").start();
+            if (wantDual && !isDestroyed() && !isFinishing()) {
+                var secondaryUrls = com.meedx.providers.StremioAddons.subtitleUrls(getApplicationContext(), imdb, season, episode, sIso);
+                for (String url : secondaryUrls) {
+                    if (isDestroyed() || isFinishing()) return;
+                    try {
+                        var subtitle = CinemaSubtitleCodec.downloadUnpackAndCache(this, url);
+                        if (parseExternalCues(subtitle.ext(), subtitle.utf8Bytes()).isEmpty()) continue;
+                        runOnUiThread(() -> {
+                            if (!isDestroyed() && !isFinishing() && revision == subtitleRevision) {
+                                setSubtitle(subtitle.ext(), subtitle.utf8Bytes(), true);
+                            }
+                        });
+                        break;
+                    } catch (Exception ignored) {}
+                }
+            }
+        }, "addon-multi-subtitle").start();
     }
 
     private void loadRemoteSubtitleAsync(String subtitleUrl, boolean isSecondary) {

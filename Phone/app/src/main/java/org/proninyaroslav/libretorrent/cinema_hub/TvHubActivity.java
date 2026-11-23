@@ -2501,6 +2501,8 @@ public final class TvHubActivity extends AppCompatActivity {
                                 case "FULL_SYNC_ACK" -> connection.onFullSyncAck(response);
                                 case com.meedx.providers.LiveChannelFavorites.PACKET ->
                                         connection.onFavoriteChannels(response.optJSONObject(com.meedx.providers.LiveChannelFavorites.FIELD));
+                                case com.meedx.providers.LiveTvPreferences.PREFS_PACKET ->
+                                        connection.onLiveTvPreferencesSynced(response);
                                 case "TV_BACKUP_DATA" -> connection.onTvBackupData(response);
                                 case "TV_BACKUP_RESTORED" -> connection.onTvBackupRestored(response);
                                 case "REMOTE_STATUS" -> CinemaRemoteBridge.updateRemoteCapabilities(
