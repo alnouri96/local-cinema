@@ -1746,6 +1746,14 @@ public class PlayerService extends Service implements Player.Listener, IndexHelp
         Integer firstSupportedTrack = null;
         supported = false;
 
+        // Apply user's ordered Audio Language Priority (1, 2, 3...) first on initial playback for both Movies and Series.
+        if ((mVideoInfo.audioTrack < 0 || mVideoInfo.audioTrack >= nbTrack || !vMetadata.getAudioTrack(mVideoInfo.audioTrack).supported) && firstTimeAudioCalled) {
+            int priorityIdx = com.archos.mediacenter.video.leanback.cinema.CinemaPreferredAudio.bestTrackIndex(getApplicationContext(), vMetadata);
+            if (priorityIdx >= 0 && priorityIdx < nbTrack && vMetadata.getAudioTrack(priorityIdx).supported) {
+                mVideoInfo.audioTrack = priorityIdx;
+                supported = true;
+            }
+        }
         // VideoDbInfo sets audioTrack to -1 when file has not been played or restores playerParams
         for (int i = 0; i < nbTrack; ++i) {
             if (vMetadata.getAudioTrack(i).supported) {

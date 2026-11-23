@@ -1435,6 +1435,10 @@
     <string name="cinema_file_long_press_hint">Long-press OK on any item for Select, Copy, Move, Paste, or Delete</string>
     <string name="cinema_file_usb_permission_title">Storage write permission</string>
     <string name="cinema_file_usb_permission_message">Grant folder access to paste into this external USB drive.</string>
+    <string name="cinema_file_usb_delete_permission_message">Grant folder access to delete items on this external USB drive.</string>
+    <string name="cinema_file_manage_permission_title">File management permission required</string>
+    <string name="cinema_file_manage_permission_message">All Files Access is not enabled yet. Enable it so File Browser can delete, move, and manage files on TV storage.</string>
+    <string name="cinema_file_enable_permission_now">Enable Permission Now</string>
 
     <!-- Add-ons Reorder -->
     <string name="addon_reorder_action">⇅ Reorder</string>
@@ -1461,4 +1465,14 @@
     <string name="cinema_audio_lang_short">Audio &amp; Lang</string>
     <string name="addon_torrent_live_metrics">Seeds: %1$d · Peers: %2$d · %3$s</string>
     <string name="addon_edit_preferred_countries">Manage Preferred Countries</string>
+
+    <!-- Batch 1 v1.0.0-beta.17: Add-ons Settings Restructuring & Per-Addon Settings -->
+    <string name="addon_manage_installed_count">Manage Installed Add-ons (%1$d)</string>
+    <string name="addon_manage_installed_hint">Browse, toggle, edit, test, or remove installed add-ons</string>
+    <string name="addon_single_settings_title">Add-on Settings</string>
+    <string name="addon_enable_toggle_title">Add-on status</string>
+    <string name="addon_reload_this">Reload add-on catalog</string>
+    <string name="addon_reload_this_hint">Refresh channels and titles from this add-on</string>
+    <string name="addon_test_this_connection">Test this add-on connection</string>
+    <string name="addon_test_this_connection_hint">Verify manifest response and latency</string>
 </resources>

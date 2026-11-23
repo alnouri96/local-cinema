@@ -136,14 +136,60 @@ public final class CinemaLanguagePreferences {
             names[i] = localizedSubtitleLabel(context, values.get(i));
         }
         int checked = Math.max(0, values.indexOf(current));
-        CinemaUi.dialog(context)
+        var list = new android.widget.ListView(context);
+        list.setDivider(null);
+        list.setDividerHeight(CinemaUi.dp(context, 4));
+        list.setPadding(CinemaUi.dp(context, 14), CinemaUi.dp(context, 8),
+                CinemaUi.dp(context, 14), CinemaUi.dp(context, 8));
+        list.setSelector(CinemaUi.rounded(0xff35281b, CinemaUi.dp(context, 12), CinemaTokens.GOLD));
+        var adapter = new android.widget.BaseAdapter() {
+            @Override public int getCount() { return names.length; }
+            @Override public String getItem(int pos) { return names[pos]; }
+            @Override public long getItemId(int pos) { return pos; }
+            @Override public View getView(int pos, View recycled, android.view.ViewGroup parent) {
+                LinearLayout row;
+                android.widget.ImageView radio;
+                TextView tv;
+                if (recycled instanceof LinearLayout existing && existing.getChildCount() >= 2) {
+                    row = existing;
+                    radio = (android.widget.ImageView) row.getChildAt(0);
+                    tv = (TextView) row.getChildAt(1);
+                } else {
+                    row = new LinearLayout(context);
+                    row.setOrientation(LinearLayout.HORIZONTAL);
+                    row.setLayoutDirection(CinemaUi.arabic(context) ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+                    row.setGravity(Gravity.CENTER_VERTICAL);
+                    row.setMinimumHeight(CinemaUi.dp(context, 48));
+                    row.setPaddingRelative(CinemaUi.dp(context, 16), CinemaUi.dp(context, 8),
+                            CinemaUi.dp(context, 16), CinemaUi.dp(context, 8));
+                    radio = new android.widget.ImageView(context);
+                    int sz = CinemaUi.dp(context, 22);
+                    var rlp = new LinearLayout.LayoutParams(sz, sz);
+                    rlp.setMarginEnd(CinemaUi.dp(context, 14));
+                    row.addView(radio, rlp);
+                    tv = CinemaUi.text(context, 16, true);
+                    row.addView(tv, new LinearLayout.LayoutParams(0, -2, 1f));
+                }
+                boolean sel = pos == checked;
+                radio.setImageDrawable(CinemaUi.createCinemaRadioDrawable(context, sel));
+                tv.setText(names[pos]);
+                tv.setTextColor(sel ? CinemaTokens.GOLD : Color.WHITE);
+                return row;
+            }
+        };
+        list.setAdapter(adapter);
+        var dialog = CinemaUi.dialog(context)
                 .setTitle(R.string.cinema_pref_secondary_sub_lang)
-                .setSingleChoiceItems(names, checked, (dialog, which) -> {
-                    dialog.dismiss();
-                    onPick.accept(values.get(which));
-                })
+                .setView(list)
                 .setNegativeButton(R.string.addon_back, null)
-                .show();
+                .create();
+        list.setOnItemClickListener((p, v, which, id) -> {
+            dialog.dismiss();
+            onPick.accept(values.get(which));
+        });
+        dialog.show();
+        list.requestFocus();
+        list.setSelection(checked);
     }
 
     private static TextView addRow(LinearLayout parent, Runnable click) {

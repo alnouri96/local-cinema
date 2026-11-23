@@ -134,25 +134,13 @@ public class CinemaDetailsActivity extends LeanbackActivity {
                 handler.post(()->{if(!isDestroyed()){seenBusy=false;watched=desired;applyPlayIcon();updateLabels();if(restoreSeen||getCurrentFocus()==null)seenButton.requestFocus();}});
             }catch(Exception e){handler.post(()->{if(!isDestroyed()){seenBusy=false;if(restoreSeen)seenButton.requestFocus();Toast.makeText(this,getString(com.archos.mediacenter.video.R.string.cinema_could_not_save_watched_status),Toast.LENGTH_LONG).show();}});}});
         });
-        if (com.meedx.providers.StremioAddons.list(this).stream().anyMatch(
-                addon -> addon.enabled && com.meedx.providers.StremioAddons.mayStream(addon))) {
-            chipAction(actions, getString(com.archos.mediacenter.video.R.string.addon_streams),
-                    com.archos.mediacenter.video.R.drawable.cinema_addons,
-                    () -> CinemaAddonPicker.show(this, io, handler, video, publicMetadata, 0, 0));
-        }
-        iconAction(actions, getString(com.archos.mediacenter.video.R.string.cinema_audio_tracks),
-                com.archos.mediacenter.video.R.drawable.cinema_ic_audio, () -> {
-                    if (trackMetadata != null && trackMetadata.getAudioTrackNb() > 0) audioTracks();
-                    else CinemaPreferredAudio.choose(this, this::renderTechnical);
-                });
         trailerButton=iconAction(actions,"Trailer",com.archos.mediacenter.video.R.drawable.cinema_trailer,this::launchTrailer);
         String trailerLabel=video instanceof com.archos.mediacenter.video.browser.adapters.object.Episode?getString(com.archos.mediacenter.video.R.string.cinema_watch_series_trailer):getString(com.archos.mediacenter.video.R.string.cinema_watch_trailer);
         trailerButton.setContentDescription(trailerLabel);trailerButton.setTooltipText(trailerLabel);trailerButton.setVisibility(View.VISIBLE);
+        iconAction(actions, getString(com.archos.mediacenter.video.R.string.cinema_audio_tracks),
+                com.archos.mediacenter.video.R.drawable.cinema_ic_audio, this::audioTracks);
         TextView subtitles=iconAction(actions,getString(com.archos.mediacenter.video.R.string.cinema_subtitles_cinemadetailsactivity),com.archos.mediacenter.video.R.drawable.cinema_subtitles,()->{});
         subtitles.setOnClickListener(v->subtitleMenu(subtitles));
-        iconAction(actions, getString(com.archos.mediacenter.video.R.string.cinema_pref_languages_title),
-                com.archos.mediacenter.video.R.drawable.cinema_globe,
-                () -> CinemaLanguagePreferences.showDialog(this, this::renderTechnical));
         TextView more=iconAction(actions,getString(com.archos.mediacenter.video.R.string.cinema_more),com.archos.mediacenter.video.R.drawable.cinema_more,()->{});
         more.setOnClickListener(v->moreMenu(more));
         actionHint=text(this,CinemaTokens.CAPTION,false);actionHint.setTextColor(CinemaTokens.SECONDARY);
@@ -160,7 +148,6 @@ public class CinemaDetailsActivity extends LeanbackActivity {
         updateLabels();play.requestFocus();
         technical=new LinearLayout(this);technical.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);technical.setGravity((rtl?Gravity.LEFT:Gravity.RIGHT)|Gravity.CENTER_VERTICAL);technical.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams techParams=new LinearLayout.LayoutParams(0,-2,1);techParams.setMarginStart(dp(this,16));actionLine.addView(technical,techParams);
-        if(technical.getChildCount()==0)chip(technical,getString(com.archos.mediacenter.video.R.string.cinema_reading_file_information));
         LinearLayout.LayoutParams castGap=new LinearLayout.LayoutParams(-1,-2);castGap.topMargin=dp(this,16);
         TextView castTitle=text(this,CinemaTokens.ROW_TITLE,true);castTitle.setGravity(rtl?Gravity.RIGHT:Gravity.LEFT);castTitle.setText(getString(com.archos.mediacenter.video.R.string.cinema_cast_crew));content.addView(castTitle,castGap);
         HorizontalScrollView castScroll=new HorizontalScrollView(this);castScroll.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);castScroll.setFillViewport(true);castScroll.setHorizontalScrollBarEnabled(false);castScroll.setClipChildren(false);castScroll.setClipToPadding(false);castScroll.setPaddingRelative(dp(this,8),dp(this,10),dp(this,16),dp(this,12));content.addView(castScroll,new LinearLayout.LayoutParams(-1,-2));
@@ -311,17 +298,51 @@ public class CinemaDetailsActivity extends LeanbackActivity {
     }
     private String language(String code){if(code==null||code.isBlank()||code.equals("und"))return getString(com.archos.mediacenter.video.R.string.cinema_unknown_language);return new Locale(code).getDisplayLanguage(Locale.ENGLISH);}
     private String audioLabel(int index){var track=trackMetadata.getAudioTrack(index);return join(language(track.language),join(track.format,track.channels));}
-    private void audioTracks(){
-        if(trackMetadata==null||trackMetadata.getAudioTrackNb()==0)return;
-        String[] names=new String[trackMetadata.getAudioTrackNb()];for(int n=0;n<names.length;n++)names[n]=(n+1)+" · "+audioLabel(n);
-        CinemaUi.dialog(this).setTitle(getString(com.archos.mediacenter.video.R.string.cinema_audio_tracks)).setItems(names,(dialog,index)->{CinemaTrackChoices.audio(this,video.getFileUri(),index);renderTechnical();if(audioChip!=null)audioChip.requestFocus();Toast.makeText(this,getString(com.archos.mediacenter.video.R.string.cinema_audio_track_saved_for_playback),Toast.LENGTH_SHORT).show();}).show();
+    private int resolvedAudioTrackIndex() {
+        if (trackMetadata == null || trackMetadata.getAudioTrackNb() <= 0) return -1;
+        int count = trackMetadata.getAudioTrackNb();
+        int explicit = CinemaTrackChoices.audio(this, video.getFileUri());
+        if (explicit >= 0 && explicit < count) return explicit;
+        int byPriority = CinemaPreferredAudio.bestTrackIndex(this, trackMetadata);
+        if (byPriority >= 0 && byPriority < count) return byPriority;
+        return Math.max(0, Math.min(video.getCalculatedBestAudiotrack(), count - 1));
     }
-    private void renderTechnical(){
-        technical.removeAllViews();audioChip=null;if(trackMetadata==null)return;int count=trackMetadata.getAudioTrackNb();
-        if(count>0){int selected=CinemaTrackChoices.audio(this,video.getFileUri());if(selected<0||selected>=count)selected=Math.max(0,Math.min(video.getCalculatedBestAudiotrack(),count-1));audioChip=chip(technical,audioLabel(selected));focusable(audioChip);audioChip.setMinimumHeight(0);android.graphics.drawable.StateListDrawable background=new android.graphics.drawable.StateListDrawable();background.addState(new int[]{android.R.attr.state_focused},rounded(CinemaTokens.FOCUS,dp(this,8),0));background.addState(new int[]{android.R.attr.state_pressed},rounded(CinemaTokens.PRESSED,dp(this,8),0));background.addState(new int[]{},rounded(CinemaTokens.CAPSULE,dp(this,8),0));audioChip.setBackground(background);audioChip.setContentDescription(getString(com.archos.mediacenter.video.R.string.cinema_change_audio_track)+audioLabel(selected));audioChip.setOnClickListener(v->audioTracks());}
-        TextView resolution=videoCapsule!=null&&!videoCapsule.isBlank()?chip(technical,videoCapsule):null;
-        if(audioChip!=null&&resolution!=null){TextView sound=audioChip;technical.getViewTreeObserver().addOnPreDrawListener(new android.view.ViewTreeObserver.OnPreDrawListener(){public boolean onPreDraw(){if(technical.getViewTreeObserver().isAlive())technical.getViewTreeObserver().removeOnPreDrawListener(this);if(sound.getParent()!=technical||resolution.getParent()!=technical)return true;int height=Math.max(sound.getHeight(),resolution.getHeight());boolean changed=false;if(height>0&&sound.getHeight()!=height){sound.setMinimumHeight(height);changed=true;}if(height>0&&resolution.getHeight()!=height){resolution.setMinimumHeight(height);changed=true;}return !changed;}});}
-        if(technical.getChildCount()==0)chip(technical,getString(com.archos.mediacenter.video.R.string.cinema_file_information_unavailable));
+
+    private void audioTracks() {
+        int count = trackMetadata == null ? 0 : trackMetadata.getAudioTrackNb();
+        int active = resolvedAudioTrackIndex();
+        java.util.List<String> items = new java.util.ArrayList<>();
+        for (int n = 0; n < count; n++) {
+            String prefix = (n == active ? "✓  " : "") + (n + 1) + " · ";
+            items.add(prefix + audioLabel(n));
+        }
+        int priorityRowIndex = items.size();
+        items.add("🌐  " + getString(com.archos.mediacenter.video.R.string.cinema_pref_languages_title)
+                + "  (" + CinemaPreferredAudio.label(this) + ")");
+        CinemaUi.dialog(this)
+                .setTitle(getString(com.archos.mediacenter.video.R.string.cinema_audio_tracks))
+                .setItems(items.toArray(new String[0]), (dialog, index) -> {
+                    if (index == priorityRowIndex) {
+                        CinemaLanguagePreferences.showDialog(this, this::renderTechnical);
+                        return;
+                    }
+                    if (index >= 0 && index < count) {
+                        CinemaTrackChoices.audio(this, video.getFileUri(), index);
+                        renderTechnical();
+                        Toast.makeText(this, getString(com.archos.mediacenter.video.R.string.cinema_audio_track_saved_for_playback),
+                                Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton(com.archos.mediacenter.video.R.string.addon_back, null)
+                .show();
+    }
+
+    private void renderTechnical() {
+        technical.removeAllViews();
+        audioChip = null;
+        if (videoCapsule != null && !videoCapsule.isBlank()) {
+            chip(technical, videoCapsule);
+        }
     }
     private long effectiveDuration(){
         long d=measuredDuration>0?measuredDuration:CinemaMediaTime.known(video.getId(),video.getFilePath(),video.getDurationMs());
@@ -397,7 +418,7 @@ public class CinemaDetailsActivity extends LeanbackActivity {
         com.archos.mediacenter.video.utils.VideoMetadata metadata=video.getMetadata();if(metadata==null||metadata.getVideoTrack()==null)metadata=com.archos.mediacenter.video.info.VideoInfoCommonClass.retrieveMetadata(video,getApplicationContext());
         com.archos.mediacenter.video.utils.VideoMetadata resolved=metadata;
         handler.post(()->{if(isDestroyed()||isFinishing())return;trackMetadata=resolved;if(resolved!=null){if(resolved.getDuration()>0){measuredDuration=resolved.getDuration();CinemaMediaTime.remember(video.getFilePath(),measuredDuration);refreshInfo();applyPlayIcon();}if(fileView!=null&&resolved.getFileSize()>0)fileView.setText(formatFileSummary(resolved.getFileSize()));String dimensions=resolved.getVideoWidth()>0&&resolved.getVideoHeight()>0?resolved.getVideoWidth()+" × "+resolved.getVideoHeight():null;videoCapsule=join(dimensions,resolved.getVideoTrack()==null?null:resolved.getVideoTrack().format);}renderTechnical();});
-    }catch(Exception failure){handler.post(()->{if(!isDestroyed()){technical.removeAllViews();chip(technical,getString(com.archos.mediacenter.video.R.string.cinema_file_information_unavailable));}});}});}
+    }catch(Exception failure){handler.post(()->{if(!isDestroyed()){technical.removeAllViews();}});}});}
     private void play(boolean beginning){
         if (CinemaAddonPicker.requiresSources(video)) {
             CinemaAddonPicker.show(this, io, handler, video, publicMetadata, 0, 0);

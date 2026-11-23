@@ -143,22 +143,29 @@ public final class StremioAddons {
         public final List<String> languages;
         public final String userAgent;
         public final String referer;
+        public final Map<String, String> headers;
 
         public Stream(String addonName, String title, String quality, String url, String format) {
             this(addonName, title, quality, url, format, -1, 0, -1);
         }
 
         Stream(String addonName, String title, String quality, String url, String format, int fileIndex, long sizeBytes, int seeds) {
-            this(addonName, title, quality, url, format, fileIndex, sizeBytes, seeds, List.of(), "", "");
+            this(addonName, title, quality, url, format, fileIndex, sizeBytes, seeds, List.of(), "", "", Map.of());
         }
 
         Stream(String addonName, String title, String quality, String url, String format, int fileIndex,
                long sizeBytes, int seeds, List<String> languages) {
-            this(addonName, title, quality, url, format, fileIndex, sizeBytes, seeds, languages, "", "");
+            this(addonName, title, quality, url, format, fileIndex, sizeBytes, seeds, languages, "", "", Map.of());
         }
 
         Stream(String addonName, String title, String quality, String url, String format, int fileIndex,
                long sizeBytes, int seeds, List<String> languages, String userAgent, String referer) {
+            this(addonName, title, quality, url, format, fileIndex, sizeBytes, seeds, languages, userAgent, referer, Map.of());
+        }
+
+        Stream(String addonName, String title, String quality, String url, String format, int fileIndex,
+               long sizeBytes, int seeds, List<String> languages, String userAgent, String referer,
+               Map<String, String> headers) {
             this.languages = languages;
             this.seeds = seeds;
             this.fileIndex = fileIndex;
@@ -170,6 +177,7 @@ public final class StremioAddons {
             this.format = format;
             this.userAgent = userAgent == null ? "" : userAgent;
             this.referer = referer == null ? "" : referer;
+            this.headers = headers == null || headers.isEmpty() ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(headers));
         }
 
         public boolean torrent() { return "torrent".equals(format); }
@@ -359,6 +367,14 @@ public final class StremioAddons {
                 }
             }
         }
+        SharedPreferences sp = prefs(context);
+        if (!sp.getBoolean("cleanup_retired_addons_v1", false)) {
+            boolean removedBroken = out.removeIf(a -> builtIn(a) == null && isRetiredBrokenAddon(a.id, a.name, a.manifestUrl));
+            if (removedBroken) {
+                persist(context, out);
+            }
+            sp.edit().putBoolean("cleanup_retired_addons_v1", true).apply();
+        }
         return out;
     }
 
@@ -477,9 +493,54 @@ public final class StremioAddons {
         String host = uri.getHost();
         if (host == null) return true;
         host = host.toLowerCase(Locale.ROOT);
-        return unsupportedMovieProvider(name) || java.util.Set.of("cyberflix.elfhosted.com",
+        return unsupportedMovieProvider(name) || isRetiredBrokenAddon("", name, url) || java.util.Set.of("cyberflix.elfhosted.com",
                 "thepiratebay-plus.strem.fun", "publicdomainmovies.onrender.com", "watchhub.stremio.io",
-                "watchhub.strem.io", "comet.elfhosted.com", "webstreamr.hayd.uk").contains(host);
+                "watchhub.strem.io", "comet.elfhosted.com", "webstreamr.hayd.uk", "fun.rfnx.workers.dev").contains(host);
+    }
+
+    private static boolean isRetiredBrokenAddon(String id, String name, String url) {
+        String lowerId = id == null ? "" : id.trim().toLowerCase(Locale.ROOT);
+        String lowerName = name == null ? "" : name.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+        String host = "";
+        if (url != null && !url.isBlank()) {
+            try {
+                String h = Uri.parse(url).getHost();
+                if (h != null) host = h.toLowerCase(Locale.ROOT);
+            } catch (Exception ignored) {}
+        }
+        return "fun.rfnx.workers.dev".equals(host)
+                || "best.torrents.stremio.add-on".equals(lowerId)
+                || "besttorrents".equals(lowerName);
+    }
+
+    public static boolean isLiveChannelType(String type) {
+        if (type == null || type.isBlank()) return false;
+        return switch (type.trim().toLowerCase(Locale.ROOT)) {
+            case "tv", "channel", "channels", "sport", "sports", "live", "event", "events", "iptv", "radio" -> true;
+            default -> false;
+        };
+    }
+
+    public static boolean isLiveChannelAddon(Addon addon) {
+        if (addon == null) return false;
+        JSONObject manifest = manifestRules.get(addon.manifestUrl);
+        if (manifest != null) {
+            JSONArray types = manifest.optJSONArray("types");
+            if (types != null && types.length() > 0) {
+                boolean hasLive = false;
+                boolean hasVod = false;
+                for (int i = 0; i < types.length(); i++) {
+                    String t = types.optString(i);
+                    if (isLiveChannelType(t)) hasLive = true;
+                    else if ("movie".equalsIgnoreCase(t) || "series".equalsIgnoreCase(t) || "anime".equalsIgnoreCase(t)) hasVod = true;
+                }
+                if (hasLive && !hasVod) return true;
+                if (hasVod && !hasLive) return false;
+            }
+        }
+        String hay = (addon.id + " " + addon.name + " " + addon.manifestUrl).toLowerCase(Locale.ROOT);
+        return hay.contains("fayatv") || hay.contains("fayallc") || hay.contains("usatv")
+                || hay.contains("iptv") || hay.contains("livetv");
     }
 
     private static boolean unsupportedMovieProvider(String name) {
@@ -984,6 +1045,7 @@ public final class StremioAddons {
             String rowType = optStr(row, "type");
             String effectiveType = rowType.isBlank() ? type : rowType;
             if (id.isBlank() || title.isBlank() || (!needle.isBlank() && !title.toLowerCase(Locale.ROOT).contains(needle))) continue;
+            if (isNonPlayableCatalogEntry(effectiveType, id, title)) continue;
             String poster = optStr(row, "poster");
             if (poster.isBlank()) poster = optStr(row, "logo");
             String posterShape = optStr(row, "posterShape");
@@ -994,6 +1056,19 @@ public final class StremioAddons {
                     rating(row.optDouble("imdbRating", 0.0)), date(optStr(row, "released")), row.optJSONArray("genres"),
                     imdb, row.optLong("tmdb_id", 0), posterShape));
         }
+    }
+
+    private static boolean isNonPlayableCatalogEntry(String type, String id, String title) {
+        String cleanTitle = title == null ? "" : title.trim();
+        String lowerTitle = cleanTitle.toLowerCase(Locale.ROOT);
+        String lowerId = id == null ? "" : id.trim().toLowerCase(Locale.ROOT);
+        if (lowerId.contains("premium") && lowerTitle.contains("upgrade to premium")) return true;
+        if (lowerTitle.startsWith("upgrade to premium") || lowerTitle.contains("go premium")) return true;
+        if (isLiveChannelType(type)) {
+            // Skip section separator headers such as "-=Iran =-" or "--- Sports ---"
+            if (cleanTitle.matches("^[-=_*•·~#\\s]{2,}.*[-=_*•·~#\\s]{2,}$")) return true;
+        }
+        return false;
     }
 
     private static String tmdbOptions(Context context, String key) {
@@ -1187,12 +1262,18 @@ public final class StremioAddons {
                 || id.matches("(?i)kitsu:[0-9]+:[0-9]+");
         String path = "/stream/" + Uri.encode(type) + "/" + Uri.encode(id, ":")
                 + (series && !fullEpisodeId ? suffix : "") + ".json";
-        Addon targetOnly = (only != null && mayStream(only)) ? only : null;
-        var addons = list(context).stream().filter(item -> item.enabled && mayStream(item)
-                && (targetOnly != null
-                        ? targetOnly.manifestUrl.equalsIgnoreCase(item.manifestUrl)
-                        : acceptsStream(item, type, id)))
-                .collect(java.util.stream.Collectors.toList());
+        boolean liveType = isLiveChannelType(type);
+        Addon targetOnly = (only != null && (mayStream(only) || liveType)) ? only : null;
+        List<Addon> addons;
+        if (liveType && targetOnly != null) {
+            addons = List.of(targetOnly);
+        } else {
+            addons = list(context).stream().filter(item -> item.enabled && mayStream(item)
+                    && (targetOnly != null
+                            ? targetOnly.manifestUrl.equalsIgnoreCase(item.manifestUrl)
+                            : (!liveType && acceptsStream(item, type, id))))
+                    .collect(java.util.stream.Collectors.toList());
+        }
         var statuses = new java.util.concurrent.ConcurrentHashMap<String, StreamHealth>();
         var tasks = addons.stream().<java.util.concurrent.Callable<List<Stream>>>map(addon -> () -> {
             long started = elapsedMillis();
@@ -1318,21 +1399,33 @@ public final class StremioAddons {
                     if (!isHttpUrl(url)) continue;
                     String filePath = Uri.parse(url).getPath();
                     if (filePath != null && filePath.toLowerCase(Locale.ROOT).matches(".*\\.(zip|rar|srt|vtt|nfo|html?)$")) continue;
+                    if (filePath != null && filePath.toLowerCase(Locale.ROOT).matches(".*/(health|configure|status)$")) continue;
                 }
-                String title = (row.optString("name") + " " + row.optString("title", row.optString("description")))
-                        .replace('\n', ' ').trim();
+                String rawName = row.optString("name");
+                String rawDesc = row.optString("title", row.optString("description"));
+                String title = (rawName + " " + rawDesc).replace('\n', ' ').trim();
+                String lowerTitle = title.toLowerCase(Locale.ROOT);
+                if (!"torrent".equals(format) && (lowerTitle.startsWith("tip:") || lowerTitle.contains("use an external player")
+                        || lowerTitle.contains("unlock premium") || lowerTitle.contains("go premium"))) {
+                    continue;
+                }
                 JSONObject hints = row.optJSONObject("behaviorHints");
                 String streamUa = "";
                 String streamReferer = "";
+                var extraHeaders = new LinkedHashMap<String, String>();
                 if (hints != null) {
                     JSONObject proxyHeaders = hints.optJSONObject("proxyHeaders");
                     JSONObject reqHeaders = proxyHeaders != null ? proxyHeaders.optJSONObject("request") : null;
                     if (reqHeaders != null) {
                         var keys = reqHeaders.keys();
-                        while (keys.hasNext()) {
+                        while (keys.hasNext() && extraHeaders.size() < 16) {
                             String k = keys.next();
-                            if ("user-agent".equalsIgnoreCase(k)) streamUa = optStr(reqHeaders, k);
-                            else if ("referer".equalsIgnoreCase(k) || "referrer".equalsIgnoreCase(k)) streamReferer = optStr(reqHeaders, k);
+                            if (k == null || k.isBlank() || k.contains("\r") || k.contains("\n")) continue;
+                            String v = optStr(reqHeaders, k);
+                            if (v.isBlank() || v.length() > 1024 || v.contains("\r") || v.contains("\n")) continue;
+                            extraHeaders.put(k, v);
+                            if ("user-agent".equalsIgnoreCase(k)) streamUa = v;
+                            else if ("referer".equalsIgnoreCase(k) || "referrer".equalsIgnoreCase(k)) streamReferer = v;
                         }
                     }
                 }
@@ -1342,7 +1435,7 @@ public final class StremioAddons {
                 String languages = row.optString("language", row.optString("languages", ""));
                 results.add(new Stream(addon.name, title, extractQuality(metadata), url, format,
                         Math.max(-1, row.optInt("fileIdx", -1)), Math.max(0, size), seeds(row, hints, title),
-                        extractLanguages(languages + " " + metadata), streamUa, streamReferer));
+                        extractLanguages(languages + " " + metadata), streamUa, streamReferer, extraHeaders));
             }
         } catch (HttpFailure failure) {
             if (failure.code == 401 || failure.code == 403 || failure.code == 410 || failure.code == 429) {
@@ -1443,6 +1536,15 @@ public final class StremioAddons {
                         stream.userAgent != null && !stream.userAgent.isBlank() ? stream.userAgent : USER_AGENT);
                 if (stream.referer != null && !stream.referer.isBlank()) {
                     connection.setRequestProperty("Referer", stream.referer);
+                }
+                if (stream.headers != null) {
+                    for (Map.Entry<String, String> entry : stream.headers.entrySet()) {
+                        String k = entry.getKey();
+                        String v = entry.getValue();
+                        if (k == null || v == null || k.isBlank() || v.isBlank()) continue;
+                        if ("user-agent".equalsIgnoreCase(k) || "referer".equalsIgnoreCase(k) || "referrer".equalsIgnoreCase(k)) continue;
+                        connection.setRequestProperty(k, v);
+                    }
                 }
                 if (!playlist) connection.setRequestProperty("Range", "bytes=0-1023");
                 int status = connection.getResponseCode();

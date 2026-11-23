@@ -87,8 +87,22 @@ public final class CinemaAddonsActivity extends FragmentActivity {
 
     private final BroadcastReceiver syncChanges = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
-            if (browsing) loadCatalog();
-            else if (section != null) section.refresh(null);
+            if (browsing) {
+                if (selectedAddon != null) {
+                    var updated = StremioAddons.list(CinemaAddonsActivity.this).stream()
+                            .filter(item -> item.manifestUrl.equalsIgnoreCase(selectedAddon.manifestUrl)
+                                    || (!selectedAddon.id.isBlank() && item.id.equalsIgnoreCase(selectedAddon.id)))
+                            .findFirst().orElse(null);
+                    if (updated == null || !updated.enabled) {
+                        showHub();
+                        return;
+                    }
+                    selectedAddon = updated;
+                }
+                loadCatalog();
+            } else if (section != null) {
+                section.refresh(null);
+            }
         }
     };
 
@@ -290,7 +304,7 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         search = new EditText(this);
         search.setSingleLine();
         search.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
-        search.setHint(R.string.addon_search_hint);
+        search.setHint(isChannelCatalog() ? R.string.addon_channel_search : R.string.addon_search_hint);
         search.setTextColor(Color.WHITE);
         search.setHintTextColor(0xffcac2b5);
         search.setTextSize(15);
@@ -430,10 +444,23 @@ public final class CinemaAddonsActivity extends FragmentActivity {
     }
 
     private void showAddonSettings() {
+        if (selectedAddon != null) {
+            var current = selectedAddon;
+            new CinemaAddonsManagerDialog(this, io, handler, () -> {
+                var refreshed = StremioAddons.list(this).stream()
+                        .filter(item -> item.manifestUrl.equalsIgnoreCase(current.manifestUrl)
+                                || (!current.id.isBlank() && item.id.equalsIgnoreCase(current.id)))
+                        .findFirst().orElse(null);
+                if (refreshed == null || !refreshed.enabled) {
+                    showHub();
+                } else {
+                    selectedAddon = refreshed;
+                }
+            }).showAddonOnly(current, this::loadCatalog);
+            return;
+        }
         new CinemaAddonsManagerDialog(this, io, handler, () -> {
-            if (selectedAddon != null && StremioAddons.list(this).stream().noneMatch(
-                    item -> item.enabled && item.manifestUrl.equals(selectedAddon.manifestUrl))) showHub();
-            else if (browsing) loadCatalog();
+            if (browsing) loadCatalog();
         }).show();
     }
 
@@ -612,15 +639,20 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         cancelSelection();
         requestedPoster = poster;
         int request = selectionGeneration;
-        StremioAddons.Addon streamAddon = (addon != null && StremioAddons.mayStream(addon)) ? addon : null;
-        boolean episodic = "series".equalsIgnoreCase(poster.type()) || "anime".equalsIgnoreCase(poster.type());
+        boolean liveChannel = isChannelCatalog() || isChannelPoster(poster) || StremioAddons.isLiveChannelAddon(addon);
+        StremioAddons.Addon streamAddon = (addon != null && (StremioAddons.mayStream(addon) || liveChannel)) ? addon : null;
+        boolean episodic = !liveChannel && ("series".equalsIgnoreCase(poster.type()) || "anime".equalsIgnoreCase(poster.type()));
         if (!episodic) {
+            String effectiveType = liveChannel
+                    ? (isLiveChannelType(poster.type()) ? poster.type()
+                            : (isLiveChannelType(selectedCatalogType) ? selectedCatalogType : "tv"))
+                    : poster.type();
             selectionWork = CinemaAddonPicker.request(this, io, handler,
                     () -> {
-                        String sid = (streamAddon != null && !streamOnlyBrowse)
+                        String sid = (liveChannel || (streamAddon != null && !streamOnlyBrowse))
                                 ? poster.id() : StremioAddons.streamId(this, poster);
                         return new CinemaAddonPicker.Selection(poster.title(), sid,
-                                tmdbId(poster), poster.type(), 0, 0, streamAddon, poster.image(), poster.title());
+                                tmdbId(poster), effectiveType, 0, 0, streamAddon, poster.image(), poster.title());
                     }, () -> selectionActive(request));
             return;
         }

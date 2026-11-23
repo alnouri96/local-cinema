@@ -253,6 +253,16 @@ public final class CinemaUi {
         return sld;
     }
 
+    /** Direct non-stateful checkbox drawable safe for ImageView (never reset by ImageView drawable state). */
+    public static android.graphics.drawable.Drawable createCinemaCheckDrawable(Context c, boolean checked) {
+        return new CheckBoxDrawable(c, checked);
+    }
+
+    /** Direct non-stateful radio indicator drawable safe for ImageView. */
+    public static android.graphics.drawable.Drawable createCinemaRadioDrawable(Context c, boolean selected) {
+        return new RadioDotDrawable(c, selected);
+    }
+
     private static final class CheckBoxDrawable extends android.graphics.drawable.Drawable {
         private final int sizePx;
         private final float radiusPx;
@@ -268,15 +278,15 @@ public final class CinemaUi {
             this.radiusPx = dp(c, 6);
             this.strokePx = dp(c, 2f);
             boxPaint.setStyle(android.graphics.Paint.Style.FILL);
-            boxPaint.setColor(checked ? 0xFF3B2B13 : 0xFF18181D);
+            boxPaint.setColor(checked ? 0xFFE5A93B : 0xFF18181D);
             borderPaint.setStyle(android.graphics.Paint.Style.STROKE);
             borderPaint.setStrokeWidth(strokePx);
-            borderPaint.setColor(checked ? 0xFFE5A93B : 0xFF9CA3AF);
+            borderPaint.setColor(checked ? 0xFFE5A93B : 0xFFA6ABB6);
             checkPaint.setStyle(android.graphics.Paint.Style.STROKE);
-            checkPaint.setStrokeWidth(dp(c, 2.5f));
+            checkPaint.setStrokeWidth(dp(c, 2.8f));
             checkPaint.setStrokeCap(android.graphics.Paint.Cap.ROUND);
             checkPaint.setStrokeJoin(android.graphics.Paint.Join.ROUND);
-            checkPaint.setColor(0xFFE5A93B);
+            checkPaint.setColor(0xFF141517);
         }
 
         @Override public int getIntrinsicWidth() { return sizePx; }
@@ -294,10 +304,48 @@ public final class CinemaUi {
                 float w = b.width();
                 float h = b.height();
                 android.graphics.Path path = new android.graphics.Path();
-                path.moveTo(b.left + w * 0.25f, b.top + h * 0.52f);
-                path.lineTo(b.left + w * 0.44f, b.top + h * 0.71f);
-                path.lineTo(b.left + w * 0.76f, b.top + h * 0.30f);
+                path.moveTo(b.left + w * 0.24f, b.top + h * 0.52f);
+                path.lineTo(b.left + w * 0.43f, b.top + h * 0.72f);
+                path.lineTo(b.left + w * 0.77f, b.top + h * 0.28f);
                 canvas.drawPath(path, checkPaint);
+            }
+        }
+
+        @Override public void setAlpha(int alpha) {}
+        @Override public void setColorFilter(android.graphics.ColorFilter colorFilter) {}
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+
+    private static final class RadioDotDrawable extends android.graphics.drawable.Drawable {
+        private final int sizePx;
+        private final float strokePx;
+        private final boolean selected;
+        private final android.graphics.Paint ringPaint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.Paint dotPaint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+        RadioDotDrawable(Context c, boolean selected) {
+            this.selected = selected;
+            this.sizePx = dp(c, 22);
+            this.strokePx = dp(c, 2.2f);
+            ringPaint.setStyle(android.graphics.Paint.Style.STROKE);
+            ringPaint.setStrokeWidth(strokePx);
+            ringPaint.setColor(selected ? 0xFFE5A93B : 0xFFA6ABB6);
+            dotPaint.setStyle(android.graphics.Paint.Style.FILL);
+            dotPaint.setColor(0xFFE5A93B);
+        }
+
+        @Override public int getIntrinsicWidth() { return sizePx; }
+        @Override public int getIntrinsicHeight() { return sizePx; }
+
+        @Override
+        public void draw(android.graphics.Canvas canvas) {
+            android.graphics.Rect b = getBounds();
+            float cx = b.exactCenterX();
+            float cy = b.exactCenterY();
+            float radius = Math.min(b.width(), b.height()) / 2f - strokePx;
+            canvas.drawCircle(cx, cy, Math.max(2f, radius), ringPaint);
+            if (selected) {
+                canvas.drawCircle(cx, cy, Math.max(2f, radius * 0.54f), dotPaint);
             }
         }
 

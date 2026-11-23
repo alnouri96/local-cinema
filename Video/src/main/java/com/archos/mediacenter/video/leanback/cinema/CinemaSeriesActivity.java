@@ -123,14 +123,13 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
         watch.setEnabled(false);
         restartChip=CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_restart),com.archos.mediacenter.video.R.drawable.cinema_restart,()->{Episode e=currentEpisode();if((showMode&&selectedShowSeason!=null)||(!showMode&&focusedSeasonEpisode==null)){List<Episode> season=actionEpisodes();if(!season.isEmpty())playEpisode(season.get(0),true,true);}else if(e!=null)playEpisode(e,true,showMode);});
         listChip=CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_add_to_watchlist),com.archos.mediacenter.video.R.drawable.cinema_watchlist,()->{CinemaWatchlistActivity.toggleEpisodes(this,actionEpisodes());refreshActions();});
-        trailerButton=CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_watch_series_trailer),com.archos.mediacenter.video.R.drawable.cinema_trailer,this::launchSeriesTrailer);
-        trailerButton.setVisibility(View.VISIBLE);
-        CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_audio_tracks),com.archos.mediacenter.video.R.drawable.cinema_ic_audio,()->CinemaPreferredAudio.choose(this,()->{}));
         seenChip=CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_mark_as_watched),
                 com.archos.mediacenter.video.R.drawable.cinema_check,this::toggleWatched);
+        trailerButton=CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_watch_series_trailer),com.archos.mediacenter.video.R.drawable.cinema_trailer,this::launchSeriesTrailer);
+        trailerButton.setVisibility(View.VISIBLE);
+        CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_audio_tracks),com.archos.mediacenter.video.R.drawable.cinema_ic_audio,this::openSeriesAudioTracks);
         subsChip=CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_subtitles_cinemaseriesactivity),com.archos.mediacenter.video.R.drawable.cinema_subtitles,()->{});
         subsChip.setOnClickListener(v->subtitleMenu(subsChip));
-        CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_pref_languages_title),com.archos.mediacenter.video.R.drawable.cinema_globe,()->CinemaLanguagePreferences.showDialog(this,null));
         moreChip=CinemaActionChip.create(this,actions,this.getString(com.archos.mediacenter.video.R.string.cinema_more),com.archos.mediacenter.video.R.drawable.cinema_more,()->{});
         moreChip.setOnClickListener(v->moreMenu(moreChip));
         for(int n=0;n<actions.getChildCount();n++){
@@ -262,6 +261,70 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
         if(start==null)start=list.get(0);
         selectedEpisode=Long.toString(start.getId());
         playEpisode(start,false,true);
+    }
+
+    private void openSeriesAudioTracks() {
+        Episode episode = currentEpisode();
+        if (episode == null || episode.getFileUri() == null) {
+            CinemaLanguagePreferences.showDialog(this, null);
+            return;
+        }
+        io.execute(() -> {
+            com.archos.mediacenter.video.utils.VideoMetadata metadata = null;
+            try {
+                metadata = episode.getMetadata();
+                if (metadata == null || metadata.getAudioTrackNb() == 0) {
+                    metadata = com.archos.mediacenter.video.info.VideoInfoCommonClass.retrieveMetadata(episode, getApplicationContext());
+                }
+            } catch (Exception ignored) {}
+            final com.archos.mediacenter.video.utils.VideoMetadata resolved = metadata;
+            handler.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                int count = resolved == null ? 0 : resolved.getAudioTrackNb();
+                int active = -1;
+                if (count > 0) {
+                    int explicit = CinemaTrackChoices.audio(this, episode.getFileUri());
+                    if (explicit >= 0 && explicit < count) active = explicit;
+                    else {
+                        int byPriority = CinemaPreferredAudio.bestTrackIndex(this, resolved);
+                        active = (byPriority >= 0 && byPriority < count)
+                                ? byPriority
+                                : Math.max(0, Math.min(episode.getCalculatedBestAudiotrack(), count - 1));
+                    }
+                }
+                List<String> items = new ArrayList<>();
+                for (int n = 0; n < count; n++) {
+                    var track = resolved.getAudioTrack(n);
+                    String lang = (track.language == null || track.language.isBlank() || "und".equals(track.language))
+                            ? getString(com.archos.mediacenter.video.R.string.cinema_unknown_language)
+                            : new Locale(track.language).getDisplayLanguage(Locale.ENGLISH);
+                    String spec = (track.format == null ? "" : track.format)
+                            + (track.format != null && !track.format.isBlank() && track.channels != null && !track.channels.isBlank() ? " · " : "")
+                            + (track.channels == null ? "" : track.channels);
+                    String label = (n == active ? "✓  " : "") + (n + 1) + " · " + lang
+                            + (spec.isBlank() ? "" : "  ·  " + spec);
+                    items.add(label);
+                }
+                int priorityRowIndex = items.size();
+                items.add("🌐  " + getString(com.archos.mediacenter.video.R.string.cinema_pref_languages_title)
+                        + "  (" + CinemaPreferredAudio.label(this) + ")");
+                CinemaUi.dialog(this)
+                        .setTitle(getString(com.archos.mediacenter.video.R.string.cinema_audio_tracks))
+                        .setItems(items.toArray(new String[0]), (dialog, index) -> {
+                            if (index == priorityRowIndex) {
+                                CinemaLanguagePreferences.showDialog(this, null);
+                                return;
+                            }
+                            if (index >= 0 && index < count) {
+                                CinemaTrackChoices.audio(this, episode.getFileUri(), index);
+                                Toast.makeText(this, getString(com.archos.mediacenter.video.R.string.cinema_audio_track_saved_for_playback),
+                                        Toast.LENGTH_SHORT).show();
+                            }
+                        })
+                        .setNegativeButton(com.archos.mediacenter.video.R.string.addon_back, null)
+                        .show();
+            });
+        });
     }
 
     private void subtitleMenu(View anchor){

@@ -39,7 +39,10 @@ public final class CinemaAutoSubtitles {
         if(allowAll)values.add(1,"");
         if(!values.contains(current))values.add(current);
         String[] labels=new String[values.size()+1];
-        for(int n=0;n<values.size();n++)labels[n]=languageLabel(values.get(n));
+        for(int n=0;n<values.size();n++){
+            boolean isSel=values.get(n).equalsIgnoreCase(current==null?"":current);
+            labels[n]=(isSel?"✓  ":"")+languageLabel(values.get(n));
+        }
         labels[values.size()]=CinemaUi.label(context,"لغة أخرى…","Other language…");
         CinemaUi.dialog(context).setTitle(CinemaUi.label(context,"لغة الترجمة","Subtitle language"))
                 .setItems(labels,(dialog,which)->{

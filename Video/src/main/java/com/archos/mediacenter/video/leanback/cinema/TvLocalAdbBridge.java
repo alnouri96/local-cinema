@@ -2,6 +2,8 @@ package com.archos.mediacenter.video.leanback.cinema;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Build;
+import android.os.Environment;
 import android.util.Base64;
 import android.util.Log;
 
@@ -110,6 +112,8 @@ public final class TvLocalAdbBridge {
         IO_EXEC.execute(() -> {
             ConnectResult res = connectBlocking(app, 6000, false);
             if (res.success()) {
+                grantWriteSecureSettingsInternal(app);
+                grantManageExternalStorageInternal(app);
                 TvRemotePermissionKeeper.ensureAccessibilityEnabled(app);
                 CinemaLinkServer.broadcastRemoteStatus(app);
             }
@@ -123,10 +127,36 @@ public final class TvLocalAdbBridge {
             ConnectResult res = connectBlocking(app, 22000, true);
             if (res.success()) {
                 grantWriteSecureSettingsInternal(app);
+                grantManageExternalStorageInternal(app);
                 TvRemotePermissionKeeper.ensureAccessibilityEnabled(app);
                 CinemaLinkServer.broadcastRemoteStatus(app);
             }
             if (callback != null) callback.accept(res);
+        });
+    }
+
+    public static void grantManageExternalStorageAsync(Context context, java.util.function.Consumer<Boolean> callback) {
+        if (context == null) {
+            if (callback != null) callback.accept(false);
+            return;
+        }
+        Context app = context.getApplicationContext();
+        if (TvPermissionsWizardDialog.hasManageAllFilesPermission(app)) {
+            if (callback != null) callback.accept(true);
+            return;
+        }
+        if (!isEnabled(app) && !isReady()) {
+            if (callback != null) callback.accept(false);
+            return;
+        }
+        IO_EXEC.execute(() -> {
+            boolean ok = false;
+            try {
+                if (ensureConnectedInternal(app)) {
+                    ok = grantManageExternalStorageInternal(app);
+                }
+            } catch (Throwable ignored) {}
+            if (callback != null) callback.accept(ok);
         });
     }
 
@@ -195,6 +225,7 @@ public final class TvLocalAdbBridge {
                     return new ConnectResult(false, "ADB shell did not respond");
                 }
                 boolean granted = grantWriteSecureSettingsInternal(app);
+                grantManageExternalStorageInternal(app);
                 TvRemotePermissionKeeper.ensureAccessibilityEnabled(app);
                 CinemaLinkServer.broadcastRemoteStatus(app);
                 return new ConnectResult(true, granted
@@ -211,6 +242,18 @@ public final class TvLocalAdbBridge {
         ShellResult r = execShellInternal("pm grant " + context.getPackageName()
                 + " android.permission.WRITE_SECURE_SETTINGS", 4000);
         return r.ok && TvRemotePermissionKeeper.hasWriteSecureSettings(context);
+    }
+
+    private static boolean grantManageExternalStorageInternal(Context context) {
+        if (TvPermissionsWizardDialog.hasManageAllFilesPermission(context)) return true;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            ShellResult r = execShellInternal("appops set " + context.getPackageName()
+                    + " MANAGE_EXTERNAL_STORAGE allow", 4000);
+            return r.ok && Environment.isExternalStorageManager();
+        }
+        ShellResult r = execShellInternal("pm grant " + context.getPackageName()
+                + " android.permission.WRITE_EXTERNAL_STORAGE", 4000);
+        return r.ok && TvPermissionsWizardDialog.hasManageAllFilesPermission(context);
     }
 
     private static boolean ensureConnectedInternal(Context context) {

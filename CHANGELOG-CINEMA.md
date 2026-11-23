@@ -1,5 +1,45 @@
 # Local Cinema release notes
 
+## Local Cinema v1.0.0-beta.17 (`versionCode = 17`, 2026-11-23)
+
+### English
+
+#### TV
+
+- Upgraded TV Live with automatic initial focus on the first channel card, clean bilingual categories split from compound M3U groups and saved between visits, merged Favorite Countries channels with a searchable world country picker, and multi-country Nexonic IPTV alongside iptv-org.
+- Redesigned Add-ons Settings with high-contrast gold checkboxes, a dedicated Manage Installed Add-ons view instead of an inline card grid, and per-add-on settings inside individual add-ons with instant two-way sync.
+- Played live add-on channels directly without the torrent source picker, forwarded full proxy headers, added automatic HLS and MPEG-TS fallback plus alternate stream failover for FayaTV and Persian Stremio, filtered non-playable headers, and automatically cleaned up the paywalled Best Torrents add-on.
+- Added an ordered Audio Language Priority list (1, 2, 3...) applied sequentially across Movies and Series, unified Movie and Series details buttons with Language Priority inside Audio Tracks and Trailer next to Mark as Watched, and removed the side audio specs label and redundant action buttons.
+- Reorganized Main Settings into clean non-duplicate sections, enabled All Files Access (`MANAGE_EXTERNAL_STORAGE`) for File Browser deletion and moving with a Permissions Wizard card, fixed the licenses link, and prepared OTA updates for future repository migration.
+
+#### Phone
+
+- Updated shared Stremio add-on parsing to forward full request proxy headers, filter non-playable entries, and automatically clean up retired broken add-ons.
+- Kept Live TV preferences compatible with Favorite Countries merged mode, fixed the third-party licenses link, and prepared the OTA updater allowlist for upcoming repository migration.
+
+Both apps are open source and free. [Source for these APKs](https://github.com/alnouri96/local-cinema/tree/v1.0.0-beta.17) · [Third-party licenses](https://github.com/alnouri96/local-cinema/blob/v1.0.0-beta.17/docs/THIRD_PARTY.md).
+
+<div dir="rtl" align="right">
+
+### العربية
+
+#### التلفاز
+
+- يطوّر التحديث شاشة البث التلفزيوني المباشر بتركيز أولي تلقائي على أول بطاقة قناة، وتفكيك التصنيفات المركّبة وتعريبها بالكامل مع حفظ آخر تصنيف مختار، ودمج قنوات جميع الدول المفضلة في قائمة واحدة مع منتقي دول عالمي مزوّد بشريط بحث، وترقية مصدر Nexonic IPTV ليعمل عالمياً بجانب iptv-org.
+- يعيد التحديث تنظيم إعدادات الإضافات بمربعات اختيار ذهبية عالية التباين وزر مستقل لإدارة الإضافات المثبتة، مع فصل الإعدادات الخاصة بكل إضافة داخل صفحتها وربطها بمزامنة فورية ثنائية الاتجاه.
+- يشغّل التطبيق قنوات الإضافات المباشرة فوراً دون نافذة مصادر التورنت، ويمرّر جميع ترويسات البروكسي، ويبدّل تلقائياً بين صيغتي HLS وMPEG-TS مع انتقال تلقائي للروابط البديلة في FayaTV وPersian Stremio وتنظيف تلقائي لإضافة Best Torrents المغلقة.
+- يضيف التحديث قائمة أولوية لغات صوت مرتّبة بالتسلسل (1، 2، 3...) تُطبَّق تلقائياً في الأفلام والمسلسلات، ويوحّد أزرار تفاصيل الأفلام والمسلسلات مع نقل «أولوية اللغات» إلى داخل «مسارات الصوت» ووضع «الإعلان» بجانب «تحديد كمشاهد» وإزالة النصوص والأزرار الزائدة.
+- يقسّم التحديث الإعدادات الرئيسية إلى مجموعات واضحة بلا تكرار، ويمكّن صلاحية إدارة جميع الملفات لحذف ونقل الملفات من مستعرض الملفات مع بطاقة تفعيل في معالج الصلاحيات، ويجهّز التحديث التلقائي للمرحلة القادمة.
+
+#### الهاتف
+
+- يحدّث التطبيق وحدة الإضافات المشتركة لتمرير ترويسات البروكسي الكاملة وتنقية العناصر غير القابلة للتشغيل وتنظيف الإضافات المعطّلة تلقائياً.
+- يحافظ التطبيق على توافق تفضيلات البث المباشر مع وضع الدول المفضلة المدمج، ويصلح رابط تراخيص الجهات الخارجية، ويجهّز قائمة التحديث التلقائي للمرحلة القادمة.
+
+التطبيقان مفتوحا المصدر ومجانيان بالكامل. [الكود المطابق للحزمتين](https://github.com/alnouri96/local-cinema/tree/v1.0.0-beta.17) · [تراخيص الجهات الخارجية](https://github.com/alnouri96/local-cinema/blob/v1.0.0-beta.17/docs/THIRD_PARTY.md).
+
+</div>
+
 ## Local Cinema v1.0.0-beta.16 (`versionCode = 16`, 2026-11-23)
 
 ### English

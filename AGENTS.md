@@ -4,7 +4,7 @@ Local Cinema TV uses `com.meedx.localcinema.tv` (`Video/`). Local Cinema Manager
 
 ## Current state
 
-- Published Latest: `v1.0.0-beta.16` (`versionCode = 16`, 2026-11-23) on `alnouri96/meedx` and `alnouri96/local-cinema`.
+- Published Latest: `v1.0.0-beta.17` (`versionCode = 17`, 2026-11-23) on `alnouri96/meedx` and `alnouri96/local-cinema`.
 - Active local work: see [HANDOFF.md](HANDOFF.md). Release builds and publication: see [docs/RELEASE.md](docs/RELEASE.md).
 - Release history lives exclusively in [CHANGELOG-CINEMA.md](CHANGELOG-CINEMA.md) and `releases/<tag>/checksums.txt`.
 

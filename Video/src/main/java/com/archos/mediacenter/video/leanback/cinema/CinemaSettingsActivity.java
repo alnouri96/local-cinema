@@ -149,6 +149,15 @@ public class CinemaSettingsActivity extends LeanbackActivity {
         holder[0].setTag(focusKey(title));
     }
     private void note(String value){TextView t=text(this,CinemaTokens.LABEL,false);t.setText(value);t.setPadding(0,dp(this,8),0,dp(this,14));content.addView(t);}
+    private void sectionHeader(String title) {
+        TextView header = text(this, 14, true);
+        header.setText(title);
+        header.setTextColor(CinemaTokens.GOLD);
+        header.setFocusable(false);
+        header.setClickable(false);
+        header.setPaddingRelative(dp(this, 6), dp(this, 14), dp(this, 6), dp(this, 6));
+        content.addView(header);
+    }
     private String l(String ar,String en){return label(this,ar,en);}
     private void advanced(){startActivity(new Intent(this,VideoSettingsActivity.class));}
     private String storageSubtitleCache;
@@ -178,61 +187,52 @@ public class CinemaSettingsActivity extends LeanbackActivity {
         if (storageSubtitleCache == null) {
             storageSubtitleCache = l("التحقق من حجم البوسترات والكاش المؤقت…", "Calculating posters & cache size…");
         }
-        refreshStorageSummaryAsync(() -> {
-            if (rootPage && content != null) {
-                for (int n = 0; n < content.getChildCount(); n++) {
-                    View v = content.getChildAt(n);
-                    if (focusKey(l("التخزين والكاش", "Storage & Cache")).equals(v.getTag())
-                            && v instanceof LinearLayout card && card.getChildCount() > 1
-                            && card.getChildAt(1) instanceof LinearLayout textCol && textCol.getChildCount() > 1
-                            && textCol.getChildAt(1) instanceof TextView subTv) {
-                        subTv.setText(storageSubtitleCache);
-                        break;
-                    }
-                }
-            }
-        });
+        refreshStorageSummaryAsync(null);
+
+        sectionHeader(l("الواجهة واللغة", "Interface & Language"));
         iconButton(R.drawable.cinema_globe,
-                l("اللغة", "Language"),
-                l("لغة التطبيق: ", "App: ") + currentAppLanguageLabel()
-                        + l(" · لغة البوسترات والتقييمات: ", " · Posters: ") + currentMetadataLangLabel(),
+                l("اللغة وأولوية اللغات", "Language & Priorities"),
+                l("التطبيق: ", "App: ") + currentAppLanguageLabel()
+                        + l(" · البوسترات: ", " · Posters: ") + currentMetadataLangLabel()
+                        + l(" · الصوت: ", " · Audio: ") + CinemaPreferredAudio.label(this),
                 this::languageGroup);
         iconButton(R.drawable.cinema_ic_appearance,
-                l("المظهر والساعة", "Appearance & Clock"),
-                l("الثيم: داكن ذهبي · الساعة والطقس · الخلفيات: ", "Theme: Dark Gold · Clock & Weather · Backdrop: ") + currentBackdropLabel(),
+                l("المظهر والشاشة الرئيسية", "Appearance & Home Screen"),
+                l("الصفوف · الساعة والطقس · الخلفيات: ", "Home rows · Clock & Weather · Backdrop: ") + currentBackdropLabel(),
                 this::appearance);
+
+        sectionHeader(l("التشغيل والمحتوى", "Playback & Content"));
         iconButton(R.drawable.cinema_play_movie,
-                l("التشغيل والترجمة", "Playback & Subtitles"),
-                l("المشغّل المتقدم · المحرّك · إعدادات الترجمة", "Advanced Player · Cinema Engine · Subtitle Settings"),
+                l("التشغيل والصوت والترجمة", "Playback, Audio & Subtitles"),
+                l("أولوية الصوت · محرّك السينما · الترجمة · المشغّل المتقدم", "Audio Priority · Cinema Engine · Subtitles · Advanced Player"),
                 this::playbackAudioGroup);
-        iconButton(R.drawable.cinema_addons, getString(R.string.addon_hub_title),
-                getString(R.string.addon_settings_description), this::addonsSettings);
         iconButton(R.drawable.cinema_ic_shield,
                 l("المشاهدة العائلية وتخطي الإعلانات", "Family Watch & Skip Ads"),
-                l("توقيتات من CleanStream وملفات التوقيت المحلية", "CleanStream timings and local timing files"),
+                l("توقيتات CleanStream وملفات التوقيت المحلية", "CleanStream timings and local timing files"),
                 this::playbackFiltersPage);
+        iconButton(R.drawable.cinema_addons, getString(R.string.addon_hub_title),
+                getString(R.string.addon_settings_description), this::addonsSettings);
         iconButton(R.drawable.cinema_folder,
-                l("المكتبة والملفات", "Library & Files"),
-                l("مؤقت البوسترات: ", "Posters timer: ") + currentAutoRefreshLabel(),
+                l("المكتبة والبوسترات والتخزين", "Library, Posters & Storage"),
+                l("مصادر SMB · البوسترات (", "SMB Sources · Posters (") + currentAutoRefreshLabel()
+                        + l(") · التخزين والكاش", ") · Storage & Cache"),
                 this::libraryAndPostersGroup);
-        iconButton(R.drawable.cinema_ic_posters,
-                l("التخزين والكاش", "Storage & Cache"),
-                storageSubtitleCache,
-                this::storageAndCachePage);
+
+        sectionHeader(l("الاتصال والنظام", "Connections & System"));
         iconButton(R.drawable.cinema_ic_addons,
                 l("الاتصال ومزامنة الهاتف", "Connections & Phone Sync"),
-                l("ربط الهاتف · الريموت والأذونات · حالة المزامنة", "Link Phone · Remote & Permissions · Phone Sync Status"),
+                l("ربط الهاتف · الريموت وADB المحلي · المزامنة وTrakt", "Link Phone · Remote & Local ADB · Sync & Trakt"),
                 this::connectionsGroup);
-        iconButton(R.drawable.cinema_ic_shield,
-                l("النظام والصلاحيات", "System & Permissions"),
+        iconButton(R.drawable.cinema_ic_system,
+                l("النظام والصلاحيات والتحديثات", "System, Permissions & Updates"),
                 com.meedx.updates.AppUpdates.displayVersion(com.archos.mediacenter.video.BuildConfig.VERSION_NAME)
-                        + l(" · الأذونات · الشبكة", " · Permissions · Network"),
+                        + l(" · التحديثات · معالج الصلاحيات · التراخيص", " · Updates · Permissions Wizard · Licenses"),
                 this::systemGroup);
     }
 
     private void storageAndCachePage() {
         homePage = false;
-        backTarget = this::showRoot;
+        backTarget = this::libraryAndPostersGroup;
         currentRender = this::storageAndCachePage;
         page(l("التخزين والكاش", "Storage & Cache"));
         final long[] sizes = {0L, 0L};
@@ -302,7 +302,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
 
     private void languageGroup(){
         homePage=false;backTarget=this::showRoot;currentRender=this::languageGroup;
-        page(l("اللغة", "Language"));
+        page(l("اللغة وأولوية اللغات", "Language & Priorities"));
         iconButton(R.drawable.cinema_globe,
                 l("لغة التطبيق", "App Language"),
                 l("اللغة الحالية: ", "Current language: ") + currentAppLanguageLabel(),
@@ -311,27 +311,42 @@ public class CinemaSettingsActivity extends LeanbackActivity {
                 l("لغة البوسترات والتقييمات", "Posters & Metadata Language"),
                 l("المختار حالياً: ", "Selected: ") + currentMetadataLangLabel(),
                 this::metadataLanguage);
+        iconButton(R.drawable.cinema_ic_audio,
+                getString(R.string.cinema_pref_languages_title),
+                l("الصوت: ", "Audio: ") + CinemaPreferredAudio.label(this)
+                        + l(" · الترجمة: ", " · Subtitles: ")
+                        + CinemaLanguagePreferences.localizedSubtitleLabel(this, CinemaLanguagePreferences.primarySubtitleLanguage(this)),
+                () -> CinemaLanguagePreferences.showDialog(this, this::languageGroup));
     }
 
     private void libraryAndPostersGroup(){
         homePage=false;backTarget=this::showRoot;currentRender=this::libraryAndPostersGroup;
-        page(l("المكتبة، البوسترات ومؤقت التحديث", "Library, Posters & Auto-Refresh"));
-        iconButton(R.drawable.cinema_folder, getString(com.archos.mediacenter.video.R.string.cinema_libraries),
-                l("مصادر الشبكة والمكتبة ومصادر التقييم", "Network sources, rating providers & lists"), this::librariesPage);
-        iconButton(R.drawable.cinema_ic_posters, l("البوسترات والمعلومات ومؤقت التحديث", "Metadata, Posters & Auto-Refresh"),
+        page(l("المكتبة والبوسترات والتخزين", "Library, Posters & Storage"));
+        iconButton(R.drawable.cinema_network, getString(com.archos.mediacenter.video.R.string.cinema_manage_library_sources),
+                l("مجلدات الشبكة (SMB) والتخزين الداخلي وUSB", "SMB network shares, internal & USB video folders"),
+                () -> startActivity(new Intent(this, NetworkRootActivity.class)));
+        iconButton(R.drawable.cinema_ic_posters, l("مصدر البيانات وتحديث البوسترات", "Metadata Source & Poster Refresh"),
                 l("المصدر: ", "Source: ") + (OpenMetadata.enabled(this) ? l("مصادر مفتوحة", "Open Providers") : "TMDb")
-                        + " · " + currentMetadataLangLabel(), this::metadataPage);
-        iconButton(R.drawable.cinema_ic_timer, getString(com.archos.mediacenter.video.R.string.cinema_refresh_posters),
-                l("مؤقت البوسترات: ", "Timer: ") + currentAutoRefreshLabel(), this::posterSettings);
+                        + l(" · التحديث التلقائي: ", " · Auto-refresh: ") + currentAutoRefreshLabel(),
+                this::metadataPage);
+        iconButton(R.drawable.cinema_ic_posters, getString(com.archos.mediacenter.video.R.string.cinema_rating_sources),
+                l("تحديث قاعدة بيانات IMDb وإعداد مفتاح OMDb", "Update IMDb dataset & configure OMDb key"),
+                () -> startActivity(new Intent(this, CinemaRatingsActivity.class)));
+        iconButton(R.drawable.cinema_folder, getString(com.archos.mediacenter.video.R.string.cinema_advanced_library_lists),
+                l("استعراض وإدارة قوائم الفيديو المخصّصة", "Browse and manage custom video lists"),
+                () -> startActivity(new Intent(this, com.archos.mediacenter.video.leanback.VideosByListActivity.class)));
+        iconButton(R.drawable.cinema_ic_system,
+                l("التخزين والكاش", "Storage & Cache"),
+                storageSubtitleCache != null ? storageSubtitleCache
+                        : l("قياس وتنظيف كاش البوسترات والتطبيق", "Inspect and clear posters & app cache"),
+                this::storageAndCachePage);
     }
 
     private void playbackAudioGroup(){
         homePage=false;backTarget=this::showRoot;currentRender=this::playbackAudioGroup;
-        page(l("التشغيل والترجمة", "Playback & Subtitles"));
+        page(l("التشغيل والصوت والترجمة", "Playback, Audio & Subtitles"));
         iconButton(R.drawable.cinema_ic_audio, getString(R.string.addon_preferred_audio),
                 CinemaPreferredAudio.label(this), () -> CinemaPreferredAudio.choose(this, this::playbackAudioGroup));
-        iconButton(R.drawable.cinema_play_movie, getString(com.archos.mediacenter.video.R.string.cinema_advanced_video_and_audio_settings),
-                l("إعدادات فك الترميز والمزامنة والمشغّل المتقدمة", "Hardware decoding, A/V & player preferences"), this::advanced);
         iconButton(R.drawable.cinema_ic_audio, getString(com.archos.mediacenter.video.R.string.cinema_cinema_engine),
                 currentDisplayModeLabel() + " · " + (prefs.getInt("cinema_display_delay_ms", 1500) / 1000.0) + " s", this::cinemaEngine);
         iconButton(R.drawable.cinema_subtitles,
@@ -342,6 +357,8 @@ public class CinemaSettingsActivity extends LeanbackActivity {
                 () -> SubtitleSources.settings(this));
         iconButton(R.drawable.cinema_subtitles, getString(R.string.addon_subtitle_settings),
                 getString(R.string.addon_subtitle_settings_description), this::subtitleAddonsSettings);
+        iconButton(R.drawable.cinema_play_movie, getString(com.archos.mediacenter.video.R.string.cinema_advanced_video_and_audio_settings),
+                l("إعدادات فك الترميز والمزامنة والمشغّل المتقدمة والاستيراد/التصدير", "Hardware decoding, A/V, player preferences & import/export"), this::advanced);
     }
 
     private void playbackFiltersPage() {
@@ -382,12 +399,13 @@ public class CinemaSettingsActivity extends LeanbackActivity {
 
     private void metadataPage(){
         homePage=false;backTarget=this::libraryAndPostersGroup;currentRender=this::metadataPage;
-        page(l("البوسترات والمعلومات", "Metadata & Posters"));
+        page(l("مصدر البيانات وتحديث البوسترات", "Metadata Source & Poster Refresh"));
         metadataSourceRow();
-        iconButton(R.drawable.cinema_globe, l("لغة البوسترات والتقييمات", "Posters & Metadata Language"),
-                l("المختار حالياً: ", "Selected: ") + currentMetadataLangLabel(), this::metadataLanguage);
         autoRefreshMetadataRow(this::metadataPage);
-        iconButton(R.drawable.cinema_ic_posters, l("تحديث البوسترات والبيانات يدوياً الآن", "Refresh Posters & Metadata Now"),
+        iconButton(R.drawable.cinema_ic_posters, getString(com.archos.mediacenter.video.R.string.cinema_fetch_missing_posters),
+                l("تنزيل البوسترات الناقصة فقط دون مسح الكاش", "Download missing posters without clearing cache"),
+                () -> requestPosterRefresh("missing"));
+        iconButton(R.drawable.cinema_ic_updates, l("تحديث البوسترات والبيانات يدوياً الآن", "Refresh Posters & Metadata Now"),
                 l("إعادة تحميل جميع البوسترات والسير والتقييمات", "Force refresh posters, cast & multi-ratings"), () ->
                 CinemaUi.dialog(this).setTitle(l("تحديث البوسترات والبيانات يدوياً الآن", "Refresh Posters & Metadata Now"))
                         .setMessage(getString(com.archos.mediacenter.video.R.string.cinema_library_posters_will_be_downloaded_again_from_tmdb))
@@ -479,7 +497,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
 
     private void systemGroup(){
         homePage=false;backTarget=this::showRoot;currentRender=this::systemGroup;
-        page(l("النظام والصلاحيات", "System & Permissions"));
+        page(l("النظام والصلاحيات والتحديثات", "System, Permissions & Updates"));
         note("Local Cinema · Android TV\nMEEDX\n"+com.meedx.updates.AppUpdates.displayVersion(com.archos.mediacenter.video.BuildConfig.VERSION_NAME));
         iconButton(R.drawable.cinema_ic_updates,
                 l("التحديثات ومعلومات الإصدار", "Updates & Version"),
@@ -487,17 +505,12 @@ public class CinemaSettingsActivity extends LeanbackActivity {
                 ()->com.meedx.updates.AppUpdates.settings(this,true,
                 new com.meedx.updates.AppUpdates.NoteLabels(com.archos.mediacenter.video.R.string.cinema_update_patch_notes,
                         com.archos.mediacenter.video.R.string.cinema_update_notes_missing)));
+        iconButton(R.drawable.cinema_ic_shield, l("معالج الصلاحيات والخدمات (التخزين والبطارية والريموت)",
+                "Permissions & Services Wizard"),
+                l("التحقق من إدارة الملفات والبطارية والوصول وحماية TCL وADB المحلي", "Verify All Files Access, Battery, Accessibility, TCL & Local ADB"),
+                () -> TvPermissionsWizardDialog.show(this));
         iconButton(R.drawable.cinema_ic_system, getString(R.string.cinema_about_licenses),
                 getString(R.string.cinema_open_source_free), this::aboutLicenses);
-        iconButton(R.drawable.cinema_ic_shield, l("فتح معالج الصلاحيات والخدمات (الأذونات والريموت والبطارية)",
-                "Open Permissions & Services Wizard"),
-                l("التحقق من حالة التخزين والبطارية وخدمة الوصول وحماية TCL", "Verify Storage, Battery, Accessibility & TCL status"),
-                () -> TvPermissionsWizardDialog.show(this));
-        localAdbPermissionRow();
-        iconButton(R.drawable.cinema_network, getString(com.archos.mediacenter.video.R.string.cinema_network),
-                l("مصادر SMB والمجلدات المشتركة", "SMB shares & network locations"), this::networkPage);
-        iconButton(R.drawable.cinema_ic_system, getString(com.archos.mediacenter.video.R.string.cinema_advanced_settings_import_and_export),
-                l("استيراد وتصدير وإعدادات النظام المتقدمة", "Import/export & legacy system preferences"), this::advanced);
     }
 
     private void aboutLicenses() {

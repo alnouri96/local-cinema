@@ -43,9 +43,25 @@ public final class CinemaHlsActivity extends Activity {
     static final String LIVE_CHANNEL = "catalog_live_channel";
     static final String CHANNEL_USER_AGENT = "channel_ua";
     static final String CHANNEL_REFERER = "channel_referer";
+    static final String CHANNEL_HEADERS = "channel_headers";
+    static final String FALLBACK_URLS = "channel_fallback_urls";
+    static final String FALLBACK_LABELS = "channel_fallback_labels";
+    static final String FALLBACK_FORMATS = "channel_fallback_formats";
+    static final String FALLBACK_HEADERS = "channel_fallback_headers";
+    private static final String DEFAULT_HTTP_UA =
+            "Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    private static final int LIVE_MODE_AUTO = 0;
+    private static final int LIVE_MODE_PROGRESSIVE = 1;
+    private static final int LIVE_MODE_HLS = 2;
     private static final int REQ_SUBSOURCE = 913;
     private static final int REQ_ONLINE_SUB = 915;
     private static final int REQ_LOCAL_SUB = 916;
+
+    private record LiveCandidate(String url, String label, String format, Bundle headers) {}
+    private final java.util.List<LiveCandidate> liveCandidates = new java.util.ArrayList<>();
+    private int activeLiveCandidateIndex = 0;
+    private int liveStreamMode = LIVE_MODE_AUTO;
+    private TextView osdLiveSourceButton;
 
     private VideoView video;
     private androidx.media3.ui.AspectRatioFrameLayout aspectContainer;
@@ -572,6 +588,9 @@ public final class CinemaHlsActivity extends Activity {
 
         osdPlayPauseButton = osdButton(ar ? "⏯ تشغيل/إيقاف" : "⏯ Play/Pause", this::toggle);
         osdBar.addView(osdPlayPauseButton);
+        osdLiveSourceButton = osdButton(osdLiveSourceLabel(ar), this::openLiveSourceMenuFromOsd);
+        osdLiveSourceButton.setVisibility(liveCandidates.size() > 1 ? View.VISIBLE : View.GONE);
+        osdBar.addView(osdLiveSourceButton);
         osdSubtitleButton = osdButton(ar ? "💬 الترجمة" : "💬 Subtitles", this::openSubtitleMenuFromRemote);
         osdBar.addView(osdSubtitleButton);
         osdRotateButton = osdButton(osdRotateLabel(ar), this::cycleManualRotationFromOsd);
@@ -665,6 +684,32 @@ public final class CinemaHlsActivity extends Activity {
         return true;
     }
 
+    private String osdLiveSourceLabel(boolean ar) {
+        if (liveCandidates.size() <= 1) return ar ? "📡 المصدر" : "📡 Source";
+        return (ar ? "📡 المصدر " : "📡 Source ") + (activeLiveCandidateIndex + 1) + "/" + liveCandidates.size();
+    }
+
+    private void openLiveSourceMenuFromOsd() {
+        if (liveCandidates.size() <= 1 || isFinishing() || isDestroyed()) return;
+        boolean ar = CinemaUi.arabic(this);
+        String[] items = new String[liveCandidates.size()];
+        for (int i = 0; i < liveCandidates.size(); i++) {
+            var c = liveCandidates.get(i);
+            String label = (c.label() != null && !c.label().isBlank())
+                    ? c.label() : (ar ? "المصدر " : "Source ") + (i + 1);
+            items[i] = (i == activeLiveCandidateIndex ? "✓  " : "    ") + label;
+        }
+        CinemaUi.dialog(this)
+                .setTitle(ar ? "مصادر القناة" : "Channel Sources")
+                .setItems(items, (d, which) -> {
+                    if (which >= 0 && which < liveCandidates.size() && which != activeLiveCandidateIndex) {
+                        switchLiveCandidate(which, LIVE_MODE_AUTO);
+                    }
+                })
+                .setNegativeButton(R.string.addon_back, null)
+                .show();
+    }
+
     private String osdRotateLabel(boolean ar) {
         if (manualRotationDegrees == 0) return ar ? "⟳ تدوير" : "⟳ Rotate";
         return "⟳ " + manualRotationDegrees + "°";
@@ -679,6 +724,10 @@ public final class CinemaHlsActivity extends Activity {
 
     void refreshOsdLabels() {
         boolean ar = CinemaUi.arabic(this);
+        if (osdLiveSourceButton != null) {
+            osdLiveSourceButton.setText(osdLiveSourceLabel(ar));
+            osdLiveSourceButton.setVisibility(liveCandidates.size() > 1 ? View.VISIBLE : View.GONE);
+        }
         if (osdRotateButton != null) osdRotateButton.setText(osdRotateLabel(ar));
         if (osdSpeedButton != null) osdSpeedButton.setText(osdSpeedLabel(ar));
         if (osdBar != null) {
@@ -1342,7 +1391,148 @@ public final class CinemaHlsActivity extends Activity {
         return loading;
     }
 
+    private void initLiveCandidates() {
+        liveCandidates.clear();
+        activeLiveCandidateIndex = 0;
+        liveStreamMode = LIVE_MODE_AUTO;
+        if (!isCatalogChannel() || getIntent() == null) return;
+        var urls = getIntent().getStringArrayListExtra(FALLBACK_URLS);
+        var labels = getIntent().getStringArrayListExtra(FALLBACK_LABELS);
+        var formats = getIntent().getStringArrayListExtra(FALLBACK_FORMATS);
+        var headersList = getIntent().getParcelableArrayListExtra(FALLBACK_HEADERS);
+        if (urls != null && !urls.isEmpty()) {
+            for (int i = 0; i < urls.size(); i++) {
+                String u = urls.get(i);
+                if (u == null || u.isBlank()) continue;
+                String lbl = labels != null && i < labels.size() ? labels.get(i) : "";
+                String fmt = formats != null && i < formats.size() ? formats.get(i) : "addon";
+                Bundle hdr = headersList != null && i < headersList.size() && headersList.get(i) instanceof Bundle b ? b : null;
+                liveCandidates.add(new LiveCandidate(u, lbl, fmt, hdr));
+            }
+        }
+        if (liveCandidates.isEmpty() && getIntent().getData() != null) {
+            liveCandidates.add(new LiveCandidate(
+                    getIntent().getData().toString(),
+                    getIntent().getStringExtra("title"),
+                    currentFormat == null ? "addon" : currentFormat,
+                    getIntent().getBundleExtra(CHANNEL_HEADERS)));
+        }
+    }
+
+    private androidx.media3.datasource.DefaultHttpDataSource.Factory buildHttpDataSourceFactory(
+            String uaOverride, String refererOverride, Bundle extraHeaders, boolean liveChannel) {
+        var factory = new androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                .setAllowCrossProtocolRedirects(true)
+                .setConnectTimeoutMs(liveChannel ? 7500 : 8500)
+                .setReadTimeoutMs(liveChannel ? 11_000 : 12_500);
+        String ua = uaOverride;
+        var props = new java.util.LinkedHashMap<String, String>();
+        if (extraHeaders != null) {
+            for (String key : extraHeaders.keySet()) {
+                String val = extraHeaders.getString(key);
+                if (key == null || val == null || key.isBlank() || val.isBlank()) continue;
+                if ("user-agent".equalsIgnoreCase(key)) {
+                    if (ua == null || ua.isBlank()) ua = val;
+                } else {
+                    props.put(key, val);
+                }
+            }
+        }
+        if (refererOverride != null && !refererOverride.isBlank()
+                && props.keySet().stream().noneMatch(k -> "referer".equalsIgnoreCase(k) || "referrer".equalsIgnoreCase(k))) {
+            props.put("Referer", refererOverride);
+        }
+        factory.setUserAgent(ua != null && !ua.isBlank() ? ua : DEFAULT_HTTP_UA);
+        if (!props.isEmpty()) {
+            factory.setDefaultRequestProperties(props);
+        }
+        return factory;
+    }
+
+    private androidx.media3.exoplayer.source.MediaSource buildLiveMediaSource(LiveCandidate candidate, int mode) {
+        Bundle hdrs = candidate.headers();
+        String ua = hdrs != null ? hdrs.getString("User-Agent", getIntent().getStringExtra(CHANNEL_USER_AGENT))
+                : getIntent().getStringExtra(CHANNEL_USER_AGENT);
+        String ref = hdrs != null ? hdrs.getString("Referer", getIntent().getStringExtra(CHANNEL_REFERER))
+                : getIntent().getStringExtra(CHANNEL_REFERER);
+        var httpFactory = buildHttpDataSourceFactory(ua, ref, hdrs, true);
+        var errorPolicy = new androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy(1);
+        Uri uri = Uri.parse(candidate.url());
+        var itemBuilder = new androidx.media3.common.MediaItem.Builder().setUri(uri);
+        if (mode == LIVE_MODE_PROGRESSIVE) {
+            return new androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(
+                    httpFactory, new androidx.media3.extractor.DefaultExtractorsFactory())
+                    .setLoadErrorHandlingPolicy(errorPolicy)
+                    .createMediaSource(itemBuilder.build());
+        }
+        if (mode == LIVE_MODE_HLS) {
+            itemBuilder.setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8);
+            return new androidx.media3.exoplayer.hls.HlsMediaSource.Factory(httpFactory)
+                    .setAllowChunklessPreparation(true)
+                    .setLoadErrorHandlingPolicy(errorPolicy)
+                    .createMediaSource(itemBuilder.build());
+        }
+        String fmt = candidate.format();
+        if ("dash".equals(fmt)) itemBuilder.setMimeType(androidx.media3.common.MimeTypes.APPLICATION_MPD);
+        else if ("hls".equals(fmt)) itemBuilder.setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8);
+        return new androidx.media3.exoplayer.source.DefaultMediaSourceFactory(this)
+                .setDataSourceFactory(httpFactory)
+                .setLoadErrorHandlingPolicy(errorPolicy)
+                .createMediaSource(itemBuilder.build());
+    }
+
+    private boolean currentLiveCandidateLooksHls() {
+        if (activeLiveCandidateIndex < 0 || activeLiveCandidateIndex >= liveCandidates.size()) {
+            return "hls".equals(currentFormat);
+        }
+        var c = liveCandidates.get(activeLiveCandidateIndex);
+        if ("hls".equals(c.format())) return true;
+        String lower = c.url().toLowerCase(java.util.Locale.ROOT);
+        return lower.contains(".m3u8");
+    }
+
+    private void switchLiveCandidate(int index, int mode) {
+        if (adaptivePlayer == null || index < 0 || index >= liveCandidates.size()) return;
+        activeLiveCandidateIndex = index;
+        liveStreamMode = mode;
+        adaptiveRetryCount = 0;
+        addonFrameRendered = false;
+        if (pendingRetryRunnable != null) {
+            progressHandler.removeCallbacks(pendingRetryRunnable);
+            pendingRetryRunnable = null;
+        }
+        progressHandler.removeCallbacks(channelWatchdog);
+        if (liveChannelStatus != null) {
+            liveChannelStatus.setText(R.string.addon_live_connecting);
+            liveChannelStatus.setVisibility(View.VISIBLE);
+        }
+        refreshOsdLabels();
+        adaptivePlayer.stop();
+        adaptivePlayer.setMediaSource(buildLiveMediaSource(liveCandidates.get(index), mode));
+        adaptivePlayer.prepare();
+        adaptivePlayer.play();
+    }
+
+    private static boolean isFormatMismatchError(androidx.media3.common.PlaybackException error) {
+        if (error == null) return false;
+        if (error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
+                || error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED
+                || error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED
+                || error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED) {
+            return true;
+        }
+        Throwable cause = error.getCause();
+        while (cause != null) {
+            if (cause instanceof androidx.media3.common.ParserException) return true;
+            String msg = cause.getMessage();
+            if (msg != null && (msg.contains("#EXTM3U") || msg.contains("UnrecognizedInputFormat"))) return true;
+            cause = cause.getCause();
+        }
+        return false;
+    }
+
     private void startAdaptive(FrameLayout root, String format, String audio) {
+        initLiveCandidates();
         aspectContainer = new androidx.media3.ui.AspectRatioFrameLayout(this);
         aspectContainer.setResizeMode(androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT);
         root.addView(aspectContainer, new FrameLayout.LayoutParams(
@@ -1393,23 +1583,19 @@ public final class CinemaHlsActivity extends Activity {
                             .setAllowCrossProtocolRedirects(true)
                             .setReadTimeoutMs(65_000));
         } else if (isCatalogChannel()) {
-            var factory = new androidx.media3.datasource.DefaultHttpDataSource.Factory()
-                    .setAllowCrossProtocolRedirects(true)
-                    .setConnectTimeoutMs(6500).setReadTimeoutMs(9500);
-            String agent = getIntent().getStringExtra(CHANNEL_USER_AGENT);
-            factory.setUserAgent(agent == null || agent.isBlank()
-                    ? androidx.media3.common.util.Util.getUserAgent(this, "Local Cinema") : agent);
-            String referer = getIntent().getStringExtra(CHANNEL_REFERER);
-            if (referer != null && !referer.isBlank()) {
-                factory.setDefaultRequestProperties(java.util.Map.of("Referer", referer));
-            }
+            var factory = buildHttpDataSourceFactory(
+                    getIntent().getStringExtra(CHANNEL_USER_AGENT),
+                    getIntent().getStringExtra(CHANNEL_REFERER),
+                    getIntent().getBundleExtra(CHANNEL_HEADERS),
+                    true);
             mediaSourceFactory.setDataSourceFactory(factory).setLoadErrorHandlingPolicy(
                     new androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy(1));
         } else {
-            var httpFactory = new androidx.media3.datasource.DefaultHttpDataSource.Factory()
-                    .setAllowCrossProtocolRedirects(true)
-                    .setUserAgent("Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                    .setConnectTimeoutMs(8000).setReadTimeoutMs(12000);
+            var httpFactory = buildHttpDataSourceFactory(
+                    getIntent().getStringExtra(CHANNEL_USER_AGENT),
+                    getIntent().getStringExtra(CHANNEL_REFERER),
+                    getIntent().getBundleExtra(CHANNEL_HEADERS),
+                    false);
             mediaSourceFactory.setDataSourceFactory(
                     new androidx.media3.datasource.DefaultDataSource.Factory(this, httpFactory));
         }
@@ -1449,13 +1635,17 @@ public final class CinemaHlsActivity extends Activity {
         String subUrl = getIntent().getStringExtra("subtitle_url");
         String sub2Url = getIntent().getStringExtra("secondary_subtitle_url");
         boolean subIsHlsPlaylist = subUrl != null && subUrl.toLowerCase(java.util.Locale.ROOT).contains(".m3u8");
-        var mediaItem = buildAdaptiveMediaItem(subIsHlsPlaylist ? subUrl : null);
-        if (audio == null || audio.isEmpty()) {
-            adaptivePlayer.setMediaItem(mediaItem);
+        if (isCatalogChannel() && !liveCandidates.isEmpty() && (audio == null || audio.isEmpty())) {
+            adaptivePlayer.setMediaSource(buildLiveMediaSource(liveCandidates.get(activeLiveCandidateIndex), liveStreamMode));
         } else {
-            adaptivePlayer.setMediaSource(new androidx.media3.exoplayer.source.MergingMediaSource(
-                    mediaSourceFactory.createMediaSource(mediaItem),
-                    mediaSourceFactory.createMediaSource(androidx.media3.common.MediaItem.fromUri(audio))));
+            var mediaItem = buildAdaptiveMediaItem(subIsHlsPlaylist ? subUrl : null);
+            if (audio == null || audio.isEmpty()) {
+                adaptivePlayer.setMediaItem(mediaItem);
+            } else {
+                adaptivePlayer.setMediaSource(new androidx.media3.exoplayer.source.MergingMediaSource(
+                        mediaSourceFactory.createMediaSource(mediaItem),
+                        mediaSourceFactory.createMediaSource(androidx.media3.common.MediaItem.fromUri(audio))));
+            }
         }
         if (subUrl != null && !subUrl.isBlank() && !subIsHlsPlaylist) {
             loadRemoteSubtitleAsync(subUrl, false);
@@ -1673,11 +1863,19 @@ public final class CinemaHlsActivity extends Activity {
             adaptivePlayer.play();
             return;
         }
-        if (adaptiveRetryCount < (isCatalogChannel() ? 2 : MAX_ADAPTIVE_RETRIES)) {
+        if (isCatalogChannel() && !liveCandidates.isEmpty() && liveStreamMode == LIVE_MODE_AUTO && isFormatMismatchError(error)) {
+            int fallbackMode = currentLiveCandidateLooksHls() ? LIVE_MODE_PROGRESSIVE : LIVE_MODE_HLS;
+            android.util.Log.w("CinemaWebPlayer", "Live format mismatch (" + errName
+                    + "), switching immediately to mode=" + fallbackMode);
+            switchLiveCandidate(activeLiveCandidateIndex, fallbackMode);
+            return;
+        }
+        int maxRetries = isCatalogChannel() ? (liveCandidates.size() > 1 ? 1 : 2) : MAX_ADAPTIVE_RETRIES;
+        if (adaptiveRetryCount < maxRetries) {
             long delayMs = Math.min(8000L, 1000L * (1L << adaptiveRetryCount));
             adaptiveRetryCount++;
             android.util.Log.w("CinemaWebPlayer", "Playback error " + errName
-                    + ", retry " + adaptiveRetryCount + "/" + MAX_ADAPTIVE_RETRIES + " in " + delayMs + "ms");
+                    + ", retry " + adaptiveRetryCount + "/" + maxRetries + " in " + delayMs + "ms");
             if (adaptiveRetryCount == 1 && !isCatalogChannel()) {
                 Toast.makeText(this, "جاري استعادة البث...", Toast.LENGTH_SHORT).show();
             }
@@ -1694,6 +1892,13 @@ public final class CinemaHlsActivity extends Activity {
                 adaptivePlayer.play();
             };
             progressHandler.postDelayed(pendingRetryRunnable, delayMs);
+            return;
+        }
+        if (isCatalogChannel() && activeLiveCandidateIndex + 1 < liveCandidates.size()) {
+            int nextIndex = activeLiveCandidateIndex + 1;
+            android.util.Log.w("CinemaWebPlayer", "Switching to alternate live stream "
+                    + (nextIndex + 1) + "/" + liveCandidates.size());
+            switchLiveCandidate(nextIndex, LIVE_MODE_AUTO);
             return;
         }
         android.util.Log.w("CinemaWebPlayer", "Playback failed after retries: " + errName);

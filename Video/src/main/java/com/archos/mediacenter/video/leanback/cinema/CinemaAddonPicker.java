@@ -138,15 +138,36 @@ final class CinemaAddonPicker {
                 return;
             }
             String imdb = validImdb(chosen.id()) ? chosen.id() : "";
-            String lowerType = chosen.type() == null ? "" : chosen.type().trim().toLowerCase(java.util.Locale.ROOT);
-            boolean isLiveAddonChannel = "tv".equals(lowerType) || "sport".equals(lowerType) || "sports".equals(lowerType)
-                    || "channel".equals(lowerType) || "channels".equals(lowerType)
-                    || "live".equals(lowerType) || "event".equals(lowerType) || "events".equals(lowerType)
-                    || "iptv".equals(lowerType);
+            boolean isLiveAddonChannel = StremioAddons.isLiveChannelType(chosen.type())
+                    || StremioAddons.isLiveChannelAddon(chosen.only());
             String streamKey = "addon:" + chosen.id() + (chosen.episode() > 0 ? ":s" + chosen.season() + "e" + chosen.episode() : "");
             String mediaType = isLiveAddonChannel ? chosen.type() : (chosen.episode() > 0 ? "episode" : "movie");
             long resume = isLiveAddonChannel ? 0L : CinemaWatchStore.findBestStreamResumeMs(app, streamKey, mediaType, imdb, chosen.tmdb(),
                     chosen.season(), chosen.episode(), chosen.title());
+            if (isLiveAddonChannel) {
+                var resolved = StremioAddons.resolveStreams(app, chosen.type(), chosen.id(), 0, 0, chosen.only());
+                if (Thread.currentThread().isInterrupted()) return;
+                var directStreams = new java.util.ArrayList<StremioAddons.Stream>();
+                var seenUrls = new java.util.HashSet<String>();
+                for (var s : resolved) {
+                    if (s == null || s.torrent() || s.url == null || s.url.isBlank()) continue;
+                    if (seenUrls.add(s.url)) directStreams.add(s);
+                }
+                handler.post(() -> {
+                    if (closed.get() || activity.isDestroyed() || activity.isFinishing()) return;
+                    if (loading.isShowing()) {
+                        loading.setOnDismissListener(null);
+                        loading.dismiss();
+                    }
+                    if (!active.getAsBoolean()) return;
+                    if (directStreams.isEmpty()) {
+                        Toast.makeText(activity, R.string.addon_live_source_failed, Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    launchDirectLiveChannel(activity, chosen, mediaType, streamKey, directStreams);
+                });
+                return;
+            }
             var available = new java.util.concurrent.atomic.AtomicReference<List<StremioAddons.Stream>>(List.of());
             var sheet = new java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<List<StremioAddons.Stream>>>();
             StremioAddons.resolveStreams(app, chosen.type(), chosen.id(), chosen.season(), chosen.episode(), chosen.only(),
@@ -159,28 +180,19 @@ final class CinemaAddonPicker {
                             if (!loading.isShowing()) return;
                             loading.setOnDismissListener(null);
                             loading.dismiss();
-                            sheet.set(showSources(activity, io, handler, chosen, isLiveAddonChannel, batch, (stream, closeSources) -> {
+                            sheet.set(showSources(activity, io, handler, chosen, false, batch, (stream, closeSources) -> {
                                 if (!active.getAsBoolean()) return;
                                 trySource(activity, io, handler, stream, available::get, new java.util.HashSet<>(), active, (source, ready) -> {
                                     Intent play = new Intent(Intent.ACTION_VIEW, Uri.parse(source.url), activity, CinemaHlsActivity.class)
                                         .putExtra("format", source.format).putExtra("torrent_file_index", source.fileIndex)
                                         .putExtra("subtitle_language", CinemaLanguagePreferences.toIso2(CinemaLanguagePreferences.primarySubtitleLanguage(activity)))
-                                        .putExtra("addon_subtitles", !isLiveAddonChannel)
+                                        .putExtra("addon_subtitles", true)
                                         .putExtra("title", chosen.title()).putExtra("stream_key", streamKey)
                                         .putExtra("media_type", mediaType).putExtra("imdb_id", imdb)
                                         .putExtra("tmdb_id", chosen.tmdb()).putExtra("season", chosen.season())
                                         .putExtra("episode", chosen.episode()).putExtra("resume_ms", resume)
                                         .putExtra("addon_poster", chosen.poster()).putExtra("addon_heading", chosen.heading());
-                                    if (isLiveAddonChannel) {
-                                        play.putExtra(CinemaHlsActivity.LIVE_CHANNEL, true);
-                                        play.putExtra("is_live_cast", true);
-                                    }
-                                    if (source.userAgent != null && !source.userAgent.isBlank()) {
-                                        play.putExtra(CinemaHlsActivity.CHANNEL_USER_AGENT, source.userAgent);
-                                    }
-                                    if (source.referer != null && !source.referer.isBlank()) {
-                                        play.putExtra(CinemaHlsActivity.CHANNEL_REFERER, source.referer);
-                                    }
+                                    attachStreamHeaders(play, source);
                                     if (ready != null) play.putExtra(CinemaTorrentStream.PREPARED_TOKEN, ready.offerToPlayer());
                                     closeSources.run();
                                     activity.startActivity(play);
@@ -199,6 +211,78 @@ final class CinemaAddonPicker {
         });
         running.set(work);
         return work;
+    }
+
+    private static void launchDirectLiveChannel(Activity activity, Selection chosen, String mediaType,
+                                                String streamKey, List<StremioAddons.Stream> streams) {
+        var primary = streams.get(0);
+        Intent play = new Intent(Intent.ACTION_VIEW, Uri.parse(primary.url), activity, CinemaHlsActivity.class)
+                .putExtra("format", primary.format)
+                .putExtra("addon_subtitles", false)
+                .putExtra("title", chosen.title())
+                .putExtra("stream_key", streamKey)
+                .putExtra("media_type", mediaType)
+                .putExtra("is_live_cast", true)
+                .putExtra(CinemaHlsActivity.LIVE_CHANNEL, true)
+                .putExtra("addon_poster", chosen.poster())
+                .putExtra("addon_heading", chosen.heading());
+        attachStreamHeaders(play, primary);
+        if (streams.size() > 1) {
+            var urls = new java.util.ArrayList<String>(streams.size());
+            var labels = new java.util.ArrayList<String>(streams.size());
+            var formats = new java.util.ArrayList<String>(streams.size());
+            var headersList = new java.util.ArrayList<android.os.Bundle>(streams.size());
+            for (int i = 0; i < Math.min(streams.size(), 12); i++) {
+                var s = streams.get(i);
+                urls.add(s.url);
+                String lbl = s.title != null && !s.title.isBlank() ? s.title : s.addonName + " #" + (i + 1);
+                if (s.quality != null && !s.quality.isBlank() && !lbl.contains(s.quality)) {
+                    lbl = s.quality + " · " + lbl;
+                }
+                labels.add(lbl);
+                formats.add(s.format == null ? "addon" : s.format);
+                headersList.add(headersBundle(s));
+            }
+            play.putStringArrayListExtra(CinemaHlsActivity.FALLBACK_URLS, urls);
+            play.putStringArrayListExtra(CinemaHlsActivity.FALLBACK_LABELS, labels);
+            play.putStringArrayListExtra(CinemaHlsActivity.FALLBACK_FORMATS, formats);
+            play.putParcelableArrayListExtra(CinemaHlsActivity.FALLBACK_HEADERS, headersList);
+        }
+        activity.startActivity(play);
+    }
+
+    private static void attachStreamHeaders(Intent play, StremioAddons.Stream source) {
+        if (source == null) return;
+        if (source.userAgent != null && !source.userAgent.isBlank()) {
+            play.putExtra(CinemaHlsActivity.CHANNEL_USER_AGENT, source.userAgent);
+        }
+        if (source.referer != null && !source.referer.isBlank()) {
+            play.putExtra(CinemaHlsActivity.CHANNEL_REFERER, source.referer);
+        }
+        android.os.Bundle bundle = headersBundle(source);
+        if (!bundle.isEmpty()) {
+            play.putExtra(CinemaHlsActivity.CHANNEL_HEADERS, bundle);
+        }
+    }
+
+    private static android.os.Bundle headersBundle(StremioAddons.Stream source) {
+        var bundle = new android.os.Bundle();
+        if (source == null) return bundle;
+        if (source.headers != null) {
+            for (var entry : source.headers.entrySet()) {
+                if (entry.getKey() != null && entry.getValue() != null
+                        && !entry.getKey().isBlank() && !entry.getValue().isBlank()) {
+                    bundle.putString(entry.getKey(), entry.getValue());
+                }
+            }
+        }
+        if (source.userAgent != null && !source.userAgent.isBlank() && !bundle.containsKey("User-Agent")) {
+            bundle.putString("User-Agent", source.userAgent);
+        }
+        if (source.referer != null && !source.referer.isBlank() && !bundle.containsKey("Referer")) {
+            bundle.putString("Referer", source.referer);
+        }
+        return bundle;
     }
 
     private static void trySource(Activity activity, ExecutorService io, Handler handler,

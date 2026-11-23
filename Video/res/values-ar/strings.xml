@@ -1391,6 +1391,10 @@
     <string name="cinema_file_long_press_hint">اضغط مطوّلاً على موافق لخيارات التحديد والنسخ والنقل واللصق والحذف</string>
     <string name="cinema_file_usb_permission_title">صلاحية الكتابة على USB</string>
     <string name="cinema_file_usb_permission_message">امنح صلاحية الوصول للمجلد لإتمام اللصق على قرص USB الخارجي.</string>
+    <string name="cinema_file_usb_delete_permission_message">امنح صلاحية الوصول لمجلد قرص USB الخارجي لإتمام حذف العناصر المحددة.</string>
+    <string name="cinema_file_manage_permission_title">مطلوب صلاحية إدارة وحذف الملفات</string>
+    <string name="cinema_file_manage_permission_message">صلاحية إدارة وحذف الملفات غير مفعّلة بعد. فعّلها الآن لتمكين مستعرض الملفات من حذف ونقل الملفات والمجلدات على ذاكرة الشاشة.</string>
+    <string name="cinema_file_enable_permission_now">تفعيل الصلاحية الآن</string>
 
     <!-- Add-ons Reorder -->
     <string name="addon_reorder_action">⇅ ترتيب</string>
@@ -1417,4 +1421,14 @@
     <string name="cinema_audio_lang_short">الصوت واللغات</string>
     <string name="addon_torrent_live_metrics">الموزعون: %1$d · المتصلون: %2$d · %3$s</string>
     <string name="addon_edit_preferred_countries">تعديل الدول المفضلة</string>
+
+    <!-- Batch 1 v1.0.0-beta.17: Add-ons Settings Restructuring & Per-Addon Settings -->
+    <string name="addon_manage_installed_count">إدارة الإضافات المثبتة (%1$d)</string>
+    <string name="addon_manage_installed_hint">تصفّح وتفعيل وتعديل وفحص أو حذف الإضافات المثبتة</string>
+    <string name="addon_single_settings_title">إعدادات الإضافة</string>
+    <string name="addon_enable_toggle_title">حالة التفعيل</string>
+    <string name="addon_reload_this">إعادة تحميل بيانات الإضافة</string>
+    <string name="addon_reload_this_hint">تحديث القنوات والعناوين من هذه الإضافة</string>
+    <string name="addon_test_this_connection">اختبار اتصال هذه الإضافة</string>
+    <string name="addon_test_this_connection_hint">فحص استجابة رابط Manifest وسرعة الاتصال</string>
 </resources>

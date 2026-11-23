@@ -1,16 +1,21 @@
 package com.archos.mediacenter.video.leanback.cinema;
 
 import android.app.Activity;
+import android.content.ContentUris;
 import android.content.Context;
+import android.content.UriPermission;
+import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.media.MediaMetadataRetriever;
+import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.DocumentsContract;
+import android.provider.MediaStore;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.LinearLayout;
@@ -215,17 +220,64 @@ final class CinemaFileOperations {
         return 1;
     }
 
+    enum DeleteStatus {
+        DELETED,
+        NEEDS_ALL_FILES_PERMISSION,
+        NEEDS_MEDIASTORE_DELETE,
+        NEEDS_USB_SAF,
+        FAILED
+    }
+
+    record DeleteOutcome(DeleteStatus status, Uri mediaStoreUri) {
+        static DeleteOutcome ok() { return new DeleteOutcome(DeleteStatus.DELETED, null); }
+        static DeleteOutcome of(DeleteStatus status) { return new DeleteOutcome(status, null); }
+    }
+
     static boolean deleteItem(Context context, Item item) throws Exception {
-        if (item == null || item.uri() == null) return false;
+        return deleteItemDetailed(context, item).status() == DeleteStatus.DELETED;
+    }
+
+    static DeleteOutcome deleteItemDetailed(Context context, Item item) throws Exception {
+        if (item == null || item.uri() == null) return DeleteOutcome.of(DeleteStatus.FAILED);
         Uri uri = item.uri();
         if ("file".equalsIgnoreCase(uri.getScheme()) && uri.getPath() != null) {
-            return deleteFileRecursively(new File(uri.getPath()));
+            File target = new File(uri.getPath());
+            if (!target.exists()) {
+                notifyMediaDeleted(context, target);
+                return DeleteOutcome.ok();
+            }
+            if (deleteFileRecursively(context, target) && !target.exists()) {
+                return DeleteOutcome.ok();
+            }
+            if (!target.exists()) {
+                return DeleteOutcome.ok();
+            }
+            if (isExternalRemovableFile(target)) {
+                if (deleteViaPersistedSafTree(context, target) && !target.exists()) {
+                    notifyMediaDeleted(context, target);
+                    return DeleteOutcome.ok();
+                }
+                return DeleteOutcome.of(DeleteStatus.NEEDS_USB_SAF);
+            }
+            if (!TvPermissionsWizardDialog.hasManageAllFilesPermission(context)) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !target.isDirectory()) {
+                    Uri msUri = findMediaStoreUri(context, target);
+                    if (msUri != null) {
+                        return new DeleteOutcome(DeleteStatus.NEEDS_MEDIASTORE_DELETE, msUri);
+                    }
+                }
+                return DeleteOutcome.of(DeleteStatus.NEEDS_ALL_FILES_PERMISSION);
+            }
+            return DeleteOutcome.of(DeleteStatus.FAILED);
         }
         if ("content".equalsIgnoreCase(uri.getScheme())) {
             try {
-                if (DocumentsContract.deleteDocument(context.getContentResolver(), uri)) return true;
+                if (DocumentsContract.deleteDocument(context.getContentResolver(), uri)) {
+                    return DeleteOutcome.ok();
+                }
             } catch (Exception ignored) {}
-            return context.getContentResolver().delete(uri, null, null) > 0;
+            return context.getContentResolver().delete(uri, null, null) > 0
+                    ? DeleteOutcome.ok() : DeleteOutcome.of(DeleteStatus.FAILED);
         }
         if (item.directory()) {
             try {
@@ -238,21 +290,166 @@ final class CinemaFileOperations {
             } catch (Exception ignored) {}
         }
         FileEditor editor = FileEditorFactory.getFileEditorForUrl(uri, context);
-        return editor != null && Boolean.TRUE.equals(editor.delete());
+        return editor != null && Boolean.TRUE.equals(editor.delete())
+                ? DeleteOutcome.ok() : DeleteOutcome.of(DeleteStatus.FAILED);
     }
 
-    private static boolean deleteFileRecursively(File file) throws IOException {
+    private static boolean deleteFileRecursively(Context context, File file) throws IOException {
         if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException();
-        if (!file.exists()) return false;
+        if (!file.exists()) return true;
         if (file.isDirectory()) {
             File[] children = file.listFiles();
             if (children != null) {
                 for (File child : children) {
-                    if (!deleteFileRecursively(child)) return false;
+                    if (!deleteFileRecursively(context, child)) return false;
                 }
             }
         }
-        return file.delete();
+        boolean deleted = file.delete() || !file.exists();
+        if (deleted) {
+            notifyMediaDeleted(context, file);
+        }
+        return deleted;
+    }
+
+    static boolean isExternalRemovableFile(File file) {
+        if (file == null) return false;
+        File internal = Environment.getExternalStorageDirectory();
+        if (internal == null) return false;
+        String filePath = canonicalOrPath(file);
+        String primaryPath = canonicalOrPath(internal);
+        if (filePath.equals(primaryPath) || filePath.startsWith(primaryPath + File.separator)) {
+            return false;
+        }
+        return filePath.startsWith("/storage/");
+    }
+
+    static void notifyMediaDeleted(Context context, File file) {
+        if (context == null || file == null) return;
+        String absPath = file.getAbsolutePath();
+        try {
+            Uri filesUri = MediaStore.Files.getContentUri("external");
+            context.getContentResolver().delete(filesUri,
+                    MediaStore.MediaColumns.DATA + "=?", new String[]{absPath});
+        } catch (Throwable ignored) {}
+        try {
+            MediaScannerConnection.scanFile(context.getApplicationContext(), new String[]{absPath}, null, null);
+        } catch (Throwable ignored) {}
+    }
+
+    static void notifyMediaAdded(Context context, File file) {
+        if (context == null || file == null) return;
+        try {
+            MediaScannerConnection.scanFile(context.getApplicationContext(),
+                    new String[]{file.getAbsolutePath()}, null, null);
+        } catch (Throwable ignored) {}
+    }
+
+    @SuppressWarnings("deprecation")
+    static Uri findMediaStoreUri(Context context, File file) {
+        if (context == null || file == null) return null;
+        String absPath = file.getAbsolutePath();
+        Uri[] collections = new Uri[]{
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                Build.VERSION.SDK_INT >= 29 ? MediaStore.Downloads.EXTERNAL_CONTENT_URI : null,
+                MediaStore.Files.getContentUri("external")
+        };
+        String[] projection = new String[]{MediaStore.MediaColumns._ID};
+        for (Uri collection : collections) {
+            if (collection == null) continue;
+            try (Cursor c = context.getContentResolver().query(collection, projection,
+                    MediaStore.MediaColumns.DATA + "=?", new String[]{absPath}, null)) {
+                if (c != null && c.moveToFirst()) {
+                    long id = c.getLong(0);
+                    return ContentUris.withAppendedId(collection, id);
+                }
+            } catch (Throwable ignored) {}
+        }
+        return null;
+    }
+
+    private static boolean deleteViaPersistedSafTree(Context context, File target) {
+        Uri docUri = findPersistedSafDocument(context, target);
+        if (docUri == null) return false;
+        try {
+            return DocumentsContract.deleteDocument(context.getContentResolver(), docUri);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static Uri[] findPersistedSafTreeAndDoc(Context context, File target) {
+        if (context == null || target == null) return null;
+        String absPath = canonicalOrPath(target);
+        // External volumes typically live at /storage/<VOLUME_ID>/<relative/path>
+        if (!absPath.startsWith("/storage/")) return null;
+        String rest = absPath.substring("/storage/".length());
+        int slash = rest.indexOf('/');
+        String volumeId = slash >= 0 ? rest.substring(0, slash) : rest;
+        String relPath = slash >= 0 ? rest.substring(slash + 1) : "";
+        if (volumeId.isEmpty() || "emulated".equalsIgnoreCase(volumeId) || "self".equalsIgnoreCase(volumeId)) {
+            return null;
+        }
+        List<UriPermission> perms = context.getContentResolver().getPersistedUriPermissions();
+        for (UriPermission perm : perms) {
+            if (!perm.isWritePermission()) continue;
+            Uri treeUri = perm.getUri();
+            if (treeUri == null || !DocumentsContract.isTreeUri(treeUri)) continue;
+            String treeDocId;
+            try {
+                treeDocId = DocumentsContract.getTreeDocumentId(treeUri);
+            } catch (Throwable ignored) {
+                continue;
+            }
+            if (treeDocId == null || !treeDocId.startsWith(volumeId + ":")) continue;
+            String treeSubPath = treeDocId.substring(volumeId.length() + 1);
+            if (!treeSubPath.isEmpty() && !treeSubPath.endsWith("/")) treeSubPath += "/";
+            if (!treeSubPath.isEmpty() && !relPath.equals(treeSubPath.substring(0, treeSubPath.length() - 1))
+                    && !relPath.startsWith(treeSubPath)) {
+                continue;
+            }
+            String relativeFromTree = treeSubPath.isEmpty() ? relPath
+                    : (relPath.length() <= treeSubPath.length() ? "" : relPath.substring(treeSubPath.length()));
+            Uri currentDoc = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId);
+            if (!relativeFromTree.isEmpty()) {
+                for (String segment : relativeFromTree.split("/")) {
+                    if (segment.isEmpty()) continue;
+                    currentDoc = findChildDocument(context, treeUri, currentDoc, segment);
+                    if (currentDoc == null) break;
+                }
+            }
+            if (currentDoc != null) {
+                return new Uri[]{treeUri, currentDoc};
+            }
+        }
+        return null;
+    }
+
+    private static Uri findPersistedSafDocument(Context context, File target) {
+        Uri[] pair = findPersistedSafTreeAndDoc(context, target);
+        return pair == null ? null : pair[1];
+    }
+
+    private static Uri findChildDocument(Context context, Uri treeUri, Uri parentDocUri, String displayName) {
+        try {
+            String parentDocId = DocumentsContract.getDocumentId(parentDocUri);
+            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId);
+            try (Cursor c = context.getContentResolver().query(childrenUri,
+                    new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME},
+                    null, null, null)) {
+                if (c != null) {
+                    while (c.moveToNext()) {
+                        String name = c.getString(1);
+                        if (displayName.equals(name)) {
+                            return DocumentsContract.buildDocumentUriUsingTree(treeUri, c.getString(0));
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return null;
     }
 
     static void copyOrMoveItem(Context context, Item source, Uri destFolder, boolean move,
@@ -281,9 +478,19 @@ final class CinemaFileOperations {
         if ("file".equalsIgnoreCase(destFolder.getScheme()) && destFolder.getPath() != null) {
             File targetDir = new File(destFolder.getPath());
             if (!targetDir.isDirectory() && !targetDir.mkdirs()) {
-                throw new IOException("Destination folder is not writable");
+                Uri[] safPair = findPersistedSafTreeAndDoc(context, targetDir);
+                if (safPair != null) {
+                    copyIntoDocumentTree(context, source, safPair[0], safPair[1], move, counter, total, listener);
+                    return;
+                }
+                throw new SecurityException("Destination folder is not writable");
             }
             if (!targetDir.canWrite()) {
+                Uri[] safPair = findPersistedSafTreeAndDoc(context, targetDir);
+                if (safPair != null) {
+                    copyIntoDocumentTree(context, source, safPair[0], safPair[1], move, counter, total, listener);
+                    return;
+                }
                 throw new SecurityException("USB or folder requires write permission");
             }
             copyOrMoveToLocalDir(context, source, targetDir, move, counter, total, listener);
@@ -318,6 +525,8 @@ final class CinemaFileOperations {
 
         // Fast atomic move when on same mount
         if (move && srcFile != null && srcFile.exists() && srcFile.renameTo(target)) {
+            notifyMediaDeleted(context, srcFile);
+            notifyMediaAdded(context, target);
             counter[0]++;
             if (listener != null) listener.onFileProgress(source.name(), counter[0], total);
             return;
@@ -336,7 +545,7 @@ final class CinemaFileOperations {
                         copyOrMoveToLocalDir(context, childItem, target, move, counter, total, listener);
                     }
                 }
-                if (move) srcFile.delete();
+                if (move) deleteFileRecursively(context, srcFile);
             } else {
                 for (var child : RawListerFactoryWithUpnp.getRawListerForUrl(source.uri()).getFileList()) {
                     String name = child.getName();
@@ -357,6 +566,7 @@ final class CinemaFileOperations {
             target.delete();
             throw failure;
         }
+        notifyMediaAdded(context, target);
         if (move) deleteItem(context, source);
         counter[0]++;
         if (listener != null) listener.onFileProgress(source.name(), counter[0], total);
@@ -379,7 +589,7 @@ final class CinemaFileOperations {
                                 treeUri, subDir, move, counter, total, listener);
                     }
                 }
-                if (move) deleteFileRecursively(new File(source.uri().getPath()));
+                if (move) deleteFileRecursively(context, new File(source.uri().getPath()));
             } else {
                 for (var child : RawListerFactoryWithUpnp.getRawListerForUrl(source.uri()).getFileList()) {
                     String name = child.getName();
@@ -423,7 +633,7 @@ final class CinemaFileOperations {
                                 targetUri, move, counter, total, listener);
                     }
                 }
-                if (move) deleteFileRecursively(new File(source.uri().getPath()));
+                if (move) deleteFileRecursively(context, new File(source.uri().getPath()));
             } else {
                 for (var child : RawListerFactoryWithUpnp.getRawListerForUrl(source.uri()).getFileList()) {
                     String name = child.getName();

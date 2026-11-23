@@ -111,15 +111,20 @@ public final class TvPermissionsWizardDialog {
 
         ScrollView scroll = new ScrollView(activity);
         scroll.setScrollbarFadingEnabled(false);
+        scroll.setClipChildren(false);
+        scroll.setClipToPadding(false);
         LinearLayout list = new LinearLayout(activity);
         list.setOrientation(LinearLayout.VERTICAL);
+        list.setClipChildren(false);
+        list.setClipToPadding(false);
+        list.setPadding(dp(activity, 4), dp(activity, 4), dp(activity, 4), dp(activity, 4));
         scroll.addView(list, new ViewGroup.LayoutParams(-1, -2));
 
         LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, 0, 1f);
         scrollLp.bottomMargin = dp(activity, 14);
         outer.addView(scroll, scrollLp);
 
-        // 1. Storage / All Files Access
+        // 1. Storage / Media Read Access
         addPermissionCard(activity, list, refreshers,
                 label(activity, "الوصول إلى الملفات والتخزين", "Storage & Media Files Access"),
                 label(activity,
@@ -127,6 +132,17 @@ public final class TvPermissionsWizardDialog {
                         "To read movies, TV series, and subtitles stored on TV storage, USB flash drives, or external disks."),
                 () -> hasStoragePermission(activity),
                 () -> requestStoragePermission(activity));
+
+        // 2. Manage & Delete Files (All Files Access / MANAGE_EXTERNAL_STORAGE)
+        addPermissionCard(activity, list, refreshers,
+                label(activity, "صلاحية إدارة وحذف الملفات", "Manage & Delete Files (All Files Access)"),
+                label(activity,
+                        "لمنح مستعرض الملفات صلاحية حذف ونقل ونسخ الملفات والمجلدات على ذاكرة الشاشة والتخزين الخارجي.",
+                        "Allows File Browser to delete, move, and copy files and folders on TV storage and external drives."),
+                () -> hasManageAllFilesPermission(activity),
+                () -> requestManageAllFilesPermission(activity, () -> {
+                    for (Runnable r : refreshers) r.run();
+                }));
 
         // 2. Battery Optimization Exemption
         addPermissionCard(activity, list, refreshers,
@@ -244,6 +260,8 @@ public final class TvPermissionsWizardDialog {
         LinearLayout card = new LinearLayout(activity);
         card.setOrientation(LinearLayout.HORIZONTAL);
         card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setClipChildren(false);
+        card.setClipToPadding(false);
         card.setPadding(dp(activity, 16), dp(activity, 12), dp(activity, 16), dp(activity, 12));
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(0xff1d1e21);
@@ -353,6 +371,65 @@ public final class TvPermissionsWizardDialog {
         });
         btn.setOnClickListener(v -> click.run());
         return btn;
+    }
+
+    public static boolean hasManageAllFilesPermission(Context c) {
+        if (c == null) return false;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return Environment.isExternalStorageManager();
+        }
+        return ContextCompat.checkSelfPermission(c, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    public static void requestManageAllFilesPermission(Activity activity, Runnable onRefreshed) {
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!hasManageAllFilesPermission(activity)
+                    && (TvLocalAdbBridge.isReady() || TvLocalAdbBridge.isEnabled(activity))) {
+                TvLocalAdbBridge.grantManageExternalStorageAsync(activity, granted -> activity.runOnUiThread(() -> {
+                    if (activity.isFinishing() || activity.isDestroyed()) return;
+                    if (Boolean.TRUE.equals(granted) || hasManageAllFilesPermission(activity)) {
+                        android.widget.Toast.makeText(activity,
+                                label(activity, "تم تفعيل صلاحية إدارة وحذف الملفات بنجاح ✓",
+                                        "All Files Access enabled ✓"),
+                                android.widget.Toast.LENGTH_SHORT).show();
+                        if (onRefreshed != null) onRefreshed.run();
+                    } else {
+                        openAllFilesAccessSettings(activity);
+                    }
+                }));
+                return;
+            }
+            openAllFilesAccessSettings(activity);
+            return;
+        }
+        try {
+            if (!hasManageAllFilesPermission(activity)) {
+                ActivityCompat.requestPermissions(activity,
+                        new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.READ_EXTERNAL_STORAGE},
+                        REQ_STORAGE);
+                return;
+            }
+        } catch (Exception ignored) {}
+        openAppDetails(activity);
+    }
+
+    private static void openAllFilesAccessSettings(Activity activity) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Intent appSpecific = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:" + activity.getPackageName()));
+            if (safeStartActivity(activity, appSpecific)) return;
+
+            Intent allApps = new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+            if (safeStartActivity(activity, allApps)) return;
+        }
+        android.widget.Toast.makeText(activity,
+                label(activity,
+                        "افتح الأذونات ثم الملفات والوسائط واختر السماح بالإدارة طوال الوقت.",
+                        "Open Permissions -> Files and media -> Allow management of all files."),
+                android.widget.Toast.LENGTH_LONG).show();
+        openAppDetails(activity);
     }
 
     private static boolean hasStoragePermission(Context c) {

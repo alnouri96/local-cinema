@@ -17,6 +17,7 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -25,24 +26,42 @@ import java.util.regex.Pattern;
 
 final class CinemaLivePlaylists {
     private static final String IPTV_ORG = "https://iptv-org.github.io/iptv/";
+    private static final String NEXONIC_BASE = "https://nexonic-technologies.github.io/nexonic-iptv/playlists/countries/";
     private static final String ARABIC_URL = IPTV_ORG + "languages/ara.m3u";
+    static final String PROVIDER_IPTV_ORG = "provider://iptv-org";
+    static final String PROVIDER_NEXONIC = "provider://nexonic-iptv";
+    static final String PROVIDER_ARABIC = ARABIC_URL;
     static final String CHANNEL_PREFERENCES = LiveTvPreferences.STORE;
     private static final String KEY = "playlists";
     private static final int MAX_LINES = 100_000;
     private static final int MAX_CHARS = 12 * 1024 * 1024;
     private static final Pattern ATTRIBUTE = Pattern.compile("([\\w-]+)=\"([^\"]*)\"");
 
-    record Source(String name, String url, boolean enabled) {}
+    record Source(String name, String url, boolean enabled, String countryCode) {
+        Source(String name, String url, boolean enabled) {
+            this(name, url, enabled, "");
+        }
+    }
+
     record Channel(String title, String group, String country, String logo, String url, boolean hls,
                    String userAgent, String referer, String favoriteKey) {}
 
     static final long IRAQ_REFRESH_INTERVAL = java.util.concurrent.TimeUnit.MINUTES.toMillis(30);
-    static final String IRAQ_SOURCE_URL =
-            "https://nexonic-technologies.github.io/nexonic-iptv/playlists/countries/iq.m3u";
+    static final String IRAQ_SOURCE_URL = NEXONIC_BASE + "iq.m3u";
     private static final String IRAQ_ENABLED = "nexonic_iraq_enabled";
     private static final String IRAQ_AUTO_REFRESH = "nexonic_iraq_auto_refresh";
+    private static final String LIVE_ARABIC_ENABLED = "live_arabic_enabled";
 
     record IraqSnapshot(List<Channel> channels, long updatedAt, long attemptedAt, boolean failed) {}
+
+    static boolean iptvOrgEnabled(Context context) {
+        return LiveTvPreferences.store(context).getBoolean("country_enabled",
+                preferences(context).getBoolean("public_enabled", true));
+    }
+
+    static void setIptvOrgEnabled(Context context, boolean enabled) {
+        LiveTvPreferences.store(context).edit().putBoolean("country_enabled", enabled).apply();
+    }
 
     static boolean iraqEnabled(Context context) {
         return LiveTvPreferences.store(context).getBoolean(IRAQ_ENABLED, true);
@@ -50,6 +69,14 @@ final class CinemaLivePlaylists {
 
     static void setIraqEnabled(Context context, boolean enabled) {
         LiveTvPreferences.store(context).edit().putBoolean(IRAQ_ENABLED, enabled).apply();
+    }
+
+    static boolean liveArabicEnabled(Context context) {
+        return LiveTvPreferences.store(context).getBoolean(LIVE_ARABIC_ENABLED, false);
+    }
+
+    static void setLiveArabicEnabled(Context context, boolean enabled) {
+        LiveTvPreferences.store(context).edit().putBoolean(LIVE_ARABIC_ENABLED, enabled).apply();
     }
 
     static boolean iraqAutoRefresh(Context context) {
@@ -87,7 +114,7 @@ final class CinemaLivePlaylists {
         long attempted = System.currentTimeMillis();
         try {
             var loaded = load(new Source(context.getString(
-                    com.archos.mediacenter.video.R.string.addon_live_iraq_source), IRAQ_SOURCE_URL, true));
+                    com.archos.mediacenter.video.R.string.addon_live_iraq_source), IRAQ_SOURCE_URL, true, "IQ"));
             if (!loaded.isEmpty() && loaded.stream().noneMatch(channel -> IRAQ_SOURCE_URL.equals(channel.url()))) {
                 var entries = new JSONArray();
                 for (var channel : loaded) {
@@ -111,17 +138,23 @@ final class CinemaLivePlaylists {
         return context.getSharedPreferences("cinema_tv_playlists", Context.MODE_PRIVATE);
     }
 
+    /** Returns the toggleable provider entries displayed in the Live TV / IPTV Sources dialog. */
     static List<Source> sources(Context context, boolean custom) {
+        if (!custom) {
+            var providers = new ArrayList<Source>();
+            providers.add(new Source("iptv-org (Public)", PROVIDER_IPTV_ORG, iptvOrgEnabled(context)));
+            providers.add(new Source("Nexonic IPTV (Global)", PROVIDER_NEXONIC, iraqEnabled(context)));
+            providers.add(new Source(context.getString(com.archos.mediacenter.video.R.string.addon_live_arabic_playlist),
+                    PROVIDER_ARABIC, liveArabicEnabled(context)));
+            return providers;
+        }
         String country = LiveTvPreferences.country(context);
         var publicSettings = LiveTvPreferences.store(context);
         String countryLabel = LiveTvPreferences.countryName(context, country);
         String selectedUrl = countryUrl(country);
-        if (!custom) return List.of(new Source(context.getString(com.archos.mediacenter.video.R.string.addon_live_country_source, countryLabel),
-                selectedUrl, publicSettings.getBoolean("country_enabled",
-                        preferences(context).getBoolean("public_enabled", true))));
         var sources = new ArrayList<Source>();
         sources.add(new Source(context.getString(com.archos.mediacenter.video.R.string.addon_live_country_source, countryLabel),
-                selectedUrl, publicSettings.getBoolean("iptv_country_enabled", false)));
+                selectedUrl, publicSettings.getBoolean("iptv_country_enabled", false), country));
         sources.add(new Source(context.getString(com.archos.mediacenter.video.R.string.addon_live_arabic_playlist),
                 ARABIC_URL, publicSettings.getBoolean("iptv_arabic_enabled", false)));
         try {
@@ -135,10 +168,43 @@ final class CinemaLivePlaylists {
         return sources;
     }
 
+    /** Builds concrete HTTP playlist fetch jobs for Live TV across one or more target country codes. */
+    static List<Source> fetchSourcesForCountries(Context context, Collection<String> countryCodes) {
+        var jobs = new ArrayList<Source>();
+        boolean useIptvOrg = iptvOrgEnabled(context);
+        boolean useNexonic = iraqEnabled(context);
+        for (String rawCode : countryCodes) {
+            if (rawCode == null || rawCode.isBlank()) continue;
+            String code = rawCode.trim().toUpperCase(Locale.ROOT);
+            String label = LiveTvPreferences.countryName(context, code);
+            if (useIptvOrg) {
+                jobs.add(new Source(label + " · iptv-org", countryUrl(code), true, code));
+            }
+            if (useNexonic && !"IQ".equals(code)) {
+                // IQ uses cached/auto-refreshed Nexonic snapshot via CinemaLiveActivity to avoid duplicate fetch.
+                jobs.add(new Source(label + " · Nexonic IPTV", nexonicCountryUrl(code), true, code));
+            }
+        }
+        if (liveArabicEnabled(context)) {
+            jobs.add(new Source(context.getString(com.archos.mediacenter.video.R.string.addon_live_arabic_playlist),
+                    ARABIC_URL, true, ""));
+        }
+        return jobs;
+    }
+
     static void save(Context context, boolean custom, List<Source> sources) {
         var publicSettings = LiveTvPreferences.store(context).edit();
         if (!custom) {
-            publicSettings.putBoolean("country_enabled", sources.get(0).enabled()).apply();
+            for (Source source : sources) {
+                if (PROVIDER_IPTV_ORG.equals(source.url())) {
+                    publicSettings.putBoolean("country_enabled", source.enabled());
+                } else if (PROVIDER_NEXONIC.equals(source.url())) {
+                    publicSettings.putBoolean(IRAQ_ENABLED, source.enabled());
+                } else if (PROVIDER_ARABIC.equals(source.url())) {
+                    publicSettings.putBoolean(LIVE_ARABIC_ENABLED, source.enabled());
+                }
+            }
+            publicSettings.apply();
             return;
         }
         JSONArray entries = new JSONArray();
@@ -161,8 +227,15 @@ final class CinemaLivePlaylists {
         return IPTV_ORG + "countries/" + code.toLowerCase(Locale.ROOT) + ".m3u";
     }
 
+    private static String nexonicCountryUrl(String code) {
+        String lower = code.toLowerCase(Locale.ROOT);
+        if ("gb".equals(lower)) lower = "uk";
+        return NEXONIC_BASE + lower + ".m3u";
+    }
+
     static boolean builtIn(Context context, String url) {
-        return ARABIC_URL.equals(url) || countryUrl(LiveTvPreferences.country(context)).equals(url);
+        return ARABIC_URL.equals(url) || PROVIDER_IPTV_ORG.equals(url) || PROVIDER_NEXONIC.equals(url)
+                || countryUrl(LiveTvPreferences.country(context)).equals(url);
     }
 
     static String playlistUrl(String input) {
@@ -189,6 +262,9 @@ final class CinemaLivePlaylists {
         var connection = (HttpURLConnection) URI.create(source.url()).toURL().openConnection();
         connection.setConnectTimeout(5000);
         connection.setReadTimeout(6500);
+        connection.setInstanceFollowRedirects(true);
+        connection.setRequestProperty("User-Agent",
+                "Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
         connection.setRequestProperty("Accept", "application/vnd.apple.mpegurl, audio/x-mpegurl, */*");
         long deadline = android.os.SystemClock.elapsedRealtime() + 18_000;
         try (var reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
@@ -210,7 +286,7 @@ final class CinemaLivePlaylists {
                 }
                 line = line.replace("\uFEFF", "").trim();
                 if (line.startsWith("#EXT-X-")) {
-                    return List.of(new Channel(source.name(), "", "", "", source.url(), true, "", "",
+                    return List.of(new Channel(source.name(), "", source.countryCode(), "", source.url(), true, "", "",
                             LiveChannelFavorites.key("", source.url())));
                 }
                 if (line.startsWith("#EXTINF:")) {
@@ -224,7 +300,7 @@ final class CinemaLivePlaylists {
                 } else if (!line.startsWith("#") && !line.isBlank()) {
                     String url = resolve(base, line);
                     if (!url.isBlank()) {
-                        Channel channel = channel(source.name(), base, metadata, url, userAgent, referer);
+                        Channel channel = channel(source.name(), source.countryCode(), base, metadata, url, userAgent, referer);
                         channels.putIfAbsent(channel.url(), channel);
                     }
                     metadata = "";
@@ -238,7 +314,7 @@ final class CinemaLivePlaylists {
         }
     }
 
-    private static Channel channel(String fallbackTitle, URI base, String metadata, String url,
+    private static Channel channel(String fallbackTitle, String fallbackCountry, URI base, String metadata, String url,
                                    String userAgent, String referer) {
         String title = fallbackTitle;
         String group = "";
@@ -267,6 +343,9 @@ final class CinemaLivePlaylists {
             String channelId = id.split("@", 2)[0];
             int dot = channelId.lastIndexOf('.');
             if (dot >= 0) country = channelId.substring(dot + 1);
+        }
+        if (country.isBlank() && fallbackCountry != null && !fallbackCountry.isBlank()) {
+            country = fallbackCountry;
         }
         country = country.trim().toUpperCase(Locale.ROOT);
         boolean hls = Uri.parse(url).getPath() != null

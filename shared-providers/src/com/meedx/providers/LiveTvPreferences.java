@@ -11,6 +11,8 @@ public final class LiveTvPreferences {
     public static final String STORE = "cinema_live_channels";
     public static final String COUNTRY_FIELD = "live_tv_country";
     public static final String FAVORITE_COUNTRIES_FIELD = "favorite_countries";
+    public static final String FAVORITES_MODE_FIELD = "live_tv_favorites_mode";
+    public static final String FAVORITES_MODE = "FAVORITES";
     public static final String PREFS_PACKET = "LIVE_TV_COUNTRIES_SYNC";
     public static final String DEFAULT_COUNTRY = "IQ";
     private static final String[] COUNTRIES = Locale.getISOCountries();
@@ -30,6 +32,14 @@ public final class LiveTvPreferences {
         if (!valid(code)) return false;
         store(context).edit().putString(COUNTRY_FIELD, code).apply();
         return true;
+    }
+
+    public static boolean showFavoriteCountriesMode(Context context) {
+        return store(context).getBoolean(FAVORITES_MODE_FIELD, true);
+    }
+
+    public static void setFavoriteCountriesMode(Context context, boolean enabled) {
+        store(context).edit().putBoolean(FAVORITES_MODE_FIELD, enabled).apply();
     }
 
     public static java.util.Set<String> favoriteCountries(Context context) {

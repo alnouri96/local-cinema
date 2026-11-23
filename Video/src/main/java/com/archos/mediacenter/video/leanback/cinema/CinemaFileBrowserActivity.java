@@ -1,6 +1,7 @@
 package com.archos.mediacenter.video.leanback.cinema;
 
 import android.app.Activity;
+import android.app.PendingIntent;
 import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
@@ -9,6 +10,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.MediaStore;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -22,6 +24,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.IntentSenderRequest;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.preference.PreferenceManager;
 import androidx.recyclerview.widget.GridLayoutManager;
@@ -66,6 +69,11 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
 
     private List<Item> clipboard = List.of();
     private boolean clipboardMove;
+    private List<Item> pendingSafDeleteTargets = List.of();
+    private List<Item> pendingMediaStoreDeleteTargets = List.of();
+    private int pendingMediaStorePriorDeleted;
+    private int pendingMediaStoreTotalTargets;
+    private Uri pendingMediaStoreNeighbor;
     private boolean imagesOnly;
     private boolean subtitlesOnly;
     private boolean selectMode;
@@ -74,13 +82,48 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
     private final ActivityResultLauncher<Intent> safFolderPicker = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(), result -> {
                 if (result.getResultCode() == RESULT_OK && result.getData() != null
-                        && result.getData().getData() != null && !clipboard.isEmpty()) {
+                        && result.getData().getData() != null) {
                     Uri tree = result.getData().getData();
                     try {
                         getContentResolver().takePersistableUriPermission(tree,
                                 Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
                     } catch (Exception ignored) {}
-                    executeCopyOrMove(List.copyOf(clipboard), tree, clipboardMove);
+                    if (!pendingSafDeleteTargets.isEmpty()) {
+                        List<Item> retry = List.copyOf(pendingSafDeleteTargets);
+                        pendingSafDeleteTargets = List.of();
+                        executeDelete(retry);
+                    } else if (!clipboard.isEmpty()) {
+                        executeCopyOrMove(List.copyOf(clipboard), tree, clipboardMove);
+                    }
+                } else {
+                    pendingSafDeleteTargets = List.of();
+                }
+            });
+
+    private final ActivityResultLauncher<IntentSenderRequest> mediaStoreDeleteLauncher = registerForActivityResult(
+            new ActivityResultContracts.StartIntentSenderForResult(), result -> {
+                List<Item> requested = List.copyOf(pendingMediaStoreDeleteTargets);
+                int priorDeleted = pendingMediaStorePriorDeleted;
+                int total = pendingMediaStoreTotalTargets;
+                Uri neighbor = pendingMediaStoreNeighbor;
+                pendingMediaStoreDeleteTargets = List.of();
+                pendingMediaStorePriorDeleted = 0;
+                pendingMediaStoreTotalTargets = 0;
+                pendingMediaStoreNeighbor = null;
+                if (result.getResultCode() == RESULT_OK && !requested.isEmpty()) {
+                    for (Item item : requested) {
+                        clearDeletedCaches(item);
+                        marked.remove(item.uri());
+                    }
+                    selected = neighbor;
+                    if (marked.isEmpty() && !imagesOnly) selectMode = false;
+                    refreshActionStrip();
+                    load();
+                    Toast.makeText(this, getString(R.string.cinema_file_delete_result,
+                            priorDeleted + requested.size(), Math.max(total, requested.size())),
+                            Toast.LENGTH_LONG).show();
+                } else if (!requested.isEmpty()) {
+                    showManageAllFilesPrompt();
                 }
             });
 
@@ -88,7 +131,7 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
     private final ArrayList<Item> entries = new ArrayList<>();
     private FrameLayout root, viewer;
     private ImageView picture;
-    private TextView location, status, photoCaption, layoutButton;
+    private TextView backButton, location, status, photoCaption, layoutButton;
     private LinearLayout actionStrip;
     private TextView actionStripLabel, useSelectedBtn, pasteBtn, copyBtn, moveBtn, deleteBtn, cancelBarBtn;
     private RecyclerView files;
@@ -136,7 +179,7 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
         tools.setPadding(0, dp(this, 4), 0, dp(this, 6));
         page.addView(tools, new LinearLayout.LayoutParams(-1, -2));
 
-        control(tools, getString(R.string.cinema_back), this::onBackPressed);
+        backButton = control(tools, getString(R.string.cinema_back), this::onBackPressed);
         location = text(this, 24, true);
         location.setTextColor(CinemaTokens.GOLD);
         location.setSingleLine();
@@ -366,8 +409,54 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
                 android.content.DialogInterface.BUTTON_POSITIVE);
     }
 
+    private void clearDeletedCaches(Item item) {
+        if (item == null || item.uri() == null) return;
+        thumbnails.remove(item.uri());
+        try { Picasso.get().invalidate(item.uri()); } catch (Throwable ignored) {}
+    }
+
+    private Uri computeNeighborAfterDelete(List<Item> targets) {
+        if (entries.isEmpty() || targets.isEmpty()) return null;
+        java.util.HashSet<Uri> deleting = new java.util.HashSet<>();
+        for (Item item : targets) deleting.add(item.uri());
+        int anchor = -1;
+        for (int i = 0; i < entries.size(); i++) {
+            if (entries.get(i).uri().equals(selected)) {
+                anchor = i;
+                break;
+            }
+        }
+        if (anchor < 0) {
+            for (int i = 0; i < entries.size(); i++) {
+                if (deleting.contains(entries.get(i).uri())) {
+                    anchor = i;
+                    break;
+                }
+            }
+        }
+        if (anchor < 0) anchor = 0;
+        for (int i = anchor; i < entries.size(); i++) {
+            if (!deleting.contains(entries.get(i).uri())) return entries.get(i).uri();
+        }
+        for (int i = anchor - 1; i >= 0; i--) {
+            if (!deleting.contains(entries.get(i).uri())) return entries.get(i).uri();
+        }
+        return null;
+    }
+
+    private void showManageAllFilesPrompt() {
+        showDialogWithButtonFocus(dialog(this)
+                .setTitle(R.string.cinema_file_manage_permission_title)
+                .setMessage(R.string.cinema_file_manage_permission_message)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.cinema_file_enable_permission_now,
+                        (d, w) -> TvPermissionsWizardDialog.requestManageAllFilesPermission(this, this::load)),
+                android.content.DialogInterface.BUTTON_POSITIVE);
+    }
+
     private void executeDelete(List<Item> targets) {
         transferring = true;
+        Uri neighborAfterDelete = computeNeighborAfterDelete(targets);
         var panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(this, 20);
@@ -386,25 +475,86 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
         var modal = dialog(this).setTitle(R.string.cinema_file_deleting).setView(panel).setCancelable(false).show();
         folders.execute(() -> {
             int deleted = 0;
+            boolean needsAllFilesPermission = false;
+            List<Item> deletedItems = new ArrayList<>();
+            List<Item> usbSafNeeded = new ArrayList<>();
+            List<Uri> mediaStoreUris = new ArrayList<>();
+            List<Item> mediaStoreItems = new ArrayList<>();
             for (Item item : targets) {
                 if (Thread.currentThread().isInterrupted()) break;
                 runOnUiThread(() -> detail.setText(item.name()));
                 try {
-                    if (CinemaFileOperations.deleteItem(this, item)) {
-                        deleted++;
-                        marked.remove(item.uri());
+                    var outcome = CinemaFileOperations.deleteItemDetailed(this, item);
+                    switch (outcome.status()) {
+                        case DELETED -> {
+                            deleted++;
+                            deletedItems.add(item);
+                        }
+                        case NEEDS_USB_SAF -> usbSafNeeded.add(item);
+                        case NEEDS_MEDIASTORE_DELETE -> {
+                            if (outcome.mediaStoreUri() != null) {
+                                mediaStoreUris.add(outcome.mediaStoreUri());
+                                mediaStoreItems.add(item);
+                            } else {
+                                needsAllFilesPermission = true;
+                            }
+                        }
+                        case NEEDS_ALL_FILES_PERMISSION -> needsAllFilesPermission = true;
+                        default -> {}
                     }
                 } catch (Exception ignored) {}
                 runOnUiThread(() -> progress.incrementProgressBy(1));
             }
             int done = deleted;
+            boolean askAllFiles = needsAllFilesPermission;
             runOnUiThread(() -> {
                 if (isDestroyed() || isFinishing()) return;
                 transferring = false;
                 modal.dismiss();
-                if (marked.isEmpty() && !imagesOnly) selectMode = false;
-                refreshActionStrip();
-                load();
+                for (Item item : deletedItems) {
+                    clearDeletedCaches(item);
+                    marked.remove(item.uri());
+                }
+                if (done > 0) {
+                    selected = neighborAfterDelete;
+                    if (marked.isEmpty() && !imagesOnly) selectMode = false;
+                    refreshActionStrip();
+                    load();
+                }
+                if (!usbSafNeeded.isEmpty()) {
+                    pendingSafDeleteTargets = List.copyOf(usbSafNeeded);
+                    showDialogWithButtonFocus(dialog(this)
+                            .setTitle(R.string.cinema_file_usb_permission_title)
+                            .setMessage(R.string.cinema_file_usb_delete_permission_message)
+                            .setNegativeButton(android.R.string.cancel, (d, w) -> pendingSafDeleteTargets = List.of())
+                            .setPositiveButton(R.string.cinema_photo_choose_folder, (d, w) -> launchSafFolderPicker()),
+                            android.content.DialogInterface.BUTTON_POSITIVE);
+                    return;
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !mediaStoreUris.isEmpty()) {
+                    try {
+                        PendingIntent pi = MediaStore.createDeleteRequest(getContentResolver(), mediaStoreUris);
+                        pendingMediaStoreDeleteTargets = List.copyOf(mediaStoreItems);
+                        pendingMediaStorePriorDeleted = done;
+                        pendingMediaStoreTotalTargets = targets.size();
+                        pendingMediaStoreNeighbor = neighborAfterDelete;
+                        mediaStoreDeleteLauncher.launch(new IntentSenderRequest.Builder(pi.getIntentSender()).build());
+                        return;
+                    } catch (Throwable unsupportedOnTv) {
+                        pendingMediaStoreDeleteTargets = List.of();
+                        showManageAllFilesPrompt();
+                        return;
+                    }
+                }
+                if (askAllFiles && done < targets.size()) {
+                    showManageAllFilesPrompt();
+                    return;
+                }
+                if (done == 0) {
+                    if (marked.isEmpty() && !imagesOnly) selectMode = false;
+                    refreshActionStrip();
+                    load();
+                }
                 Toast.makeText(this, getString(R.string.cinema_file_delete_result, done, targets.size()),
                         Toast.LENGTH_LONG).show();
             });
@@ -461,12 +611,19 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
                 transferring = false;
                 modal.dismiss();
                 if (askSaf) {
-                    showDialogWithButtonFocus(dialog(this)
-                            .setTitle(R.string.cinema_file_usb_permission_title)
-                            .setMessage(R.string.cinema_file_usb_permission_message)
-                            .setNegativeButton(android.R.string.cancel, null)
-                            .setPositiveButton(R.string.cinema_photo_choose_folder, (d, w) -> launchSafFolderPicker()),
-                            android.content.DialogInterface.BUTTON_POSITIVE);
+                    boolean isUsbDest = "file".equalsIgnoreCase(destFolder.getScheme())
+                            && destFolder.getPath() != null
+                            && CinemaFileOperations.isExternalRemovableFile(new java.io.File(destFolder.getPath()));
+                    if (!isUsbDest && !TvPermissionsWizardDialog.hasManageAllFilesPermission(this)) {
+                        showManageAllFilesPrompt();
+                    } else {
+                        showDialogWithButtonFocus(dialog(this)
+                                .setTitle(R.string.cinema_file_usb_permission_title)
+                                .setMessage(R.string.cinema_file_usb_permission_message)
+                                .setNegativeButton(android.R.string.cancel, null)
+                                .setPositiveButton(R.string.cinema_photo_choose_folder, (d, w) -> launchSafFolderPicker()),
+                                android.content.DialogInterface.BUTTON_POSITIVE);
+                    }
                     return;
                 }
                 if (done == sources.size()) {
@@ -630,7 +787,10 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
     }
 
     private void focusEntry(int token) {
-        if (entries.isEmpty()) return;
+        if (entries.isEmpty()) {
+            if (backButton != null && viewer == null) backButton.requestFocus();
+            return;
+        }
         int position = 0;
         for (int n = 0; n < entries.size(); n++) {
             if (entries.get(n).uri().equals(selected)) { position = n; break; }

@@ -25,11 +25,12 @@ import androidx.recyclerview.widget.RecyclerView;
 import com.archos.mediacenter.video.R;
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
-import com.meedx.providers.LiveTvPreferences;
 import com.meedx.providers.LiveChannelFavorites;
+import com.meedx.providers.LiveTvPreferences;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.TreeMap;
@@ -39,7 +40,7 @@ import java.util.concurrent.Future;
 public final class CinemaLiveActivity extends FragmentActivity {
     static final String CUSTOM = "custom";
     private static final int GOLD = 0xffe5a93b;
-    private static final String FAVORITE_COUNTRIES = "favorite_countries";
+    private static final String FAVORITE_COUNTRIES = LiveTvPreferences.FAVORITE_COUNTRIES_FIELD;
 
     private final java.util.concurrent.ExecutorService io = Executors.newFixedThreadPool(4);
     private final List<Future<?>> requests = new ArrayList<>();
@@ -61,6 +62,7 @@ public final class CinemaLiveActivity extends FragmentActivity {
     };
     private String group = "";
     private String country = "";
+    private boolean favoritesMode = true;
     private boolean focusOpeningChannel = true;
     private TextView countryButton;
     private TextView categoryButton;
@@ -71,13 +73,15 @@ public final class CinemaLiveActivity extends FragmentActivity {
             filter();
             return;
         }
-        if (!LiveTvPreferences.COUNTRY_FIELD.equals(key) && !LiveTvPreferences.FAVORITE_COUNTRIES_FIELD.equals(key)) return;
+        if (!LiveTvPreferences.COUNTRY_FIELD.equals(key)
+                && !LiveTvPreferences.FAVORITE_COUNTRIES_FIELD.equals(key)
+                && !LiveTvPreferences.FAVORITES_MODE_FIELD.equals(key)) return;
         if (!custom) {
             country = LiveTvPreferences.country(this);
-            countryButton.setText(preferredCountryButtonLabel());
+            favoritesMode = LiveTvPreferences.showFavoriteCountriesMode(this);
+            countryButton.setText(countryButtonLabel());
         }
-        group = "";
-        categoryButton.setText(R.string.addon_channel_categories);
+        focusOpeningChannel = true;
         loadChannels();
     };
     private final java.util.Set<String> scheduledLogos = new java.util.HashSet<>();
@@ -88,11 +92,16 @@ public final class CinemaLiveActivity extends FragmentActivity {
     @Override protected void onCreate(Bundle savedState) {
         super.onCreate(savedState);
         custom = getIntent().getBooleanExtra(CUSTOM, false);
+        group = CinemaLiveCategories.savedCategory(this, custom);
         if (!custom) {
             country = LiveTvPreferences.country(this);
+            favoritesMode = LiveTvPreferences.showFavoriteCountriesMode(this);
             iraqSnapshot = CinemaLivePlaylists.cachedIraq(this);
+        } else {
+            favoritesMode = false;
         }
         var root = panel();
+        root.setLayoutDirection(CinemaUi.arabic(this) ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
         root.setBackgroundColor(0xff171717);
         root.setPaddingRelative(dp(36), dp(24), dp(36), dp(24));
         root.setClipChildren(false);
@@ -115,9 +124,10 @@ public final class CinemaLiveActivity extends FragmentActivity {
         settings.setOnFocusChangeListener((view, focused) -> focusRing(view, focused));
         settings.setOnClickListener(v -> showSources());
 
-
         var toolbar = new LinearLayout(this);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        toolbar.setClipChildren(false);
+        toolbar.setClipToPadding(false);
         var toolbarSize = new LinearLayout.LayoutParams(-1, -2);
         toolbarSize.topMargin = dp(12);
         root.addView(toolbar, toolbarSize);
@@ -128,13 +138,10 @@ public final class CinemaLiveActivity extends FragmentActivity {
         var searchSize = new LinearLayout.LayoutParams(dp(252), dp(48));
         searchSize.setMarginEnd(dp(10));
         toolbar.addView(search, searchSize);
-        categoryButton = control(getString(R.string.addon_channel_categories), () -> {});
+        categoryButton = control(categoryButtonLabel(), () -> {});
         categoryButton.setOnClickListener(v -> showFilter(false, categoryButton));
-        countryButton = control(custom ? getString(R.string.addon_channel_countries) : preferredCountryButtonLabel(), () -> {});
-        countryButton.setOnClickListener(v -> {
-            if (custom) showFilter(true, countryButton);
-            else showPreferredCountriesDialog();
-        });
+        countryButton = control(countryButtonLabel(), () -> {});
+        countryButton.setOnClickListener(v -> showCountryPicker(countryButton, false));
         toolbar.addView(categoryButton, toolbarItem());
         toolbar.addView(countryButton, toolbarItem());
         toolbar.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
@@ -148,7 +155,8 @@ public final class CinemaLiveActivity extends FragmentActivity {
             if (action != EditorInfo.IME_ACTION_SEARCH) return false;
             ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
                     .hideSoftInputFromWindow(search.getWindowToken(), 0);
-            if (!grid.requestFocus()) categoryButton.requestFocus();
+            focusOpeningChannel = true;
+            if (!focusFirstChannelIfNeeded() && !grid.requestFocus()) categoryButton.requestFocus();
             return true;
         });
 
@@ -180,10 +188,38 @@ public final class CinemaLiveActivity extends FragmentActivity {
         viewport.setClipToPadding(true);
         viewport.addView(grid, new android.widget.FrameLayout.LayoutParams(-1, -1));
         root.addView(viewport, new LinearLayout.LayoutParams(-1, 0, 1f));
-        root.setFocusableInTouchMode(true);
-        root.requestFocus();
+        grid.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
         LiveTvPreferences.store(this).registerOnSharedPreferenceChangeListener(liveSettingsChanged);
         loadChannels();
+    }
+
+    private List<String> activeCountryCodes() {
+        if (custom) return List.of();
+        if (favoritesMode) {
+            var favs = new ArrayList<>(LiveTvPreferences.favoriteCountries(this));
+            return favs.isEmpty() ? List.of(LiveTvPreferences.country(this)) : favs;
+        }
+        return List.of(country.isBlank() ? LiveTvPreferences.country(this) : country);
+    }
+
+    private boolean showCountryBadge() {
+        return !custom && favoritesMode && activeCountryCodes().size() > 1;
+    }
+
+    private String countryButtonLabel() {
+        if (custom) {
+            return country.isEmpty() ? getString(R.string.addon_channel_countries) : displayCountry(country);
+        }
+        if (favoritesMode) {
+            return getString(R.string.addon_live_favorite_countries);
+        }
+        return displayCountry(country);
+    }
+
+    private String categoryButtonLabel() {
+        return group.isEmpty()
+                ? getString(R.string.addon_channel_categories)
+                : CinemaLiveCategories.displayName(this, group);
     }
 
     private void loadChannels() {
@@ -193,8 +229,9 @@ public final class CinemaLiveActivity extends FragmentActivity {
         channels.clear();
         scheduledLogos.clear();
         failed = 0;
-        var sources = CinemaLivePlaylists.sources(this, custom).stream()
-                .filter(CinemaLivePlaylists.Source::enabled).toList();
+        List<CinemaLivePlaylists.Source> sources = custom
+                ? CinemaLivePlaylists.sources(this, true).stream().filter(CinemaLivePlaylists.Source::enabled).toList()
+                : CinemaLivePlaylists.fetchSourcesForCountries(this, activeCountryCodes());
         pending = sources.size();
         refreshIraqSource(false);
         filter();
@@ -219,7 +256,7 @@ public final class CinemaLiveActivity extends FragmentActivity {
     }
 
     private boolean showIraqSource() {
-        return !custom && "IQ".equals(country) && CinemaLivePlaylists.iraqEnabled(this);
+        return !custom && activeCountryCodes().contains("IQ") && CinemaLivePlaylists.iraqEnabled(this);
     }
 
     private void refreshIraqSource(boolean force) {
@@ -244,7 +281,9 @@ public final class CinemaLiveActivity extends FragmentActivity {
     }
 
     private java.util.Collection<CinemaLivePlaylists.Channel> visibleSourceChannels() {
-        if (!showIraqSource() || iraqSnapshot.channels().isEmpty()) return channels.values();
+        if (!showIraqSource() || iraqSnapshot == null || iraqSnapshot.channels().isEmpty()) {
+            return channels.values();
+        }
         var combined = new LinkedHashMap<>(channels);
         for (var channel : iraqSnapshot.channels()) combined.putIfAbsent(channel.url(), channel);
         return combined.values();
@@ -255,19 +294,39 @@ public final class CinemaLiveActivity extends FragmentActivity {
         var favorites = LiveChannelFavorites.active(this);
         var available = visibleSourceChannels();
         boolean loading = pending > 0 || (showIraqSource() && refreshingIraq);
-        boolean unavailableSource = failed > 0 || (showIraqSource() && iraqSnapshot.failed());
+        boolean unavailableSource = failed > 0 || (showIraqSource() && iraqSnapshot != null && iraqSnapshot.failed());
+
+        // Gracefully fall back to All only after loading completes if saved category is absent in chosen country/set
+        if (!group.isEmpty() && !loading && !available.isEmpty()) {
+            boolean categoryPresent = available.stream().anyMatch(ch -> CinemaLiveCategories.matches(ch.group(), group));
+            if (!categoryPresent) {
+                group = CinemaLiveCategories.ALL;
+                categoryButton.setText(categoryButtonLabel());
+            }
+        }
+
         var results = available.stream().filter(channel ->
-                (group.isEmpty() || group.equals(channel.group()))
-                        && (!custom || country.isEmpty() || List.of(channel.country().split("[,;\\s]+")).contains(country))
-                        && (query.isEmpty() || channel.title().toLowerCase(Locale.ROOT).contains(query)))
+                        CinemaLiveCategories.matches(channel.group(), group)
+                                && (!custom || country.isEmpty()
+                                        || List.of(channel.country().split("[,;\\s]+")).contains(country))
+                                && (query.isEmpty() || channel.title().toLowerCase(Locale.ROOT).contains(query)))
                 .sorted(java.util.Comparator.comparingLong(
                         (CinemaLivePlaylists.Channel channel) -> favorites.getOrDefault(channel.favoriteKey(), 0L)).reversed())
                 .toList();
         adapter.favorites = favorites;
+        adapter.showCountryTag = showCountryBadge();
+        View currentFocus = getCurrentFocus();
+        boolean toolbarFocused = currentFocus == search || currentFocus == categoryButton
+                || currentFocus == countryButton || currentFocus == settings;
+        boolean needFirstFocus = focusOpeningChannel || (!toolbarFocused && (currentFocus == null || currentFocus.getParent() == grid));
         adapter.items = results;
         adapter.notifyDataSetChanged();
-        if (!loading && results.isEmpty() && focusOpeningChannel) {
-            settings.requestFocusFromTouch();
+        if (!results.isEmpty() && needFirstFocus) {
+            focusOpeningChannel = true;
+            focusFirstChannelIfNeeded();
+        } else if (!loading && results.isEmpty() && focusOpeningChannel) {
+            settings.requestFocus();
+            focusOpeningChannel = false;
         }
         if (loading && results.isEmpty()) status.setText(R.string.addon_channels_loading);
         else if (unavailableSource && available.isEmpty()) status.setText(R.string.addon_channels_unavailable);
@@ -277,27 +336,66 @@ public final class CinemaLiveActivity extends FragmentActivity {
                 results.size()));
     }
 
+    private boolean focusFirstChannelIfNeeded() {
+        if (grid == null || adapter.items.isEmpty()) return false;
+        grid.scrollToPosition(0);
+        Runnable attemptFocus = () -> {
+            if (!focusOpeningChannel || isFinishing() || isDestroyed() || adapter.items.isEmpty()) return;
+            View first = null;
+            var lm = grid.getLayoutManager();
+            if (lm != null) first = lm.findViewByPosition(0);
+            if (first == null) {
+                var holder = grid.findViewHolderForAdapterPosition(0);
+                if (holder != null) first = holder.itemView;
+            }
+            if (first != null && first.isAttachedToWindow()) {
+                if (first.requestFocus() || first.hasFocus()) {
+                    focusOpeningChannel = false;
+                }
+            }
+        };
+        grid.post(attemptFocus);
+        grid.postDelayed(attemptFocus, 120);
+        return true;
+    }
+
     private void showFilter(boolean byCountry, TextView trigger) {
         if (byCountry) {
             showCountryPicker(trigger, false);
             return;
         }
-        var names = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
+        var uniqueKeys = new LinkedHashSet<String>();
         for (var channel : visibleSourceChannels()) {
-            if (!channel.group().isBlank()) names.put(channel.group(), channel.group());
+            uniqueKeys.addAll(CinemaLiveCategories.parseKeys(channel.group()));
+        }
+        var sorted = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
+        boolean hasUndefined = false;
+        for (String key : uniqueKeys) {
+            if (CinemaLiveCategories.UNDEFINED.equals(key)) {
+                hasUndefined = true;
+            } else {
+                sorted.put(CinemaLiveCategories.displayName(this, key), key);
+            }
         }
         var labels = new ArrayList<String>();
         var keys = new ArrayList<String>();
-        labels.add(getString(R.string.addon_live_filter_all));
-        keys.add("");
-        names.forEach((label, key) -> {
+        labels.add(CinemaLiveCategories.displayName(this, CinemaLiveCategories.ALL));
+        keys.add(CinemaLiveCategories.ALL);
+        sorted.forEach((label, key) -> {
             labels.add(label);
             keys.add(key);
         });
+        if (hasUndefined) {
+            labels.add(CinemaLiveCategories.displayName(this, CinemaLiveCategories.UNDEFINED));
+            keys.add(CinemaLiveCategories.UNDEFINED);
+        }
+        int checked = Math.max(0, keys.indexOf(group));
         CinemaUi.dialog(this).setTitle(R.string.addon_channel_categories)
-                .setSingleChoiceItems(labels.toArray(new String[0]), keys.indexOf(group), (dialog, choice) -> {
+                .setSingleChoiceItems(labels.toArray(new String[0]), checked, (dialog, choice) -> {
                     group = keys.get(choice);
-                    trigger.setText(group.isEmpty() ? getString(R.string.addon_channel_categories) : labels.get(choice));
+                    CinemaLiveCategories.saveCategory(this, custom, group);
+                    trigger.setText(categoryButtonLabel());
+                    focusOpeningChannel = true;
                     dialog.dismiss();
                     filter();
                 }).setNegativeButton(R.string.addon_back, null).show();
@@ -314,13 +412,20 @@ public final class CinemaLiveActivity extends FragmentActivity {
 
     private void showCountryPicker(TextView trigger, boolean editFavorites) {
         var favoriteCountries = new java.util.HashSet<>(
-                LiveTvPreferences.store(this).getStringSet(FAVORITE_COUNTRIES, java.util.Set.of()));
+                LiveTvPreferences.favoriteCountries(this));
         var choices = new ArrayList<CountryChoice>();
         if (custom) {
             String all = getString(R.string.addon_live_filter_all);
             choices.add(new CountryChoice("", all, List.of(normalizeCountrySearch(all))));
+        } else if (!editFavorites) {
+            String favLabel = getString(R.string.addon_live_favorite_countries);
+            choices.add(new CountryChoice(LiveTvPreferences.FAVORITES_MODE, favLabel, List.of(
+                    normalizeCountrySearch(favLabel),
+                    normalizeCountrySearch("Favorite Countries"),
+                    normalizeCountrySearch("الدول المفضلة"),
+                    normalizeCountrySearch("مفضلة"))));
         }
-        var codes = new java.util.LinkedHashSet<String>();
+        var codes = new LinkedHashSet<String>();
         if (custom) {
             var sorted = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
             for (var channel : visibleSourceChannels()) {
@@ -331,7 +436,7 @@ public final class CinemaLiveActivity extends FragmentActivity {
             codes.addAll(sorted.values());
         } else {
             var ordered = List.of(LiveTvPreferences.countryCodes(this));
-            if (!editFavorites) codes.add(country);
+            if (!editFavorites && !favoritesMode && !country.isBlank()) codes.add(country);
             ordered.stream().filter(favoriteCountries::contains).forEach(codes::add);
             codes.addAll(ordered);
         }
@@ -340,13 +445,15 @@ public final class CinemaLiveActivity extends FragmentActivity {
             String label = displayCountry(code);
             String arabic = normalizeCountrySearch(locale.getDisplayCountry(new Locale("ar")));
             var searchNames = new ArrayList<>(List.of(normalizeCountrySearch(label),
-                    normalizeCountrySearch(locale.getDisplayCountry(Locale.ENGLISH)), arabic));
+                    normalizeCountrySearch(locale.getDisplayCountry(Locale.ENGLISH)), arabic,
+                    code.toLowerCase(Locale.ROOT)));
             if (arabic.startsWith("ال") && arabic.length() > 2) searchNames.add(arabic.substring(2));
             choices.add(new CountryChoice(code, label, searchNames));
         }
 
         var content = panel();
-        content.setPaddingRelative(dp(16), dp(6), dp(16), 0);
+        content.setLayoutDirection(CinemaUi.arabic(this) ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+        content.setPaddingRelative(dp(16), dp(8), dp(16), dp(4));
         var countrySearch = input(R.string.addon_country_search, InputType.TYPE_CLASS_TEXT);
         countrySearch.setId(View.generateViewId());
         countrySearch.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
@@ -357,23 +464,57 @@ public final class CinemaLiveActivity extends FragmentActivity {
         list.setChoiceMode(editFavorites ? android.widget.ListView.CHOICE_MODE_MULTIPLE
                 : android.widget.ListView.CHOICE_MODE_SINGLE);
         list.setDivider(null);
+        list.setDividerHeight(dp(4));
         list.setSelector(CinemaUi.rounded(0xff35281b, dp(12), GOLD));
         list.setNextFocusUpId(countrySearch.getId());
         countrySearch.setNextFocusDownId(list.getId());
-        var results = new android.widget.ArrayAdapter<CountryChoice>(this, editFavorites
-                ? android.R.layout.simple_list_item_multiple_choice : android.R.layout.simple_list_item_single_choice) {
-            @Override public View getView(int position, View row, ViewGroup parent) {
-                var item = (android.widget.CheckedTextView) super.getView(position, row, parent);
-                item.setTextColor(Color.WHITE);
-                item.setTextSize(17);
-                item.setMinHeight(dp(48));
-                item.setCheckMarkTintList(android.content.res.ColorStateList.valueOf(GOLD));
-                return item;
+        var filteredChoices = new ArrayList<CountryChoice>();
+        var results = new android.widget.BaseAdapter() {
+            @Override public int getCount() { return filteredChoices.size(); }
+            @Override public CountryChoice getItem(int position) { return filteredChoices.get(position); }
+            @Override public long getItemId(int position) { return position; }
+            @Override public View getView(int position, View recycled, ViewGroup parent) {
+                LinearLayout row;
+                ImageView indicator;
+                TextView labelView;
+                if (recycled instanceof LinearLayout existing && existing.getChildCount() >= 2) {
+                    row = existing;
+                    indicator = (ImageView) row.getChildAt(0);
+                    labelView = (TextView) row.getChildAt(1);
+                } else {
+                    row = new LinearLayout(CinemaLiveActivity.this);
+                    row.setOrientation(LinearLayout.HORIZONTAL);
+                    row.setGravity(Gravity.CENTER_VERTICAL);
+                    row.setMinimumHeight(dp(50));
+                    row.setPaddingRelative(dp(18), dp(8), dp(18), dp(8));
+                    indicator = new ImageView(CinemaLiveActivity.this);
+                    indicator.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+                    var indLp = new LinearLayout.LayoutParams(dp(22), dp(22));
+                    indLp.setMarginEnd(dp(14));
+                    row.addView(indicator, indLp);
+                    labelView = CinemaUi.text(CinemaLiveActivity.this, 17, true);
+                    labelView.setGravity(Gravity.CENTER_VERTICAL);
+                    row.addView(labelView, new LinearLayout.LayoutParams(0, -2, 1f));
+                }
+                CountryChoice choice = getItem(position);
+                boolean isFavEntry = LiveTvPreferences.FAVORITES_MODE.equals(choice.code());
+                boolean checked = editFavorites
+                        ? favoriteCountries.contains(choice.code())
+                        : (custom ? choice.code().equals(country)
+                                : (favoritesMode ? isFavEntry : choice.code().equals(country)));
+                if (editFavorites) {
+                    indicator.setImageDrawable(CinemaUi.createCinemaCheckDrawable(CinemaLiveActivity.this, checked));
+                } else {
+                    indicator.setImageDrawable(CinemaUi.createCinemaRadioDrawable(CinemaLiveActivity.this, checked));
+                }
+                labelView.setText(isFavEntry ? "★  " + choice.label() : choice.label());
+                labelView.setTextColor(isFavEntry || checked ? GOLD : Color.WHITE);
+                return row;
             }
         };
         list.setAdapter(results);
-        var listSize = new LinearLayout.LayoutParams(-1, Math.min(dp(312), getResources().getDisplayMetrics().heightPixels / 2));
-        listSize.topMargin = dp(6);
+        var listSize = new LinearLayout.LayoutParams(-1, Math.min(dp(320), getResources().getDisplayMetrics().heightPixels / 2));
+        listSize.topMargin = dp(8);
         var resultsArea = new android.widget.FrameLayout(this);
         content.addView(resultsArea, listSize);
         resultsArea.addView(list, new android.widget.FrameLayout.LayoutParams(-1, -1));
@@ -384,15 +525,21 @@ public final class CinemaLiveActivity extends FragmentActivity {
         list.setEmptyView(empty);
         Runnable filterChoices = () -> {
             String query = normalizeCountrySearch(countrySearch.getText().toString());
-            results.setNotifyOnChange(false);
-            results.clear();
-            results.addAll(choices.stream().filter(choice -> query.isEmpty() || choice.searchNames().stream()
-                    .anyMatch(name -> query.length() == 1 ? name.startsWith(query) : name.contains(query))).toList());
+            filteredChoices.clear();
+            for (CountryChoice choice : choices) {
+                if (query.isEmpty() || choice.searchNames().stream()
+                        .anyMatch(name -> query.length() == 1 ? name.startsWith(query) : name.contains(query))) {
+                    filteredChoices.add(choice);
+                }
+            }
             list.clearChoices();
             results.notifyDataSetChanged();
-            for (int i = 0; i < results.getCount(); i++) {
-                String code = results.getItem(i).code();
-                boolean selected = editFavorites ? favoriteCountries.contains(code) : code.equals(country);
+            for (int i = 0; i < filteredChoices.size(); i++) {
+                String code = filteredChoices.get(i).code();
+                boolean selected = editFavorites
+                        ? favoriteCountries.contains(code)
+                        : (custom ? code.equals(country)
+                                : (favoritesMode ? LiveTvPreferences.FAVORITES_MODE.equals(code) : code.equals(country)));
                 if (selected) list.setItemChecked(i, true);
             }
             list.setSelection(0);
@@ -420,26 +567,41 @@ public final class CinemaLiveActivity extends FragmentActivity {
                 LiveTvPreferences.saveFavoriteCountries(this, favoriteCountries);
                 CinemaLinkServer.broadcastLiveTvPreferences(this);
             });
+        } else if (!custom) {
+            builder.setPositiveButton(R.string.addon_edit_preferred_countries, (d, w) -> showCountryPicker(countryButton, true));
         }
         var dialog = builder.create();
         list.setOnItemClickListener((parent, view, position, id) -> {
             CountryChoice choice = results.getItem(position);
             if (choice == null) return;
             if (editFavorites) {
-                if (list.isItemChecked(position)) favoriteCountries.add(choice.code());
-                else favoriteCountries.remove(choice.code());
+                if (favoriteCountries.contains(choice.code())) favoriteCountries.remove(choice.code());
+                else favoriteCountries.add(choice.code());
+                results.notifyDataSetChanged();
                 return;
             }
             keyboard.hideSoftInputFromWindow(countrySearch.getWindowToken(), 0);
             dialog.dismiss();
             if (custom) {
                 country = choice.code();
-                trigger.setText(country.isEmpty() ? getString(R.string.addon_channel_countries) : choice.label());
+                trigger.setText(countryButtonLabel());
+                focusOpeningChannel = true;
                 filter();
+            } else if (LiveTvPreferences.FAVORITES_MODE.equals(choice.code())) {
+                focusOpeningChannel = true;
+                favoritesMode = true;
+                LiveTvPreferences.setFavoriteCountriesMode(this, true);
+                countryButton.setText(countryButtonLabel());
+                loadChannels();
             } else {
                 focusOpeningChannel = true;
+                favoritesMode = false;
+                country = choice.code();
+                LiveTvPreferences.setFavoriteCountriesMode(this, false);
                 LiveTvPreferences.saveCountry(this, choice.code());
+                countryButton.setText(countryButtonLabel());
                 CinemaLinkServer.broadcastLiveTvPreferences(this);
+                loadChannels();
             }
         });
         filterChoices.run();
@@ -447,32 +609,6 @@ public final class CinemaLiveActivity extends FragmentActivity {
                 | android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         dialog.show();
         CinemaUi.focusDialogControl(dialog, countrySearch);
-    }
-
-    private String preferredCountryButtonLabel() {
-        return getString(R.string.addon_live_favorite_countries) + " · " + displayCountry(country);
-    }
-
-    private void showPreferredCountriesDialog() {
-        var preferred = new ArrayList<>(LiveTvPreferences.favoriteCountries(this));
-        if (preferred.size() <= 1) {
-            showCountryPicker(countryButton, true);
-            return;
-        }
-        String[] labels = new String[preferred.size()];
-        for (int i = 0; i < preferred.size(); i++) labels[i] = displayCountry(preferred.get(i));
-        int currentIdx = Math.max(0, preferred.indexOf(country));
-        CinemaUi.dialog(this)
-                .setTitle(R.string.addon_live_favorite_countries)
-                .setSingleChoiceItems(labels, currentIdx, (dialog, choice) -> {
-                    dialog.dismiss();
-                    focusOpeningChannel = true;
-                    LiveTvPreferences.saveCountry(this, preferred.get(choice));
-                    CinemaLinkServer.broadcastLiveTvPreferences(this);
-                })
-                .setPositiveButton(R.string.addon_edit_preferred_countries, (d, w) -> showCountryPicker(countryButton, true))
-                .setNegativeButton(R.string.addon_back, null)
-                .show();
     }
 
     private void showSources() {
@@ -493,6 +629,7 @@ public final class CinemaLiveActivity extends FragmentActivity {
         }
         addControl(controls, getString(R.string.addon_reload_channels), () -> {
             dialog.dismiss();
+            focusOpeningChannel = true;
             loadChannels();
         });
         for (int i = 0; i < sources.size(); i++) {
@@ -500,17 +637,20 @@ public final class CinemaLiveActivity extends FragmentActivity {
             int index = i;
             addControl(controls, getString(source.enabled() ? R.string.addon_live_source_on
                     : R.string.addon_live_source_off, source.name()), () -> {
-                var settings = CinemaUi.dialog(this).setTitle(source.name())
+                var settingsDialog = CinemaUi.dialog(this).setTitle(source.name())
                         .setPositiveButton(source.enabled() ? R.string.addon_live_disable : R.string.addon_live_enable,
                                 (d, which) -> {
-                                    sources.set(index, new CinemaLivePlaylists.Source(source.name(), source.url(), !source.enabled()));
+                                    sources.set(index, new CinemaLivePlaylists.Source(source.name(), source.url(),
+                                            !source.enabled(), source.countryCode()));
                                     applySources(sources, dialog);
                                 }).setNegativeButton(R.string.addon_back, null);
-                if (custom && !CinemaLivePlaylists.builtIn(this, source.url())) settings.setNeutralButton(R.string.addon_live_remove, (d, which) -> {
-                    sources.remove(index);
-                    applySources(sources, dialog);
-                });
-                settings.show();
+                if (custom && !CinemaLivePlaylists.builtIn(this, source.url())) {
+                    settingsDialog.setNeutralButton(R.string.addon_live_remove, (d, which) -> {
+                        sources.remove(index);
+                        applySources(sources, dialog);
+                    });
+                }
+                settingsDialog.show();
             });
         }
         dialog.show();
@@ -519,13 +659,13 @@ public final class CinemaLiveActivity extends FragmentActivity {
 
     private void showIraqSourceSettings() {
         var controls = panel();
-        var status = CinemaUi.text(this, 15, false);
-        status.setPaddingRelative(dp(8), dp(6), dp(8), dp(12));
-        controls.addView(status);
+        var statusView = CinemaUi.text(this, 15, false);
+        statusView.setPaddingRelative(dp(8), dp(6), dp(8), dp(12));
+        controls.addView(statusView);
         addControl(controls, "", () -> {
             CinemaLivePlaylists.setIraqEnabled(this, !CinemaLivePlaylists.iraqEnabled(this));
             refreshIraqSource(false);
-            filter();
+            loadChannels();
             updateIraqSourceControls.run();
         });
         addControl(controls, "", () -> {
@@ -549,9 +689,9 @@ public final class CinemaLiveActivity extends FragmentActivity {
                 var date = new java.util.Date(iraqSnapshot.updatedAt());
                 String stamp = android.text.format.DateFormat.getMediumDateFormat(this).format(date) + " · "
                         + android.text.format.DateFormat.getTimeFormat(this).format(date);
-                status.setText(getString(R.string.addon_live_iraq_status, getString(statusText), stamp));
+                statusView.setText(getString(R.string.addon_live_iraq_status, getString(statusText), stamp));
             } else {
-                status.setText(statusText);
+                statusView.setText(statusText);
             }
             refresh.setAlpha(refreshingIraq ? 0.65f : 1f);
         };
@@ -565,6 +705,7 @@ public final class CinemaLiveActivity extends FragmentActivity {
     private void applySources(List<CinemaLivePlaylists.Source> sources, androidx.appcompat.app.AlertDialog dialog) {
         CinemaLivePlaylists.save(this, custom, sources);
         dialog.dismiss();
+        focusOpeningChannel = true;
         loadChannels();
         showSources();
     }
@@ -600,6 +741,7 @@ public final class CinemaLiveActivity extends FragmentActivity {
             sources.add(new CinemaLivePlaylists.Source(label, sourceUrl, true));
             CinemaLivePlaylists.save(this, true, sources);
             dialog.dismiss();
+            focusOpeningChannel = true;
             loadChannels();
         });
         dialog.setOnDismissListener(d -> showSources());
@@ -631,7 +773,7 @@ public final class CinemaLiveActivity extends FragmentActivity {
                 @Override public boolean onPreDraw() {
                     if (observer.isAlive()) observer.removeOnPreDrawListener(this);
                     var holder = grid.findViewHolderForAdapterPosition(position);
-                    if (holder != null) holder.itemView.requestFocusFromTouch();
+                    if (holder != null) holder.itemView.requestFocus();
                     return true;
                 }
             });
@@ -666,7 +808,14 @@ public final class CinemaLiveActivity extends FragmentActivity {
     }
 
     private void focusRing(View view, boolean focused) {
-        view.setForeground(focused ? CinemaUi.posterFocusRing(this, 2f) : null);
+        view.setForeground(focused ? CinemaUi.posterFocusRing(this, 3f) : null);
+    }
+
+    private void channelCardFocus(View view, boolean focused) {
+        view.setForeground(focused ? CinemaUi.posterFocusRing(this, 3f) : null);
+        view.setBackground(CinemaUi.rounded(focused ? 0xff362a19 : 0xff25211c, dp(12), focused ? GOLD : 0xff51422e));
+        view.animate().scaleX(focused ? 1.04f : 1f).scaleY(focused ? 1.04f : 1f)
+                .setDuration(CinemaUi.motion(this) ? 110 : 0).start();
     }
 
     private TextView control(String label, Runnable click) {
@@ -744,6 +893,7 @@ public final class CinemaLiveActivity extends FragmentActivity {
     private final class ChannelAdapter extends RecyclerView.Adapter<ChannelHolder> {
         List<CinemaLivePlaylists.Channel> items = List.of();
         java.util.Map<String, Long> favorites = java.util.Map.of();
+        boolean showCountryTag;
 
         @Override public int getItemCount() { return items.size(); }
 
@@ -752,31 +902,38 @@ public final class CinemaLiveActivity extends FragmentActivity {
             tile.setBackground(CinemaUi.rounded(0xff25211c, dp(12), 0xff51422e));
             tile.setGravity(Gravity.CENTER);
             tile.setFocusable(true);
-            tile.setOnFocusChangeListener(CinemaLiveActivity.this::focusRing);
+            tile.setOnFocusChangeListener(CinemaLiveActivity.this::channelCardFocus);
             tile.setOnKeyListener((v, key, event) -> CinemaUi.moveVerticalGridFocus(grid, v, event, null));
             tile.setPaddingRelative(dp(7), dp(5), dp(7), dp(5));
-            var params = new RecyclerView.LayoutParams(-1, dp(124));
+            var params = new RecyclerView.LayoutParams(-1, dp(130));
             params.setMargins(dp(5), dp(5), dp(5), dp(5));
             tile.setLayoutParams(params);
             var logo = new ImageView(CinemaLiveActivity.this);
             logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
             logo.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
             var art = new android.widget.FrameLayout(CinemaLiveActivity.this);
-            art.addView(logo, new android.widget.FrameLayout.LayoutParams(dp(74), dp(47), Gravity.CENTER));
+            art.addView(logo, new android.widget.FrameLayout.LayoutParams(dp(74), dp(46), Gravity.CENTER));
             var star = CinemaUi.text(CinemaLiveActivity.this, 18, true);
             star.setText("★");
             star.setTextColor(GOLD);
             star.setGravity(Gravity.CENTER);
             star.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
             art.addView(star, new android.widget.FrameLayout.LayoutParams(dp(26), dp(26), Gravity.TOP | Gravity.END));
-            tile.addView(art, new LinearLayout.LayoutParams(-1, dp(47)));
-            var title = CinemaUi.text(CinemaLiveActivity.this, 15, true);
+            tile.addView(art, new LinearLayout.LayoutParams(-1, dp(46)));
+            var title = CinemaUi.text(CinemaLiveActivity.this, 14, true);
             title.setGravity(Gravity.CENTER);
             title.setMaxLines(2);
             title.setEllipsize(android.text.TextUtils.TruncateAt.END);
             title.setTextColor(Color.WHITE);
             tile.addView(title, new LinearLayout.LayoutParams(-1, -2));
-            return new ChannelHolder(tile, logo, title, star);
+            var countryTag = CinemaUi.text(CinemaLiveActivity.this, 11, false);
+            countryTag.setGravity(Gravity.CENTER);
+            countryTag.setSingleLine();
+            countryTag.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            countryTag.setTextColor(0xffddbe7a);
+            countryTag.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            tile.addView(countryTag, new LinearLayout.LayoutParams(-1, -2));
+            return new ChannelHolder(tile, logo, title, countryTag, star);
         }
 
         @Override public void onBindViewHolder(ChannelHolder holder, int position) {
@@ -784,6 +941,13 @@ public final class CinemaLiveActivity extends FragmentActivity {
             holder.title.setText(channel.title());
             boolean favorite = favorites.containsKey(channel.favoriteKey());
             holder.star.setVisibility(favorite ? View.VISIBLE : View.GONE);
+            if (showCountryTag && channel.country() != null && !channel.country().isBlank()) {
+                String code = channel.country().split("[,;\\s]+")[0].trim();
+                holder.countryTag.setText(code.length() == 2 ? displayCountry(code) : code);
+                holder.countryTag.setVisibility(View.VISIBLE);
+            } else {
+                holder.countryTag.setVisibility(View.GONE);
+            }
             holder.itemView.setContentDescription(favorite ? getString(R.string.addon_favorite_channel_label, channel.title()) : null);
             if (channel.logo().isBlank()) {
                 Glide.with(CinemaLiveActivity.this).clear(holder.logo);
@@ -794,6 +958,7 @@ public final class CinemaLiveActivity extends FragmentActivity {
             }
             holder.itemView.setOnClickListener(v -> play(channel));
             holder.itemView.setOnLongClickListener(v -> showFavoriteAction(channel));
+            channelCardFocus(holder.itemView, holder.itemView.hasFocus());
         }
 
         @Override public void onViewAttachedToWindow(ChannelHolder holder) {
@@ -801,7 +966,9 @@ public final class CinemaLiveActivity extends FragmentActivity {
             if (!focusOpeningChannel || holder.getBindingAdapterPosition() != 0) return;
             holder.itemView.post(() -> {
                 if (focusOpeningChannel && holder.itemView.isAttachedToWindow()) {
-                    focusOpeningChannel = !holder.itemView.requestFocusFromTouch();
+                    if (holder.itemView.requestFocus()) {
+                        focusOpeningChannel = false;
+                    }
                 }
             });
         }
@@ -815,11 +982,13 @@ public final class CinemaLiveActivity extends FragmentActivity {
     private static final class ChannelHolder extends RecyclerView.ViewHolder {
         final ImageView logo;
         final TextView title;
+        final TextView countryTag;
         final TextView star;
-        ChannelHolder(View view, ImageView logo, TextView title, TextView star) {
+        ChannelHolder(View view, ImageView logo, TextView title, TextView countryTag, TextView star) {
             super(view);
             this.logo = logo;
             this.title = title;
+            this.countryTag = countryTag;
             this.star = star;
         }
     }
