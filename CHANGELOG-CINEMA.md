@@ -1,5 +1,45 @@
 # Local Cinema release notes
 
+## Local Cinema v1.0.0-beta.16 (`versionCode = 16`, 2026-11-23)
+
+### English
+
+#### TV
+
+- Redesigned Add-ons as a square six-column grid with official logos, custom ordering, and a top settings button. Added Persian Stremio, separated TR TV & Mov, fixed FayaTV, and displayed channel icons in a 1:1 square layout.
+- Added the Art and Screensaver section. Art Mode includes five museum paintings, resizable mat frames, color filters, an optional clock, and pixel shift protection. YouTube 4K Screensaver adds a category dropdown, built-in search, and looping playback in SmartTube or the built-in player.
+- Unified File Browser to manage video, image, and subtitle files in one place. Long-press opens select, copy, move, paste, and delete actions. Art Mode and subtitle picking now open this browser directly.
+- Updated movie and series details screens by removing the intermediate Watch Now and Trailer dialog and adding audio language priority, quick audio and trailer buttons, full season titles, and unclipped focus rings. Enabled multi-source subtitle search across OpenSubtitles v3, Wyzie, and Subsource with automatic query pre-fill.
+- Sped up torrent playback startup and showed live peer counts and download speed. Removed the exit confirmation dialog on Back, hid seek controls during live channels, removed the 10-second seek buttons from the player bar, and focused TV Live on Favorite Countries.
+
+#### Phone
+
+- Synced TV Live favorite countries automatically from the TV and included them in Google Drive cloud backups.
+- Improved initial peer connection settings for the torrent engine and removed duplicate bottom banners after cloud backup uploads finish.
+
+Both apps are open source and free. [Source for these APKs](https://github.com/alnouri96/local-cinema/tree/v1.0.0-beta.16) · [Third-party licenses](https://github.com/alnouri96/local-cinema/blob/v1.0.0-beta.16/docs/THIRD_PARTY.md).
+
+<div dir="rtl" align="right">
+
+### العربية
+
+#### التلفاز
+
+- يعيد قسم الإضافات عرض البطاقات في شبكة مربعة من 6 بطاقات في الصف بشعارات رسمية مع إمكانية ترتيب الإضافات ونقل زر الضبط للأعلى. يضيف التطبيق Persian Stremio ويفصل TR TV & Mov ويصلح FayaTV ويعرض أيقونات القنوات بنسبة مربعة 1:1.
+- يضيف التطبيق قسم الفن وشاشة التوقف. يضم وضع الفن خمس لوحات متحفية مدمجة وإطارات ورقية قابلة لتغيير الحجم وفلاتر لونية وساعة اختيارية وحماية بكسل. توفر شاشة توقف يوتيوب 4K قائمة تصنيفات منسدلة وبحثًا مدمجًا وتشغيلاً متكررًا عبر SmartTube أو المشغّل الداخلي.
+- يوحّد مستعرض الملفات تصفح ملفات الفيديو والصور والترجمات في مكان واحد. تفتح قائمة الضغط المطوّل خيارات التحديد والنسخ والنقل واللصق والحذف. يرتبط وضع الفن واختيار الترجمات مباشرة بهذا المستعرض.
+- تحدّث شاشة تفاصيل الأفلام والمسلسلات بتصميم مضغوط يزيل نافذة «مشاهدة الآن / الإعلان» ويعرض أزرار الصوت والإعلان وأولوية اللغات. يصلح التحديث قصّ إطارات التركيز وأسماء المواسم، ويفعّل البحث متعدد المصادر للترجمات عبر OpenSubtitles v3 وWyzie وSubsource بالتعبئة التلقائية.
+- يسرّع المشغّل بدء بث التورنت ويعرض عدد الموزعين وسرعة التحميل الحية. يلغي التحديث نافذة تأكيد الإيقاف عند الضغط على رجوع، ويخفي التقديم والترجيع في البث المباشر، ويزيل أزرار 10 ثوانٍ من شريط المشغّل، ويبقي قسم البث التلفزيوني على الدول المفضلة فقط.
+
+#### الهاتف
+
+- يزامن الهاتف الدول المفضلة للبث التلفزيوني تلقائيًا من التلفاز ويحفظها ضمن النسخة الاحتياطية السحابية على Google Drive.
+- يحسّن التطبيق إعدادات الاتصال الأولي لمحرك التورنت ويزيل التنبيهات السفلية المكررة عند اكتمال رفع النسخة السحابية.
+
+التطبيقان مفتوحا المصدر ومجانيان بالكامل. [الكود المطابق للحزمتين](https://github.com/alnouri96/local-cinema/tree/v1.0.0-beta.16) · [تراخيص الجهات الخارجية](https://github.com/alnouri96/local-cinema/blob/v1.0.0-beta.16/docs/THIRD_PARTY.md).
+
+</div>
+
 ## Local Cinema v1.0.0-beta.15 (`versionCode = 15`, 2026-11-22)
 
 ### English
