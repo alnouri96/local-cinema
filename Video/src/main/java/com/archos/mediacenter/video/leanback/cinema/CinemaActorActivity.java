@@ -765,7 +765,7 @@ public class CinemaActorActivity extends LeanbackActivity {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         conn.setConnectTimeout(5000);
         conn.setReadTimeout(6000);
-        conn.setRequestProperty("User-Agent", "LocalCinema/1.0 (https://github.com/alnouri96/meedx)");
+        conn.setRequestProperty("User-Agent", "LocalCinema/1.0 (https://github.com/alnouri96/local-cinema)");
         try {
             if (conn.getResponseCode() != 200) throw new java.io.IOException("HTTP " + conn.getResponseCode());
             try (InputStream in = conn.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {

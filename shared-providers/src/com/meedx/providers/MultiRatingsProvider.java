@@ -228,7 +228,7 @@ public final class MultiRatingsProvider {
                 conn.setConnectTimeout(3500);
                 conn.setReadTimeout(4500);
                 conn.setInstanceFollowRedirects(false);
-                conn.setRequestProperty("User-Agent", "LocalCinema/1.0 (https://github.com/alnouri96/meedx)");
+                conn.setRequestProperty("User-Agent", "LocalCinema/1.0 (https://github.com/alnouri96/local-cinema)");
                 try {
                     int code = conn.getResponseCode();
                     if (code >= 300 && code < 400) {
@@ -319,7 +319,7 @@ public final class MultiRatingsProvider {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         conn.setConnectTimeout(4500);
         conn.setReadTimeout(5500);
-        conn.setRequestProperty("User-Agent", "LocalCinema/1.0 (https://github.com/alnouri96/meedx)");
+        conn.setRequestProperty("User-Agent", "LocalCinema/1.0 (https://github.com/alnouri96/local-cinema)");
         conn.setRequestProperty("Accept", "application/json");
         try {
             if (conn.getResponseCode() != 200) throw new IOException("HTTP " + conn.getResponseCode());

@@ -8,7 +8,7 @@ import android.widget.Toast;
 
 public final class ProjectLinks {
     public static final String SOURCE = "https://github.com/alnouri96/local-cinema";
-    public static final String LICENSES = SOURCE + "/blob/main/docs/THIRD_PARTY.md";
+    public static final String LICENSES = SOURCE + "/blob/upgrade-6.6.4/docs/THIRD_PARTY.md";
 
     private ProjectLinks() {}
 

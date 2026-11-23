@@ -305,7 +305,7 @@ public final class OpenMetadata {
             connection.setConnectTimeout(4500);
             connection.setReadTimeout(6000);
             connection.setInstanceFollowRedirects(false);
-            connection.setRequestProperty("User-Agent", "LocalCinema/1.0 (https://github.com/alnouri96/meedx)");
+            connection.setRequestProperty("User-Agent", "LocalCinema/1.0 (https://github.com/alnouri96/local-cinema)");
             try {
                 int status = connection.getResponseCode();
                 if (status >= 300 && status < 400) {
@@ -1092,7 +1092,7 @@ public final class OpenMetadata {
         connection.setConnectTimeout(4000);
         connection.setReadTimeout(5000);
         connection.setInstanceFollowRedirects(false);
-        connection.setRequestProperty("User-Agent", "LocalCinema/1.0 (https://github.com/alnouri96/meedx)");
+        connection.setRequestProperty("User-Agent", "LocalCinema/1.0 (https://github.com/alnouri96/local-cinema)");
         try (var input = connection.getInputStream(); var data = new ByteArrayOutputStream()) {
             byte[] block = new byte[8192];
             int read;

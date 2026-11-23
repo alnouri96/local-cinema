@@ -105,7 +105,7 @@ public final class ZeroConfigSubtitles {
         conn.setConnectTimeout(6000);
         conn.setReadTimeout(9000);
         conn.setInstanceFollowRedirects(true);
-        conn.setRequestProperty("User-Agent", "LocalCinema/1.0 (https://github.com/alnouri96/meedx)");
+        conn.setRequestProperty("User-Agent", "LocalCinema/1.0 (https://github.com/alnouri96/local-cinema)");
         try {
             if (conn.getResponseCode() != 200) throw new IOException("Subtitle HTTP " + conn.getResponseCode());
             try (InputStream in = conn.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
