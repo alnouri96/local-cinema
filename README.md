@@ -1,5 +1,20 @@
 # Local Cinema
 
+<p>
+  <a href="https://github.com/alnouri96/local-cinema/releases/latest">
+    <img src="https://img.shields.io/github/v/release/alnouri96/meedx?style=for-the-badge&label=Latest_Release&color=E5A93B&labelColor=171717&logo=github&logoColor=FFFFFF" alt="Latest Release" />
+  </a>
+  <a href="https://meedx.pages.dev/tv">
+    <img src="https://img.shields.io/badge/Android_TV-Download_APK-E5A93B?style=for-the-badge&logo=android&logoColor=FFFFFF&labelColor=171717" alt="Download Local Cinema TV APK" />
+  </a>
+  <a href="https://meedx.pages.dev/phone">
+    <img src="https://img.shields.io/badge/Android_Phone-Manager_APK-E5A93B?style=for-the-badge&logo=android&logoColor=FFFFFF&labelColor=171717" alt="Download Local Cinema Manager Phone APK" />
+  </a>
+  <a href="https://meedx.pages.dev/downloads">
+    <img src="https://img.shields.io/badge/MEEDX-Downloads_%26_Guide-E5A93B?style=for-the-badge&logo=googlechrome&logoColor=FFFFFF&labelColor=171717" alt="Downloads and Setup Guide" />
+  </a>
+</p>
+
 Local Cinema TV plays your library on Android TV from device storage, USB, or SMB. Local Cinema Manager controls the TV and casts supported media from your phone over the local network.
 
 Both apps are **open source and 100% free**.
