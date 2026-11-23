@@ -38,4 +38,5 @@ Local Cinema TV uses `com.meedx.localcinema.tv` (`Video/`). Local Cinema Manager
 ## Distribution & release policy
 
 - App source lives in `alnouri96/local-cinema` (`upgrade-6.6.4`). Public downloads, website, and OTA (`https://meedx.pages.dev/api/version.json`) live in `alnouri96/meedx` (`main`). Keep APKs, ZIPs, signing files, and personal data out of `MEEDX WEB`.
+- **Single-Branch & Repo Hygiene:** `upgrade-6.6.4` is the sole default branch of `alnouri96/local-cinema` (never keep a separate `main` or stale branches on `origin`). On every release or cleanup, verify via `gh api` that the default branch is current and free of extra branches, dead assets, or stale tool artifacts.
 - Keep local candidates separate from publication. Never push, create a GitHub Release, or deploy Cloudflare Pages without explicit approval; publish approved releases as regular GitHub Releases with `--latest` and verify with `gh api repos/alnouri96/meedx/releases/latest --jq .tag_name`.
