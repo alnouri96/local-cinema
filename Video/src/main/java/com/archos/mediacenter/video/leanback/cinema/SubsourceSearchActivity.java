@@ -21,6 +21,8 @@ import com.archos.mediacenter.video.browser.adapters.object.NonIndexedVideo;
 import com.archos.mediacenter.video.leanback.LeanbackActivity;
 import com.archos.mediacenter.video.leanback.details.VideoDetailsFragment;
 import com.archos.mediascraper.BaseTags;
+import com.meedx.providers.ApiKeyStore;
+import com.meedx.providers.SubtitleMatch;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.util.ArrayList;

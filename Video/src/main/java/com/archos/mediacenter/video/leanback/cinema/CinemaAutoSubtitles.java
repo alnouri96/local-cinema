@@ -8,6 +8,8 @@ import com.archos.mediacenter.video.browser.adapters.object.Video;
 import com.archos.mediacenter.video.browser.adapters.object.Episode;
 import com.archos.mediacenter.video.browser.adapters.mappers.VideoCursorMapper;
 import com.archos.mediascraper.BaseTags;
+import com.meedx.providers.ApiKeyStore;
+import com.meedx.providers.SubtitleMatch;
 import org.json.*;
 import java.util.*;
 import java.util.function.BooleanSupplier;

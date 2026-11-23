@@ -3,6 +3,7 @@ package com.archos.mediacenter.video.leanback.cinema;
 import android.os.Bundle;
 import android.widget.*;
 import com.archos.mediacenter.video.leanback.LeanbackActivity;
+import com.meedx.providers.ApiKeyStore;
 import static com.archos.mediacenter.video.leanback.cinema.CinemaUi.*;
 
 /** Provider provenance and an explicit, personal-use dataset download. */

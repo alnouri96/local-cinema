@@ -157,7 +157,6 @@
         <activity android:name=".leanback.cinema.CinemaWatchlistActivity" android:exported="false" android:theme="@style/MyLeanbackTheme" />
         <activity android:name=".leanback.cinema.SubsourceSettingsActivity" android:exported="false" android:theme="@style/MyLeanbackTheme" />
         <activity android:name=".leanback.cinema.SubsourceSearchActivity" android:exported="false" android:theme="@style/MyLeanbackTheme" />
-        <activity android:name=".leanback.cinema.CinemaSubtitleBrowserActivity" android:exported="false" android:theme="@style/MyLeanbackTheme" />
         <activity android:name=".leanback.cinema.CinemaTextImportActivity" android:exported="false" android:theme="@style/MyLeanbackTheme" />
         <meta-data
             android:name="to.dualscreen"

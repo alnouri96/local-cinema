@@ -2,6 +2,7 @@ package com.archos.mediacenter.video.leanback.cinema;
 
 import android.content.Context;
 import android.net.Uri;
+import com.meedx.providers.ApiKeyStore;
 import org.json.*;
 import java.io.*;
 import java.net.*;

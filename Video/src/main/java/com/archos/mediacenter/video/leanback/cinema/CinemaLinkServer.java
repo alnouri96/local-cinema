@@ -1,5 +1,6 @@
 package com.archos.mediacenter.video.leanback.cinema;
 
+import com.meedx.providers.ApiKeyStore;
 import com.meedx.providers.LiveChannelFavorites;
 
 import android.app.Activity;

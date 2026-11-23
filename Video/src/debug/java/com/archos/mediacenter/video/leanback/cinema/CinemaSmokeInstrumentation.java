@@ -10,6 +10,8 @@ import com.archos.filecorelibrary.MetaFile2;
 import com.archos.mediacenter.filecoreextension.upnp2.RawListerFactoryWithUpnp;
 import com.archos.mediacenter.utils.ShortcutDbAdapter;
 import com.archos.mediaprovider.NetworkScanner;
+import com.meedx.providers.ApiKeyStore;
+import com.meedx.providers.SubtitleMatch;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;

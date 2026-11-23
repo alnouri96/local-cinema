@@ -1,4 +1,4 @@
-import com.archos.mediacenter.video.leanback.cinema.SubtitleMatch;
+import com.meedx.providers.SubtitleMatch;
 
 /** Behavior checks for dangerous mismatches and missing evidence, independent of Android. */
 public final class SubtitleMatchChecks {

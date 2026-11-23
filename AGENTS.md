@@ -14,7 +14,7 @@ Local Cinema TV uses `com.meedx.localcinema.tv` (`Video/`). Local Cinema Manager
 - **Phone app:** [Phone/AGENTS.md](Phone/AGENTS.md)
 - **Website & OTA:** sibling `MEEDX WEB/AGENTS.md` (`alnouri96/meedx`, `main`)
 - **Shared roots:**
-  - `shared-providers/src/com/meedx/providers/`: `TraktSyncClient.java`, `StremioAddons.java`, `ProviderKeys.java`, `MultiRatingsProvider.java`, `OpenTrailersProvider.java`, `ZeroConfigSubtitles.java`, `LiveTvPreferences.java`, `LiveChannelFavorites.java`
+  - `shared-providers/src/com/meedx/providers/`: `TraktSyncClient.java`, `StremioAddons.java`, `ProviderKeys.java`, `ApiKeyStore.java`, `SubtitleMatch.java`, `MultiRatingsProvider.java`, `OpenTrailersProvider.java`, `ZeroConfigSubtitles.java`, `LiveTvPreferences.java`, `LiveChannelFavorites.java`
   - `shared-updater/src/com/meedx/updates/`: `AppUpdates.java`, `UpdateConfig.java`, `ReleaseSigner.java`, `ProjectLinks.java`, `UpdateFileProvider.java`
   - `script/`: `build-both.ps1`, `build-cinema.ps1`, `stage-clean-release.ps1`, `audit-provider-keys.py`, `tv-capture.py`
 

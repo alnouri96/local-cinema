@@ -10,6 +10,8 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.google.android.material.button.MaterialButton;
+import com.meedx.providers.ApiKeyStore;
+import com.meedx.providers.SubtitleMatch;
 
 final class TvHubSubtitlesController {
     final TvHubActivity host;
