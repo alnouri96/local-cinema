@@ -329,6 +329,7 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
     private SubtitleManager     mSubtitleManager = null;
     private CinemaSecondarySubtitle mCastPrimarySubtitle;
     private CinemaSecondarySubtitle mSecondarySubtitle;
+    private com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleTimingOverlay mSubtitleTimingOverlay;
     private AdaptiveSubtitleContrast mAdaptiveSubtitleContrast;
     private View                mProgressView;
     private TextView            mBufferView;
@@ -338,6 +339,7 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
         if (action == null) return;
         if ("sub_clear_secondary".equals(action)) {
             if (mSecondarySubtitle != null) mSecondarySubtitle.clear();
+            refreshSubtitleTVMenu();
             return;
         }
         if ("dual_position".equals(action) || ("sub_mode".equals(action) && value == 3)) {
@@ -355,20 +357,79 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
         if (mSecondarySubtitle != null && mSecondarySubtitle.hasCues()) {
             if (!"color".equals(action)) mSecondarySubtitle.applyStyle(action, value);
         }
-        if (handledPrimary || mSubtitleManager == null) return;
+        if (handledPrimary) {
+            if (("delay".equals(action) || "reset".equals(action)) && mSubtitleDelayMenuItem != null) {
+                mSubtitleDelayMenuItem.setText(com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleTimingOverlay
+                        .formatCompactShortcutTitle(this, getCurrentSubtitleDelayMs()));
+            }
+            return;
+        }
+        if (mSubtitleManager == null) return;
         switch (action) {
             case "color" -> {
                 if (mAdaptiveSubtitleContrast != null) mAdaptiveSubtitleContrast.setEnabled(false);
                 mSubtitleManager.setColor(value);
+                if (mPreferences != null) mPreferences.edit().putInt(KEY_SUBTITLE_COLOR, value).apply();
             }
-            case "size" -> mSubtitleManager.setSize(Math.max(10, Math.min(100,
-                    mSubtitleManager.getSize() + value)));
-            case "position" -> mSubtitleManager.setVerticalPosition(Math.max(0, Math.min(255,
-                    mSubtitleManager.getVerticalPosition() + value)));
+            case "size" -> {
+                int nextSz = Math.max(10, Math.min(100, mSubtitleManager.getSize() + value));
+                mSubtitleManager.setSize(nextSz);
+                if (mPreferences != null) mPreferences.edit().putInt(KEY_SUBTITLE_SIZE, nextSz).apply();
+            }
+            case "position" -> {
+                int nextPos = Math.max(0, Math.min(255, mSubtitleManager.getVerticalPosition() + value));
+                mSubtitleManager.setVerticalPosition(nextPos);
+                if (mPreferences != null) mPreferences.edit().putInt(KEY_SUBTITLE_VPOS, nextPos).apply();
+                if (mSecondarySubtitle != null && mSecondarySubtitle.hasCues()) mSecondarySubtitle.refreshLayout();
+            }
             case "delay" -> setSubtitleDelay(value);
-            case "reset" -> { if (mVideoInfo != null) setSubtitleDelay(-mVideoInfo.subtitleDelay); }
-            case "background" -> mSubtitleManager.togglePhoneBackground();
+            case "reset" -> {
+                mSubtitleManager.setSize(36);
+                mSubtitleManager.setVerticalPosition(64);
+                mSubtitleManager.setColor(android.graphics.Color.WHITE);
+                mSubtitleManager.setPhoneBackground(false);
+                mSubtitleManager.setPhoneVisibility(true);
+                if (mPreferences != null) {
+                    mPreferences.edit()
+                            .putInt(KEY_SUBTITLE_SIZE, 36)
+                            .putInt(KEY_SUBTITLE_VPOS, 64)
+                            .putInt(KEY_SUBTITLE_COLOR, android.graphics.Color.WHITE)
+                            .putBoolean(KEY_SUBTITLE_OUTLINE, false)
+                            .apply();
+                }
+                if (mVideoInfo != null) setSubtitleDelay(-mVideoInfo.subtitleDelay);
+                if (mSecondarySubtitle != null && mSecondarySubtitle.hasCues()) mSecondarySubtitle.refreshLayout();
+            }
+            case "background" -> {
+                boolean curBg = mPreferences != null
+                        ? mPreferences.getBoolean(KEY_SUBTITLE_OUTLINE, mSubtitleOutlineDefault)
+                        : mSubtitleManager.isPhoneBackground();
+                boolean nextBg = !curBg;
+                mSubtitleManager.setPhoneBackground(nextBg);
+                if (mPreferences != null) {
+                    mPreferences.edit().putBoolean(KEY_SUBTITLE_OUTLINE, nextBg).apply();
+                }
+            }
             case "visible" -> mSubtitleManager.togglePhoneVisibility();
+        }
+    }
+
+    private void clearConflictingSecondarySubtitle(VideoMetadata meta, int primaryTrackIndex) {
+        if (mSecondarySubtitle == null || !mSecondarySubtitle.hasCues() || meta == null) return;
+        if (primaryTrackIndex < 0 || primaryTrackIndex >= meta.getSubtitleTrackNb()) return;
+        SubtitleTrack primary = meta.getSubtitleTrack(primaryTrackIndex);
+        if (primary == null) return;
+        String videoPath = meta.getFile() != null ? meta.getFile().getPath() : (mUri != null ? mUri.toString() : "");
+        String primaryPath = primary.path == null ? "" : primary.path.trim();
+        String primaryLang = primary.isExternal
+                ? com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels.resolveExternalLanguageCanonical(mContext, primary, videoPath)
+                : com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels.resolveEmbeddedLanguageCanonical(primary.language, primary.name);
+        String secPath = mSecondarySubtitle.getTrackPath();
+        String secLang = mSecondarySubtitle.getTrackLangCanon();
+        boolean samePath = !primaryPath.isEmpty() && primaryPath.equalsIgnoreCase(secPath);
+        boolean sameLang = !primaryLang.isEmpty() && primaryLang.equals(secLang);
+        if (samePath || sameLang) {
+            mSecondarySubtitle.clear();
         }
     }
 
@@ -402,6 +463,7 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
         if (mPlayer == null || mVideoInfo == null) return;
         if (trackIndex < 0) {
             if (mSecondarySubtitle != null) mSecondarySubtitle.clear();
+            refreshSubtitleTVMenu();
             rearmHudAutoHideAfterSubtitle(false);
             return;
         }
@@ -409,8 +471,15 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
         var track = meta != null ? meta.getSubtitleTrack(trackIndex) : null;
         if (track == null || mSecondarySubtitle == null) return;
         if (track.isExternal && track.path != null && !track.path.isBlank()) {
+            String videoPath = meta.getFile() != null ? meta.getFile().getPath() : (mUri != null ? mUri.toString() : "");
+            String secLabel = com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels
+                    .formatExternalCompactLabel(mContext, track, videoPath);
+            String secLang = com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels
+                    .resolveExternalLanguageCanonical(mContext, track, videoPath);
+            mSecondarySubtitle.setTrackMeta(secLabel, track.path, secLang);
             mSecondarySubtitle.setVideo(mUri);
             mSecondarySubtitle.load(Uri.parse(track.path));
+            refreshSubtitleTVMenu();
             rearmHudAutoHideAfterSubtitle(false);
             return;
         }
@@ -422,6 +491,7 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                 if (mSubtitleInfoController != null) mSubtitleInfoController.setTrack(pos);
                 setSubtitleVpos("remoteSelectDual");
             }
+            refreshSubtitleTVMenu();
             rearmHudAutoHideAfterSubtitle(false);
             return;
         }
@@ -438,11 +508,16 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
         var meta = mPlayer.getVideoMetadata();
         if (meta == null) return arr;
         int n = meta.getSubtitleTrackNb();
+        String videoPath = meta.getFile() != null ? meta.getFile().getPath() : (mUri != null ? mUri.toString() : "");
         for (int i = 0; i < n; i++) {
             var track = meta.getSubtitleTrack(i);
             if (track == null) continue;
-            String label = track.name != null && !track.name.isBlank()
-                    ? track.name : (track.language != null ? track.language : "Track " + (i + 1));
+            String label = com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels
+                    .formatTrackLabel(mContext, track, videoPath);
+            if (label == null || label.isBlank()) {
+                label = track.name != null && !track.name.isBlank()
+                        ? track.name : (track.language != null ? track.language : "Track " + (i + 1));
+            }
             try {
                 arr.put(new org.json.JSONObject()
                         .put("index", i)
@@ -467,8 +542,10 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
         if (mPlayer.setSubtitleTrack(positionToPlayerSubtitleTrack(pos, mVideoInfo.nbSubtitles))) {
             if (mSubtitleManager != null) mSubtitleManager.clear();
             mVideoInfo.subtitleTrack = trackIndex;
+            clearConflictingSecondarySubtitle(mPlayer.getVideoMetadata(), trackIndex);
             if (mSubtitleInfoController != null) mSubtitleInfoController.setTrack(pos);
             setSubtitleVpos("remoteSelect");
+            refreshSubtitleTVMenu();
         }
         rearmHudAutoHideAfterSubtitle(false);
     }
@@ -486,8 +563,10 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
         if (isSecondary) {
             runOnUiThread(() -> {
                 if (!isFinishing() && !isDestroyed() && targetVideo.equals(mUri) && mSecondarySubtitle != null) {
+                    mSecondarySubtitle.setTrackMeta(getString(R.string.cinema_sub_loc_from_phone), "", "");
                     mSecondarySubtitle.loadDecoded(decoded.ext(), decoded.utf8Bytes());
                     mSecondarySubtitle.setActive(true);
+                    refreshSubtitleTVMenu();
                     rearmHudAutoHideAfterSubtitle(false);
                 }
             });
@@ -511,7 +590,8 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                 var storage = new com.archos.mediacenter.video.leanback.cinema.SubtitleStorage(PlayerActivity.this);
                 var saved = storage.save(targetVideo,
                         new com.archos.mediacenter.video.leanback.cinema.SubtitleStorage.Entry("phone-subtitle." + decoded.ext(), decoded.utf8Bytes()),
-                        0L, () -> !isFinishing() && !isDestroyed() && targetVideo.equals(mUri));
+                        0L, "", com.archos.mediacenter.video.leanback.cinema.CinemaUi.label(PlayerActivity.this, "من الهاتف / المتصفح", "From Phone / Browser"),
+                        () -> !isFinishing() && !isDestroyed() && targetVideo.equals(mUri));
                 runOnUiThread(() -> {
                     if (!isFinishing() && !isDestroyed() && targetVideo.equals(mUri)
                             && PlayerService.sPlayerService != null) {
@@ -1675,6 +1755,9 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (mSubtitleTimingOverlay != null && mSubtitleTimingOverlay.handleKeyEvent(event)) {
+            return true;
+        }
         if (event.getKeyCode() == KeyEvent.KEYCODE_BACK && mPlayerController != null) {
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
                 consumedOverlayBack = mPlayerController.dismissPlaybackOverlay();
@@ -2051,100 +2134,454 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
             return "A";
     }
 
+    private long getCurrentSubtitleDelayMs() {
+        if (mCastPrimarySubtitle != null && mCastPrimarySubtitle.hasCues()) {
+            return mCastPrimarySubtitle.getDelayMs();
+        }
+        return mVideoInfo != null ? mVideoInfo.subtitleDelay : 0L;
+    }
+
+    private void applyLiveSubtitleDelayMs(long newDelayMs, boolean persistToDb) {
+        int clamped = (int) Math.max(
+                com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleTimingOverlay.MIN_DELAY_MS,
+                Math.min(com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleTimingOverlay.MAX_DELAY_MS, newDelayMs));
+        if (mCastPrimarySubtitle != null && mCastPrimarySubtitle.hasCues()) {
+            mCastPrimarySubtitle.setDelayMs(clamped);
+        }
+        if (mSecondarySubtitle != null && mSecondarySubtitle.hasCues()) {
+            mSecondarySubtitle.setDelayMs(clamped);
+        }
+        if (mVideoInfo != null) {
+            boolean changed = mVideoInfo.subtitleDelay != clamped;
+            mVideoInfo.subtitleDelay = clamped;
+            if (changed && mPlayer != null) {
+                if (mSubtitleManager != null) mSubtitleManager.clear();
+                mPlayer.setSubtitleDelay(clamped);
+            }
+            if (persistToDb && mIndexHelper != null) {
+                mIndexHelper.writeVideoInfo(mVideoInfo, mNetworkBookmarksEnabled);
+            }
+        }
+        if (mSubtitleDelayMenuItem != null) {
+            mSubtitleDelayMenuItem.setText(
+                    com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleTimingOverlay.formatCompactShortcutTitle(this, clamped));
+        }
+    }
+
+    private void showLiveSubtitleTimingOverlay() {
+        if (isFinishing() || isDestroyed() || !(mRootView instanceof ViewGroup rootGroup)) return;
+        if (mPlayerController != null) {
+            if (mPlayerController.isTVMenuDisplayed()) mPlayerController.showTVMenu(false);
+            mPlayerController.hide();
+        }
+        if (mSubtitleTimingOverlay == null) {
+            mSubtitleTimingOverlay = new com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleTimingOverlay(this, rootGroup);
+        }
+        mSubtitleTimingOverlay.show(getCurrentSubtitleDelayMs(),
+                new com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleTimingOverlay.Listener() {
+                    @Override
+                    public void onDelayChanged(long newDelayMs) {
+                        applyLiveSubtitleDelayMs(newDelayMs, false);
+                    }
+
+                    @Override
+                    public void onDismissed(long finalDelayMs) {
+                        applyLiveSubtitleDelayMs(finalDelayMs, true);
+                        if (mPlayerControllerPlaceholder != null) mPlayerControllerPlaceholder.requestFocus();
+                    }
+                });
+    }
+
+    private void selectNativeTrackFromUi(int trackIndex, String toastLabel, boolean closeMenu) {
+        if (mPlayer == null || mVideoInfo == null) return;
+        VideoMetadata meta = mPlayer.getVideoMetadata();
+        int nbTrack = meta != null ? meta.getSubtitleTrackNb() : 0;
+        if (trackIndex < 0 || trackIndex >= nbTrack) return;
+        if (mCastPrimarySubtitle != null) mCastPrimarySubtitle.clear();
+        if (PlayerService.sPlayerService != null) PlayerService.sPlayerService.rememberManualSubtitleChoice();
+        int pos = trackIndex + 1;
+        int playerPosition = positionToPlayerSubtitleTrack(pos, nbTrack);
+        if (mPlayer.setSubtitleTrack(playerPosition)) {
+            mVideoInfo.subtitleTrack = positionToSubtitleTrack(pos, nbTrack);
+            clearConflictingSecondarySubtitle(meta, trackIndex);
+            if (mSubtitleManager != null) mSubtitleManager.clear();
+            if (mSubtitleInfoController != null) mSubtitleInfoController.setTrack(pos);
+            SubtitleTrack track = meta.getSubtitleTrack(trackIndex);
+            if (track != null) {
+                String language = track.isExternal
+                        ? getSubLanguageFromSubPathAndVideoPath(getApplicationContext(), track.path, mUri != null ? mUri.toString() : "")
+                        : ISO639codes.getLanguageNameForLetterCode(track.language);
+                mVideoInfo.subtitleLanguage = extractLanguageCode(language).toLowerCase();
+            }
+            disableSubtitleDelayTVMenuItem(false);
+            disableSubtitleSettingsMenuItem(isCurrentSubtrackGfx());
+            setSubtitleVpos("selectNativeTrackFromUi");
+            if (mIndexHelper != null) mIndexHelper.writeVideoInfo(mVideoInfo, mNetworkBookmarksEnabled);
+            refreshSubtitleTVMenu();
+            if (toastLabel != null && !toastLabel.isBlank() && mPlayerController != null) {
+                mPlayerController.updateToast(getResources().getText(R.string.player_subtitle_track_toast) + " " + toastLabel);
+            }
+            rearmHudAutoHideAfterSubtitle(closeMenu);
+        }
+    }
+
+    private void applySubtitleMenuItemDir(TVMenuItem item, boolean ar) {
+        if (item == null) return;
+        item.setLayoutDirection(ar ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+    }
+
+    private String resolveActiveSecondaryDisplayName() {
+        if (mSecondarySubtitle == null || !mSecondarySubtitle.hasCues()) return "";
+        String meta = mSecondarySubtitle.getTrackLabel();
+        if (meta != null && !meta.isBlank()) return meta;
+        return com.archos.mediacenter.video.leanback.cinema.CinemaLanguagePreferences.localizedSubtitleLabel(
+                this, com.archos.mediacenter.video.leanback.cinema.CinemaLanguagePreferences.secondarySubtitleLanguage(this));
+    }
+
     private void refreshSubtitleTVMenu() {
         if (mSubtitleTVMenu != null) {
             mSubtitleTVMenu.clean();
+            mSubtitleDelayMenuItem = null;
+            mSubtitleSettingsMenuItem = null;
+            mSubtitleMenuTrackPositions.clear();
 
             if (log.isDebugEnabled()) log.debug("refreshSubtitleTVMenu: mSubtitleInfoController.getTrackCount()={}", mSubtitleInfoController.getTrackCount());
 
             mPlayerController.getTVMenuAdapter().setCardViewVisibility(View.VISIBLE, mSubtitleTVCardView);
-            boolean hasEmbeddedSubs = false;
-            String activeEmbeddedSubName = null;
+            boolean ar = com.archos.mediacenter.video.leanback.cinema.CinemaUi.arabic(this);
 
-            if(mSubtitleInfoController.getTrackCount()>0) {
-                // Top list: "None" + external subtitles only. Embedded tracks move to the
-                // "On Video Sub" popup at the bottom so the settings stay close.
-                mSubtitleMenuTrackPositions.clear();
-                for (int i = 0; i < mSubtitleInfoController.getTrackCount(); i++) {
-                    boolean embedded = i > 0 && !mSubtitleInfoController.isExternal(i);
-                    if (embedded) {
-                        hasEmbeddedSubs = true;
-                        if (mSubtitleInfoController.getTrack() == i) {
-                            activeEmbeddedSubName = mSubtitleInfoController.getTrackNameAt(i).toString();
-                        }
-                        continue;
+            // 1. Top Shortcut: Compact Subtitle Timing -> Live Timing Overlay Bar (video & subtitles stay visible)
+            mSubtitleDelayMenuItem = mSubtitleTVMenu.createAndAddTVMenuItem(
+                    com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleTimingOverlay.formatCompactShortcutTitle(this, getCurrentSubtitleDelayMs()),
+                    false, false);
+            applySubtitleMenuItemDir(mSubtitleDelayMenuItem, ar);
+            mSubtitleDelayMenuItem.setOnClickListener(v -> showLiveSubtitleTimingOverlay());
+            mSubtitleTVMenu.createAndAddSeparator();
+
+            // 2. Subtitle Tracks: None + Deduplicated External directly visible + Embedded collapsed into ONE concise button
+            VideoMetadata meta = mPlayer != null ? mPlayer.getVideoMetadata() : null;
+            int nbTrack = meta != null ? meta.getSubtitleTrackNb() : 0;
+            String videoPath = (meta != null && meta.getFile() != null) ? meta.getFile().getPath()
+                    : (mUri != null ? mUri.toString() : "");
+            boolean hasCastPrimary = mCastPrimarySubtitle != null && mCastPrimarySubtitle.hasCues();
+            boolean hasSecondary = mSecondarySubtitle != null && mSecondarySubtitle.hasCues();
+
+            if (nbTrack > 0 || hasCastPrimary || hasSecondary) {
+                boolean isNoneSelected = !hasCastPrimary
+                        && (mVideoInfo == null || nbTrack == 0 || mVideoInfo.subtitleTrack < 0 || mVideoInfo.subtitleTrack >= nbTrack);
+                TVMenuItem noneItem = mSubtitleTVMenu.createAndAddTVMenuItem(getText(R.string.s_none).toString(), true, isNoneSelected);
+                applySubtitleMenuItemDir(noneItem, ar);
+                noneItem.setOnClickListener(v -> {
+                    clearCastSubtitlesFromRemote();
+                    if (mSubtitleInfoController != null) mSubtitleInfoController.setTrack(0);
+                    if (mVideoInfo != null) {
+                        mVideoInfo.subtitleTrack = mVideoInfo.nbSubtitles;
+                        mVideoInfo.subtitleLanguage = null;
+                        if (mIndexHelper != null) mIndexHelper.writeVideoInfo(mVideoInfo, mNetworkBookmarksEnabled);
                     }
-                    mSubtitleMenuTrackPositions.add(i);
-                    mSubtitleTVMenu.createAndAddTVMenuItem(mSubtitleInfoController.getTrackNameAt(i).toString(), true, mSubtitleInfoController.getTrack() == i);
+                    refreshSubtitleTVMenu();
+                    rearmHudAutoHideAfterSubtitle(true);
+                });
+
+                if (hasCastPrimary) {
+                    String castLabel = com.meedx.providers.UnifiedSubtitleConfig.languageDisplay(
+                            com.meedx.providers.UnifiedSubtitleConfig.primaryLanguage(this), ar)
+                            + " · " + getString(R.string.cinema_sub_loc_from_phone);
+                    TVMenuItem castItem = mSubtitleTVMenu.createAndAddTVMenuItem(castLabel, true, true);
+                    applySubtitleMenuItemDir(castItem, ar);
+                    castItem.setOnClickListener(v -> rearmHudAutoHideAfterSubtitle(true));
+                }
+
+                int activeIdx = mVideoInfo != null ? mVideoInfo.subtitleTrack : -1;
+                java.util.List<com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels.ExternalTrackChoice> extTracks =
+                        com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels.buildDeduplicatedExternalTracks(
+                                mContext, meta, videoPath, activeIdx, hasCastPrimary);
+                for (var ext : extTracks) {
+                    TVMenuItem extItem = mSubtitleTVMenu.createAndAddTVMenuItem(ext.label(), true, ext.selected());
+                    applySubtitleMenuItemDir(extItem, ar);
+                    extItem.setOnClickListener(v -> selectNativeTrackFromUi(ext.trackIndex(), ext.label(), true));
+                }
+
+                int embeddedCount = 0;
+                String activeEmbeddedBaseLang = null;
+                for (int i = 0; i < nbTrack; i++) {
+                    SubtitleTrack track = meta.getSubtitleTrack(i);
+                    if (track == null || track.isExternal) continue;
+                    embeddedCount++;
+                    boolean isActive = !hasCastPrimary && activeIdx == i;
+                    if (isActive) {
+                        activeEmbeddedBaseLang = com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels
+                                .formatBaseLanguageEndonym(mContext, track);
+                    }
+                }
+
+                if (embeddedCount > 0) {
+                    String groupLabel = com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleHubDialog
+                            .formatEmbeddedGroupLabel(this, embeddedCount, activeEmbeddedBaseLang)
+                            + (activeEmbeddedBaseLang != null ? " ✓ ▾" : " ▾");
+                    TVMenuItem embeddedItem = mSubtitleTVMenu.createAndAddTVMenuItem(groupLabel, false, false);
+                    applySubtitleMenuItemDir(embeddedItem, ar);
+                    embeddedItem.setOnClickListener(v -> showEmbeddedSubtitleTracks());
+                }
+
+                if (hasSecondary) {
+                    String secLabel = getString(R.string.cinema_sub_secondary_active_title,
+                            resolveActiveSecondaryDisplayName()) + " ✕";
+                    TVMenuItem secItem = mSubtitleTVMenu.createAndAddTVMenuItem(secLabel, false, false);
+                    applySubtitleMenuItemDir(secItem, ar);
+                    secItem.setOnClickListener(v -> {
+                        if (mSecondarySubtitle != null) mSecondarySubtitle.clear();
+                        refreshSubtitleTVMenu();
+                        rearmHudAutoHideAfterSubtitle(false);
+                    });
                 }
                 mSubtitleTVMenu.createAndAddSeparator();
-                mSubtitleDelayMenuItem = mSubtitleTVMenu.createAndAddTVMenuItem(getText(R.string.player_pref_subtitle_delay_title).toString(), false, false);
-                mSubtitleDelayMenuItem.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        // TODO Auto-generated method stub
-                        createTVSubtitleDialog();
-                    }
-                });
-
-                if (log.isDebugEnabled()) log.debug("refreshSubtitleTVMenu: isCurrentSubtrackNone={}", isCurrentSubtrackNone());
-                disableSubtitleDelayTVMenuItem(isCurrentSubtrackNone());
-
-                mSubtitleSettingsMenuItem = mSubtitleTVMenu.createAndAddTVMenuItem(getText(R.string.menu_player_settings).toString(), false, false);
-                mSubtitleSettingsMenuItem.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        createTVSubtitleSettingsDialog();
-                    }
-                });
-
-                if (log.isDebugEnabled()) log.debug("refreshSubtitleTVMenu: isCurrentSubtrackGfx={}", isCurrentSubtrackGfx());
-                disableSubtitleSettingsMenuItem(isCurrentSubtrackGfx() || isCurrentSubtrackNone());
             }
-            mSubtitleTVMenu.createAndAddTVMenuItem(getText(R.string.get_subtitles_online).toString(), false, false).setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    downloadSubtitles();
-                }
-            });
 
-            mSubtitleTVMenu.createAndAddTVMenuItem("Subsource · " +
-                    com.archos.mediacenter.video.leanback.cinema.CinemaUi.label(this, "الترجمات", "Subtitles"), false, false)
-                    .setOnClickListener(v -> {
-                        Intent search = new Intent(this, com.archos.mediacenter.video.leanback.cinema.SubsourceSearchActivity.class);
-                        search.putExtra("video_id", mVideoId);
-                        search.setData(VideoUtils.getFileUriFromMediaLibPath(mUri.toString()));
-                        startActivityForResult(search, 913);
-                    });
+            TVMenuItem hubItem = mSubtitleTVMenu.createAndAddTVMenuItem(
+                    getString(R.string.cinema_sub_hub_short), false, false);
+            applySubtitleMenuItemDir(hubItem, ar);
+            hubItem.setOnClickListener(v -> openUnifiedSubtitleHub());
 
-            Uri uri = VideoUtils.getFileUriFromMediaLibPath(mUri.toString());
+            TVMenuItem searchItem = mSubtitleTVMenu.createAndAddTVMenuItem(
+                    com.archos.mediacenter.video.leanback.cinema.CinemaUi.label(
+                            this, "بحث ذكي عن الترجمة", "Smart Multi-Source Subtitle Search"),
+                    false, false);
+            applySubtitleMenuItemDir(searchItem, ar);
+            searchItem.setOnClickListener(v -> launchUnifiedSubtitleSearch());
 
+            Uri uri = mUri != null ? VideoUtils.getFileUriFromMediaLibPath(mUri.toString()) : null;
             if (uri != null && uri.getScheme() != null && (uri.getScheme().equals("file")
                     || uri.getScheme().startsWith("smb") || uri.getScheme().equals("sshj")
                     || uri.getScheme().equals("sftp") || uri.getScheme().equals("http")
                     || uri.getScheme().equals("https"))) {
-                mSubtitleTVMenu.createAndAddTVMenuItem(getText(R.string.get_subtitles_on_drive).toString(), false, false).setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        chooseSubtitles();
-                    }
-                });
-            }
-
-            if(mSecondarySubtitle!=null){
-                mSubtitleTVMenu.createAndAddTVMenuItem(
-                        com.archos.mediacenter.video.leanback.cinema.CinemaUi.label(this,"الترجمة الثانية","Secondary subtitle"),false,false)
-                        .setOnClickListener(v->showSecondarySubtitleMenu(uri));
-            }
-
-            // "On Video Sub": embedded tracks as a popup, placed last
-            if (hasEmbeddedSubs) {
-                String label = getText(R.string.on_move_sub).toString();
-                if (activeEmbeddedSubName != null) label += " · " + activeEmbeddedSubName;
-                mSubtitleTVMenu.createAndAddTVMenuItem(label, false, false)
-                        .setOnClickListener(v -> showEmbeddedSubtitleTracks());
+                TVMenuItem storageItem = mSubtitleTVMenu.createAndAddTVMenuItem(
+                        getString(R.string.cinema_sub_pick_movie_source),
+                        false, false);
+                applySubtitleMenuItemDir(storageItem, ar);
+                storageItem.setOnClickListener(v -> chooseSubtitles());
             }
         }
+    }
+
+    private void launchUnifiedSubtitleSearch() {
+        Intent search = new Intent(this, com.archos.mediacenter.video.leanback.cinema.SubsourceSearchActivity.class);
+        search.putExtra("video_id", mVideoId);
+        if (mTitle != null && !mTitle.isBlank()) search.putExtra("title", mTitle);
+        else if (mMovieOrShowName != null && !mMovieOrShowName.isBlank()) search.putExtra("title", mMovieOrShowName);
+        if (mUri != null) search.setData(VideoUtils.getFileUriFromMediaLibPath(mUri.toString()));
+        search.putExtra("both_providers", true);
+        startActivityForResult(search, 913);
+    }
+
+    private boolean selectPreferredTrackNow(boolean sourceOnly) {
+        if (mPlayer == null || mPlayer.getVideoMetadata() == null) return false;
+        VideoMetadata meta = mPlayer.getVideoMetadata();
+        int nb = meta.getSubtitleTrackNb();
+        String videoPath = meta.getFile() != null ? meta.getFile().getPath() : (mUri != null ? mUri.toString() : "");
+        String prefLang = com.meedx.providers.UnifiedSubtitleConfig.primaryLanguage(this);
+        int prio = sourceOnly
+                ? com.meedx.providers.UnifiedSubtitleConfig.AUTO_PRIORITY_SOURCE_FIRST
+                : com.meedx.providers.UnifiedSubtitleConfig.autoSelectPriority(this);
+        boolean[] passes = sourceOnly
+                ? new boolean[]{true}
+                : (prio == com.meedx.providers.UnifiedSubtitleConfig.AUTO_PRIORITY_EMBEDDED_FIRST
+                ? new boolean[]{false, true}
+                : new boolean[]{true, false});
+        for (boolean wantExt : passes) {
+            for (int i = 0; i < nb; i++) {
+                VideoMetadata.SubtitleTrack t = meta.getSubtitleTrack(i);
+                if (t == null || t.isExternal != wantExt) continue;
+                String canon = t.isExternal
+                        ? com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels.resolveExternalLanguageCanonical(mContext, t, videoPath)
+                        : com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels.resolveEmbeddedLanguageCanonical(t.language, t.name);
+                if (prefLang.equals(canon)) {
+                    String lbl = t.isExternal
+                            ? com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels.formatExternalCompactLabel(mContext, t, videoPath)
+                            : com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels.formatEmbeddedLabel(mContext, t);
+                    selectNativeTrackFromUi(i, lbl, false);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void triggerInstantOnlineSubtitleFetch() {
+        Uri fileUri = mUri != null ? VideoUtils.getFileUriFromMediaLibPath(mUri.toString()) : null;
+        String titleNow = (mTitle != null && !mTitle.isBlank()) ? mTitle
+                : (mMovieOrShowName != null ? mMovieOrShowName : "");
+        com.archos.mediacenter.video.leanback.cinema.CinemaAutoSubtitleFetcher.fetchNow(
+                this, fileUri, titleNow, null, null, -1, false, -1, -1,
+                savedUri -> {
+                    if (PlayerService.sPlayerService != null) {
+                        mSubtitleUpdatePendingAutoHide = true;
+                        PlayerService.sPlayerService.reloadDownloadedSubtitle(savedUri);
+                    }
+                },
+                this::launchUnifiedSubtitleSearch);
+    }
+
+    private void openUnifiedSubtitleHub() {
+        if (mPlayerController != null && mPlayerController.isTVMenuDisplayed()) {
+            mPlayerController.showTVMenu(false);
+        }
+        boolean ar = com.archos.mediacenter.video.leanback.cinema.CinemaUi.arabic(this);
+        long delayMs = getCurrentSubtitleDelayMs();
+        var hub = com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleHubDialog.create(this)
+                .title(getString(R.string.cinema_sub_hub_short))
+                .liveTimingShortcut(delayMs, this::showLiveSubtitleTimingOverlay);
+
+        boolean hasCastPrimary = mCastPrimarySubtitle != null && mCastPrimarySubtitle.hasCues();
+        if (hasCastPrimary) {
+            String castLabel = com.meedx.providers.UnifiedSubtitleConfig.languageDisplay(
+                    com.meedx.providers.UnifiedSubtitleConfig.primaryLanguage(this), ar)
+                    + " · " + getString(R.string.cinema_sub_loc_from_phone);
+            hub.addTrack(castLabel, true, () -> rearmHudAutoHideAfterSubtitle(false));
+        }
+
+        boolean anyTrackActive = hasCastPrimary;
+        if (mPlayer != null && mPlayer.getVideoMetadata() != null) {
+            VideoMetadata meta = mPlayer.getVideoMetadata();
+            int nb = meta.getSubtitleTrackNb();
+            String videoPath = meta.getFile() != null ? meta.getFile().getPath() : (mUri != null ? mUri.toString() : "");
+            int activeIdx = mVideoInfo != null ? mVideoInfo.subtitleTrack : -1;
+
+            java.util.List<com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels.ExternalTrackChoice> extTracks =
+                    com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels.buildDeduplicatedExternalTracks(
+                            mContext, meta, videoPath, activeIdx, hasCastPrimary);
+            for (var ext : extTracks) {
+                if (ext.selected()) anyTrackActive = true;
+                hub.addTrack(ext.label(), ext.selected(), () -> selectNativeTrackFromUi(ext.trackIndex(), ext.label(), false));
+            }
+
+            for (int i = 0; i < nb; i++) {
+                VideoMetadata.SubtitleTrack track = meta.getSubtitleTrack(i);
+                if (track == null || track.isExternal) continue;
+                final int idx = i;
+                boolean active = !hasCastPrimary && activeIdx == i;
+                if (active) anyTrackActive = true;
+                final String embLbl = com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels
+                        .formatEmbeddedLabel(mContext, track);
+                String langCanon = com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels
+                        .resolveEmbeddedLanguageCanonical(track.language, track.name);
+                hub.addEmbeddedTrack(embLbl, langCanon, active, () -> selectNativeTrackFromUi(idx, embLbl, false));
+            }
+        }
+
+        Uri fileUri = mUri != null ? VideoUtils.getFileUriFromMediaLibPath(mUri.toString()) : null;
+        boolean hasSec = mSecondarySubtitle != null && mSecondarySubtitle.hasCues();
+        String titleNow = (mTitle != null && !mTitle.isBlank()) ? mTitle
+                : (mMovieOrShowName != null ? mMovieOrShowName : "Video");
+
+        if (hasSec) {
+            hub.activeSecondaryTrack(resolveActiveSecondaryDisplayName(), () -> {
+                if (mSecondarySubtitle != null) mSecondarySubtitle.clear();
+                refreshSubtitleTVMenu();
+            });
+        }
+
+        int curSize = mSubtitleManager != null ? mSubtitleManager.getSize()
+                : com.meedx.providers.UnifiedSubtitleConfig.textSize(this);
+        int curColor = mPreferences != null
+                ? mPreferences.getInt(KEY_SUBTITLE_COLOR, mSubtitleColorDefault)
+                : com.meedx.providers.UnifiedSubtitleConfig.textColor(this);
+        boolean curBg = mPreferences != null
+                ? mPreferences.getBoolean(KEY_SUBTITLE_OUTLINE, mSubtitleOutlineDefault)
+                : com.meedx.providers.UnifiedSubtitleConfig.opaqueBg(this);
+        boolean curVisible = mSubtitleManager == null || mSubtitleManager.isPhoneVisible();
+
+        int activeMode = com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleHubDialog.hubModeFromCentral(this);
+        boolean noMatchYet = !anyTrackActive
+                && activeMode != com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleHubDialog.MODE_OFF;
+
+        hub.subtitleMode(activeMode, noMatchYet,
+                        () -> {
+                            com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleHubDialog.saveCentralMode(
+                                    this, com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_AUTO);
+                            if (mUri != null) com.archos.mediacenter.video.leanback.cinema.CinemaTrackChoices.embedded(this, mUri, -2);
+                            int prio = com.meedx.providers.UnifiedSubtitleConfig.autoSelectPriority(this);
+                            if (prio == com.meedx.providers.UnifiedSubtitleConfig.AUTO_PRIORITY_ONLINE_DIRECT) {
+                                triggerInstantOnlineSubtitleFetch();
+                            } else if (!selectPreferredTrackNow(false)) {
+                                if (com.meedx.providers.UnifiedSubtitleConfig.autoSubtitlesEnabled(this)) {
+                                    triggerInstantOnlineSubtitleFetch();
+                                } else {
+                                    android.widget.Toast.makeText(this, R.string.cinema_sub_auto_fetch_none, android.widget.Toast.LENGTH_SHORT).show();
+                                }
+                            }
+                        },
+                        () -> {
+                            com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleHubDialog.saveCentralMode(
+                                    this, com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_MOVIE_SOURCE);
+                            if (mUri != null) com.archos.mediacenter.video.leanback.cinema.CinemaTrackChoices.embedded(this, mUri, -3);
+                            if (!selectPreferredTrackNow(true)) {
+                                chooseSubtitles();
+                            }
+                        },
+                        this::triggerInstantOnlineSubtitleFetch,
+                        () -> {
+                            com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleHubDialog.saveCentralMode(
+                                    this, com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_OFF);
+                            if (mUri != null) com.archos.mediacenter.video.leanback.cinema.CinemaTrackChoices.embedded(this, mUri, -1);
+                            clearCastSubtitlesFromRemote();
+                            if (mSubtitleInfoController != null) mSubtitleInfoController.setTrack(0);
+                            if (mVideoInfo != null) {
+                                mVideoInfo.subtitleTrack = mVideoInfo.nbSubtitles;
+                                mVideoInfo.subtitleLanguage = null;
+                                if (mIndexHelper != null) mIndexHelper.writeVideoInfo(mVideoInfo, mNetworkBookmarksEnabled);
+                            }
+                            refreshSubtitleTVMenu();
+                        })
+                .onSearchOnline(this::launchUnifiedSubtitleSearch)
+                .onPickMovieSource(fileUri != null ? this::chooseSubtitles : null)
+                .onPickFromPhone(() -> {
+                    boolean sent = com.archos.mediacenter.video.leanback.cinema.CinemaLinkServer.requestPhoneSubtitle(titleNow);
+                    android.widget.Toast.makeText(this, sent
+                            ? com.archos.mediacenter.video.leanback.cinema.CinemaUi.label(this,
+                                    "افتح هاتفك لاختيار ملف الترجمة (.srt/.vtt/.ass)",
+                                    "Check your Phone to select a subtitle file")
+                            : com.archos.mediacenter.video.leanback.cinema.CinemaUi.label(this,
+                                    "الهاتف غير متصل الآن", "Phone controller not connected"),
+                            android.widget.Toast.LENGTH_LONG).show();
+                })
+                .dualControls(mSecondarySubtitle != null, hasSec,
+                        () -> {
+                            boolean nowOn = com.meedx.providers.UnifiedSubtitleConfig.dualSubtitlesEnabled(this);
+                            if (mSecondarySubtitle != null) mSecondarySubtitle.clear();
+                            if (nowOn && mPlayer != null && mPlayer.getVideoMetadata() != null) {
+                                loadPreferredDualSubtitle(mPlayer.getVideoMetadata());
+                            }
+                            refreshSubtitleTVMenu();
+                        },
+                        () -> {
+                            int pos = com.meedx.providers.UnifiedSubtitleConfig.dualSubPosition(this);
+                            applyPhoneSubtitleStyle("dual_position", pos);
+                        },
+                        () -> startActivityForResult(
+                                com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity
+                                        .subtitlePickerIntent(this, fileUri, true),
+                                SECONDARY_SUBTITLE_REQUEST),
+                        () -> {
+                            if (mSecondarySubtitle != null) mSecondarySubtitle.clear();
+                            refreshSubtitleTVMenu();
+                        })
+                .liveAppearance(delayMs, curSize, curColor, curBg, curVisible, (action, value) -> {
+                    applyPhoneSubtitleStyle(action, value);
+                    persistNativeSubtitleStyleToUnified();
+                })
+                .show();
+    }
+
+    private void persistNativeSubtitleStyleToUnified() {
+        if (mSubtitleManager == null) return;
+        int sz = mSubtitleManager.getSize();
+        int vp = mSubtitleManager.getVerticalPosition();
+        int col = mPreferences != null ? mPreferences.getInt(KEY_SUBTITLE_COLOR, mSubtitleColorDefault) : android.graphics.Color.WHITE;
+        boolean bg = mPreferences != null && mPreferences.getBoolean(KEY_SUBTITLE_OUTLINE, mSubtitleOutlineDefault);
+        long delay = mVideoInfo != null ? mVideoInfo.subtitleDelay : 0L;
+        com.meedx.providers.UnifiedSubtitleConfig.saveAppearance(this, sz, vp, col, bg, delay);
+        com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleSyncBridge.onTvSubtitleConfigChanged(this);
     }
 
     private void showSecondarySubtitleMenu(Uri video){
@@ -2161,7 +2598,7 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                                         com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.FILTER_SUBTITLES_ONLY)
                                 .putExtra("secondary_subtitle",true),SECONDARY_SUBTITLE_REQUEST);
                         case 1 -> mSecondarySubtitle.showAppearance();
-                        case 2 -> mSecondarySubtitle.clear();
+                        case 2 -> { mSecondarySubtitle.clear(); refreshSubtitleTVMenu(); }
                     }
                 }).show();
     }
@@ -2169,11 +2606,14 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
     private void refreshAudioTracksTVMenu() {
         if (mAudioTracksTVMenu != null) {
             mAudioTracksTVMenu.clean();
+            boolean ar = com.archos.mediacenter.video.leanback.cinema.CinemaUi.arabic(this);
             if (mAudioInfoController.getTrackCount() > 0) {
                 mPlayerController.getTVMenuAdapter().setCardViewVisibility(View.VISIBLE, mAudioTracksTVCardView);
 
                 for (int i = 0; i < mAudioInfoController.getTrackCount(); i++) {
-                    mAudioTracksTVMenu.createAndAddTVMenuItem(mAudioInfoController.getTrackNameAt(i).toString(), true, mAudioInfoController.getTrack() == i);
+                    TVMenuItem audioItem = mAudioTracksTVMenu.createAndAddTVMenuItem(
+                            mAudioInfoController.getTrackNameAt(i).toString(), true, mAudioInfoController.getTrack() == i);
+                    applySubtitleMenuItemDir(audioItem, ar);
                 }
 
                 mAudioTracksTVMenu.createAndAddSeparator();
@@ -2184,22 +2624,22 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                 boolean isPassthroughActive = passthroughMode == 1 || passthroughMode == 2;
 
                 final TVMenuItem tvmi = mAudioTracksTVMenu.createAndAddTVSwitchableMenuItem(getResources().getString(R.string.pref_audio_filt_title), PlayerService.sPlayerService.mAudioFilt > 0);
+                applySubtitleMenuItemDir(tvmi, ar);
                 tvmi.setDisabled(isPassthroughActive);
                 tvmi.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        // TODO Auto-generated method stub
                         PlayerService.sPlayerService.setAudioFilt(PlayerService.sPlayerService.mAudioFilt > 0 ? 0 : 3);
                         tvmi.setChecked(PlayerService.sPlayerService.mAudioFilt > 0);
                     }
                 });
 
                 final TVMenuItem tvmi2 = mAudioTracksTVMenu.createAndAddTVSwitchableMenuItem(getResources().getString(R.string.pref_audio_filt_night_mode), PlayerService.sPlayerService.mNightModeOn);
+                applySubtitleMenuItemDir(tvmi2, ar);
                 tvmi2.setDisabled(isPassthroughActive);
                 tvmi2.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        // TODO Auto-generated method stub
                         PlayerService.sPlayerService.setNightMode(!PlayerService.sPlayerService.mNightModeOn);
                         tvmi2.setChecked(PlayerService.sPlayerService.mNightModeOn);
                     }
@@ -2209,6 +2649,7 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
 
                 int currentAudioDelay = PlayerService.sPlayerService.getAudioDelay();
                 mAudioDelayMenuItem = mAudioTracksTVMenu.createAndAddTVMenuItem(formatAudioDelayLabel(currentAudioDelay), false, false);
+                applySubtitleMenuItemDir(mAudioDelayMenuItem, ar);
                 mAudioDelayMenuItem.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -2216,7 +2657,9 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                     }
                 });
 
-                final TVMenuItem tvmiDelayMinus = mAudioTracksTVMenu.createAndAddTVMenuItem("-50 ms", false, false);
+                final TVMenuItem tvmiDelayMinus = mAudioTracksTVMenu.createAndAddTVMenuItem(
+                        com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleTimingOverlay.formatAudioDelayMs(this, -50), false, false);
+                applySubtitleMenuItemDir(tvmiDelayMinus, ar);
                 tvmiDelayMinus.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -2224,7 +2667,9 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                     }
                 });
 
-                final TVMenuItem tvmiDelayPlus = mAudioTracksTVMenu.createAndAddTVMenuItem("+50 ms", false, false);
+                final TVMenuItem tvmiDelayPlus = mAudioTracksTVMenu.createAndAddTVMenuItem(
+                        com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleTimingOverlay.formatAudioDelayMs(this, 50), false, false);
+                applySubtitleMenuItemDir(tvmiDelayPlus, ar);
                 tvmiDelayPlus.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -2232,7 +2677,9 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                     }
                 });
 
-                final TVMenuItem tvmiDelayReset = mAudioTracksTVMenu.createAndAddTVMenuItem("0 ms", false, false);
+                final TVMenuItem tvmiDelayReset = mAudioTracksTVMenu.createAndAddTVMenuItem(
+                        com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleTimingOverlay.formatAudioDelayMs(this, 0), false, false);
+                applySubtitleMenuItemDir(tvmiDelayReset, ar);
                 tvmiDelayReset.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -2243,6 +2690,7 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                 // disable playback speed if passthrough is enabled and Android M (API23+)
                 if(mPreferences.getBoolean(KEY_PLAYBACK_SPEED,false) && (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) && Integer.parseInt(mPreferences.getString("force_audio_passthrough_multiple","-1"))<=0) {
                     final TVMenuItem tvmi4 = mAudioTracksTVMenu.createAndAddTVMenuItem(getText(R.string.player_pref_audio_speed_title).toString(), false, false);
+                    applySubtitleMenuItemDir(tvmi4, ar);
                     tvmi4.setOnClickListener(new View.OnClickListener() {
                         @Override
                         public void onClick(View v) {
@@ -2250,6 +2698,16 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                         }
                     });
                 }
+
+                mAudioTracksTVMenu.createAndAddSeparator();
+                final TVMenuItem prefAudioItem = mAudioTracksTVMenu.createAndAddTVMenuItem(
+                        getString(R.string.cinema_pref_audio_lang) + " · "
+                                + com.archos.mediacenter.video.leanback.cinema.CinemaPreferredAudio.label(this),
+                        false, false);
+                applySubtitleMenuItemDir(prefAudioItem, ar);
+                prefAudioItem.setOnClickListener(v ->
+                        com.archos.mediacenter.video.leanback.cinema.CinemaPreferredAudio.choose(
+                                this, this::refreshAudioTracksTVMenu));
             } else {
                 mPlayerController.getTVMenuAdapter().setCardViewVisibility(View.GONE, mAudioTracksTVCardView);
             }
@@ -3012,15 +3470,8 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
         }
         switch(id) {
             case DIALOG_SUBTITLE_DELAY:
-                SubtitleTrack track = mPlayer.getVideoMetadata().getSubtitleTrack(mVideoInfo.subtitleTrack);
-                if (track == null)
-                    return;
-                boolean hasRatio = track.isExternal;
-                mDialog = new SubtitleDelayPickerDialog(this, this, mVideoInfo.subtitleDelay, mVideoInfo.subtitleRatio, hasRatio);
-                mPlayerController.hide();
-                SubtitleDelayPickerDialog subtitleDelayPickerDialog = (SubtitleDelayPickerDialog) mDialog;
-                subtitleDelayPickerDialog.updateDelay(mVideoInfo.subtitleDelay);
-                break;
+                showLiveSubtitleTimingOverlay();
+                return;
             case DIALOG_SUBTITLE_SETTINGS:
                 mDialog = new SubtitleSettingsDialog(this, mSubtitleManager);
                 mPlayerController.hide();
@@ -3745,6 +4196,11 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
             mSubtitleManager.clear();
             mPlayer.setSubtitleDelay(mVideoInfo.subtitleDelay);
             mPlayer.setSubtitleRatio(mVideoInfo.subtitleRatio);
+            if (mSubtitleDelayMenuItem != null) {
+                mSubtitleDelayMenuItem.setText(
+                        com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleTimingOverlay.formatCompactShortcutTitle(
+                                this, mVideoInfo.subtitleDelay));
+            }
             // Save the subtitle delay and ratio to the database for persistence across resume
             mIndexHelper.writeVideoInfo(mVideoInfo, mNetworkBookmarksEnabled);
             if (log.isDebugEnabled()) log.debug("onDelayChange: saved subtitleDelay={} subtitleRatio={} to database", mVideoInfo.subtitleDelay, mVideoInfo.subtitleRatio);
@@ -3752,8 +4208,8 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
     }
 
     private String formatAudioDelayLabel(int delayMs) {
-        String sign = delayMs > 0 ? "+" : "";
-        return getString(R.string.player_pref_audio_delay_title) + ": " + sign + delayMs + " ms";
+        return getString(R.string.cinema_audio_delay_label,
+                com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleTimingOverlay.formatAudioDelayMs(this, delayMs));
     }
 
     private void adjustQuickAudioDelay(int deltaMs) {
@@ -3943,10 +4399,12 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
     }
 
     public void setSubtitleDelay(int delay) {
-        if (mSubtitleInfoController.getTrackCount() > 1) {
-            mVideoInfo.subtitleDelay += delay;
-            mPlayer.setSubtitleDelay(mVideoInfo.subtitleDelay);
-            mPlayerController.updateToast("Subtitle delay: " + mVideoInfo.subtitleDelay + "ms");
+        if (mSubtitleInfoController.getTrackCount() > 1 || (mCastPrimarySubtitle != null && mCastPrimarySubtitle.hasCues())) {
+            applyLiveSubtitleDelayMs(getCurrentSubtitleDelayMs() + delay, true);
+            if (mPlayerController != null) {
+                mPlayerController.updateToast(getString(R.string.cinema_sub_timing_saved_toast,
+                        com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleTimingOverlay.formatDelaySeconds(this, getCurrentSubtitleDelayMs())));
+            }
         }
     }
 
@@ -3987,9 +4445,6 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
     private void disableSubtitleDelayTVMenuItem(boolean disable) {
         if (log.isDebugEnabled()) log.debug("disableSubtitleDelayTVMenuItem: {}", disable);
         mSubtitleInfoController.enableSettings(SUBTITLE_MENU_DELAY, !disable, disable);
-        if (mSubtitleDelayMenuItem != null) {
-            mSubtitleDelayMenuItem.setDisabled(disable);
-        }
     }
 
     private void disableSubtitleSettingsMenuItem(boolean disable) {
@@ -4032,6 +4487,7 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                 if (ret) {
                     mSubtitleManager.clear();
                     mVideoInfo.subtitleTrack = positionToSubtitleTrack(position, mVideoInfo.nbSubtitles);
+                    clearConflictingSecondarySubtitle(mPlayer.getVideoMetadata(), mVideoInfo.subtitleTrack);
                     if (log.isDebugEnabled()) log.debug("onTrackSelected: -> mVideoInfo.subtitleTrack={}", mVideoInfo.subtitleTrack);
                     // Extract and save the subtitle language for track validation on re-enumeration
                     if (mVideoInfo.subtitleTrack >= 0) {
@@ -4100,9 +4556,8 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
     }
 
     /**
-     * Shows a dialog listing the embedded (internal) subtitle tracks found inside the current video file.
-     * The user can pick one to play immediately. This is the "ON MOVE SUB" option placed at the bottom
-     * of the subtitle tracks menu.
+     * Opens the clean, sorted Embedded Video Subtitles dropdown dialog containing ONLY
+     * internal subtitle tracks embedded in the current video file.
      */
     private void showEmbeddedSubtitleTracks() {
         if (mPlayer == null || mPlayer.getVideoMetadata() == null) {
@@ -4110,70 +4565,76 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
         }
         VideoMetadata vMetadata = mPlayer.getVideoMetadata();
         int nbTrack = vMetadata.getSubtitleTrackNb();
+        boolean hasCastPrimary = mCastPrimarySubtitle != null && mCastPrimarySubtitle.hasCues();
 
-        // Collect embedded (internal) subtitle tracks only
-        java.util.ArrayList<Integer> embeddedIndices = new java.util.ArrayList<>();
-        java.util.ArrayList<String> embeddedNames = new java.util.ArrayList<>();
+        java.util.ArrayList<com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleHubDialog.EmbeddedTrackChoice> embedded =
+                new java.util.ArrayList<>();
         for (int i = 0; i < nbTrack; ++i) {
             VideoMetadata.SubtitleTrack track = vMetadata.getSubtitleTrack(i);
             if (track != null && !track.isExternal) {
-                embeddedIndices.add(i);
-                String name = track.name;
-                if (name == null || name.isEmpty()) {
-                    name = ISO639codes.getLanguageNameForLetterCode(track.language);
-                }
-                if (name == null || name.isEmpty()) {
-                    name = getText(R.string.unknown_track_name).toString();
-                }
-                embeddedNames.add(name);
+                final int trackIdx = i;
+                final String cleanName = com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels
+                        .formatEmbeddedLabel(mContext, track);
+                String langCanon = com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels
+                        .resolveEmbeddedLanguageCanonical(track.language, track.name);
+                boolean active = !hasCastPrimary && mVideoInfo != null && mVideoInfo.subtitleTrack == i;
+                embedded.add(new com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleHubDialog.EmbeddedTrackChoice(
+                        cleanName.isBlank() ? getText(R.string.unknown_track_name).toString() : cleanName,
+                        langCanon,
+                        active,
+                        () -> selectNativeTrackFromUi(trackIdx, cleanName, true)));
             }
         }
 
-        if (embeddedIndices.isEmpty()) {
+        if (embedded.isEmpty()) {
             android.widget.Toast.makeText(mContext, R.string.no_embedded_subtitles, android.widget.Toast.LENGTH_SHORT).show();
             return;
         }
 
-        android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(mContext);
-        builder.setTitle(R.string.on_move_sub);
-        builder.setAdapter(com.archos.mediacenter.video.leanback.cinema.CinemaUi.subtitleRows(
-                this, embeddedNames.toArray(new String[0])), (dialog, which) -> {
-            int trackIndex = embeddedIndices.get(which);
-            // positionToPlayerSubtitleTrack: 0 = none, 1..nbTrack = actual tracks -> player index 0..nbTrack-1
-            int playerPosition = positionToPlayerSubtitleTrack(trackIndex + 1, nbTrack);
-            if (mPlayer.setSubtitleTrack(playerPosition)) {
-                mVideoInfo.subtitleTrack = positionToSubtitleTrack(trackIndex + 1, nbTrack);
-                mSubtitleManager.clear();
-                mSubtitleInfoController.setTrack(trackIndex + 1);
-                refreshSubtitleTVMenu();
-                mIndexHelper.writeVideoInfo(mVideoInfo, mNetworkBookmarksEnabled);
-                String trackName = embeddedNames.get(which);
-                mPlayerController.updateToast(getResources().getText(R.string.player_subtitle_track_toast) + " " + trackName);
-                setSubtitleVpos("showEmbeddedSubtitleTracks");
-                rearmHudAutoHideAfterSubtitle(true);
-            }
-        });
-        String dualKey = com.archos.mediacenter.video.leanback.cinema.CinemaUi.DUAL_SUBS_ENABLED;
-        boolean dual = mPreferences.getBoolean(dualKey, false);
-        builder.setNeutralButton(com.archos.mediacenter.video.leanback.cinema.CinemaUi.label(this,
-                dual ? "مزدوجة: مفعّلة ✓" : "تفعيل الترجمة المزدوجة",
-                dual ? "Dual Subs: ON ✓" : "Enable Dual Subs"), (dialog, which) -> {
-            mPreferences.edit().putBoolean(dualKey, !dual).apply();
-            if (dual && mSecondarySubtitle != null) mSecondarySubtitle.clear();
-            else loadPreferredDualSubtitle(vMetadata);
-        });
-        builder.setNegativeButton(android.R.string.cancel, null);
-        com.archos.mediacenter.video.leanback.cinema.CinemaUi.widenSubtitleDialog(builder.show().getWindow());
+        com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleHubDialog.showEmbeddedTracksDialog(
+                this, embedded, null, null);
     }
 
     private void loadPreferredDualSubtitle(VideoMetadata metadata) {
-        if (!mPreferences.getBoolean(com.archos.mediacenter.video.leanback.cinema.CinemaUi.DUAL_SUBS_ENABLED, false)
-                || metadata == null || mVideoInfo == null || mSecondarySubtitle == null
-                || mSecondarySubtitle.hasCues() || mVideoInfo.subtitleTrack < 0) return;
-        for (int index = 0; index < metadata.getSubtitleTrackNb(); index++) {
+        if (mSecondarySubtitle == null) return;
+        if (!com.meedx.providers.UnifiedSubtitleConfig.dualSubtitlesEnabled(this)) {
+            if (mSecondarySubtitle.hasCues()) {
+                mSecondarySubtitle.clear();
+                refreshSubtitleTVMenu();
+            }
+            return;
+        }
+        if (metadata == null || mVideoInfo == null || mSecondarySubtitle.hasCues()) return;
+        int nb = metadata.getSubtitleTrackNb();
+        if (mVideoInfo.subtitleTrack < 0 || mVideoInfo.subtitleTrack >= nb) return;
+
+        String wantedSec = com.meedx.providers.UnifiedSubtitleConfig.secondaryLanguage(this);
+        if (wantedSec == null || wantedSec.isBlank()) return;
+
+        String videoPath = metadata.getFile() != null ? metadata.getFile().getPath()
+                : (mUri != null ? mUri.toString() : "");
+        SubtitleTrack primary = metadata.getSubtitleTrack(mVideoInfo.subtitleTrack);
+        String primaryPath = (primary != null && primary.path != null) ? primary.path.trim() : "";
+        String primaryLang = "";
+        if (primary != null) {
+            primaryLang = primary.isExternal
+                    ? com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels
+                            .resolveExternalLanguageCanonical(mContext, primary, videoPath)
+                    : com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels
+                            .resolveEmbeddedLanguageCanonical(primary.language, primary.name);
+        }
+        // Never pair two subtitles of the same language (prevents ghost overlapping Arabic + Arabic)
+        if (!primaryLang.isEmpty() && wantedSec.equals(primaryLang)) return;
+
+        for (int index = 0; index < nb; index++) {
+            if (index == mVideoInfo.subtitleTrack) continue;
             var track = metadata.getSubtitleTrack(index);
-            if (index != mVideoInfo.subtitleTrack && track != null && track.isExternal && track.path != null
-                    && track.path.toLowerCase(java.util.Locale.ROOT).matches(".*\\.(srt|vtt|ass|ssa)$")) {
+            if (track == null || !track.isExternal || track.path == null) continue;
+            if (!track.path.toLowerCase(java.util.Locale.ROOT).matches(".*\\.(srt|vtt|ass|ssa)$")) continue;
+            if (!primaryPath.isEmpty() && primaryPath.equalsIgnoreCase(track.path.trim())) continue;
+            String candidateLang = com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels
+                    .resolveExternalLanguageCanonical(mContext, track, videoPath);
+            if (wantedSec.equals(candidateLang)) {
                 selectCinemaSecondarySubtitleTrack(index);
                 return;
             }
@@ -4204,15 +4665,15 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
     }
 
     private void chooseSubtitles() {
-        Uri uri = VideoUtils.getFileUriFromMediaLibPath(mUri.toString());
+        Uri uri = mUri != null ? VideoUtils.getFileUriFromMediaLibPath(mUri.toString()) : null;
         if (uri != null && ("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()))
                 && com.archos.mediacenter.video.leanback.cinema.CinemaLinkServer.hasOnlineController()) {
             String[] opts = {
                     com.archos.mediacenter.video.leanback.cinema.CinemaUi.label(this, "اختيار من ذاكرة الهاتف 📱", "Select from Phone Storage 📱"),
-                    com.archos.mediacenter.video.leanback.cinema.CinemaUi.label(this, "اختيار من ذاكرة الشاشة 📂", "Select from TV Storage 📂")
+                    getString(R.string.cinema_sub_pick_movie_source)
             };
             com.archos.mediacenter.video.leanback.cinema.CinemaUi.dialog(this)
-                    .setTitle(getText(R.string.get_subtitles_on_drive))
+                    .setTitle(R.string.cinema_sub_pick_movie_source)
                     .setItems(opts, (d, which) -> {
                         if (which == 0) {
                             boolean sent = com.archos.mediacenter.video.leanback.cinema.CinemaLinkServer.requestPhoneSubtitle(
@@ -4225,20 +4686,18 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                                             "الهاتف غير متصل الآن", "Phone not connected"),
                                     android.widget.Toast.LENGTH_LONG).show();
                         } else {
-                            Intent subIntent = new Intent(Intent.ACTION_MAIN);
-                            subIntent.setClass(mContext, com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.class);
-                            subIntent.putExtra(com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.EXTRA_FILTER_MODE,
-                                    com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.FILTER_SUBTITLES_ONLY);
-                            startActivityForResult(subIntent, SUBTITLE_REQUEST);
+                            startActivityForResult(
+                                    com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity
+                                            .subtitlePickerIntent(mContext, uri, false),
+                                    SUBTITLE_REQUEST);
                         }
                     }).show();
             return;
         }
-        Intent subIntent = new Intent(Intent.ACTION_MAIN);
-        subIntent.setClass(mContext, com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.class);
-        subIntent.putExtra(com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.EXTRA_FILTER_MODE,
-                com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity.FILTER_SUBTITLES_ONLY);
-        startActivityForResult(subIntent, SUBTITLE_REQUEST);
+        startActivityForResult(
+                com.archos.mediacenter.video.leanback.cinema.CinemaFileBrowserActivity
+                        .subtitlePickerIntent(mContext, uri, false),
+                SUBTITLE_REQUEST);
     }
 
     private static boolean isGenericTextSubtitleFormat(String lang) {
@@ -4282,8 +4741,14 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if(requestCode==SECONDARY_SUBTITLE_REQUEST&&resultCode==Activity.RESULT_OK&&data!=null&&data.getData()!=null&&mSecondarySubtitle!=null){
+            Uri picked = data.getData();
+            String pickedPath = picked.toString();
+            String leaf = picked.getLastPathSegment();
+            String secLabel = (leaf != null && !leaf.isBlank()) ? leaf : getString(R.string.cinema_sub_active_secondary);
+            mSecondarySubtitle.setTrackMeta(secLabel, pickedPath, "");
             mSecondarySubtitle.setVideo(mUri);
-            mSecondarySubtitle.load(data.getData());
+            mSecondarySubtitle.load(picked);
+            refreshSubtitleTVMenu();
             rearmHudAutoHideAfterSubtitle(true);
         }
         if (requestCode == 913 && resultCode == Activity.RESULT_OK && PlayerService.sPlayerService != null) {
@@ -4658,19 +5123,22 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
             if (log.isDebugEnabled()) log.debug("onAudioMetadataUpdated: newAudio: {}  mVideoInfo.audioTrack: {}  firstTimeUpdated: {}  nbTrack: {}", newAudioTrack, mVideoInfo.audioTrack, firstTimeUpdated, nbTrack);
 
             mAudioInfoController.clear();
-            String trackName = null;
             for (int i = 0; i < nbTrack; ++i) {
                 VideoMetadata.AudioTrack audio = vMetadata.getAudioTrack(i);
                 if (log.isDebugEnabled()) log.debug("onAudioMetadataUpdated: name={}, language={}, format={}", audio.name, audio.language, audio.format);
-                trackName = generateTrackName(mContext, audio.name, audio.language, audio.format, true);
+                String trackName = com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels
+                        .formatAudioTrackLabel(mContext, audio, i);
+                if (trackName == null || trackName.isBlank()) {
+                    trackName = generateTrackName(mContext, audio.name, audio.language, audio.format, true);
+                }
                 CharSequence name = trackName;
-                // when no name use track number instead of R.string.unknown_track_name th
                 if (trackName.isEmpty())
                     name = getText(R.string.player_track) + " " + (i + 1);
                 CharSequence summary = audio.format;
                 mAudioInfoController.addTrack(name, summary, false);
             }
             mAudioInfoController.setTrack(mVideoInfo.audioTrack);
+            refreshAudioTracksTVMenu();
         }
 
         public void onSubtitleMetadataUpdated(VideoMetadata vMetadata, int newSubtitleTrack) {
@@ -4698,28 +5166,15 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
             if (nbTrack != 0) {
                 mSubtitleInfoController.addTrack(getText(R.string.s_none), false); // first track displayed is none
                 mVideoInfo.nbSubtitles = nbTrack; // nbSubtitles does not capture none track
-                String lang = null;
+                String videoPath = vMetadata.getFile() != null ? vMetadata.getFile().getPath() : (mUri != null ? mUri.toString() : "");
                 for (int i = 0; i < nbTrack; ++i) {
-                    // name comes from IMediaPlayer (avos) and if not internal it says SRT/VTT generic, infer the name from path
-                    // infer language from path if path is provided
-                    if (vMetadata.getSubtitleTrack(i).isExternal) {
-                        // external subtitle get name from file
-                        lang = getSubLanguageFromSubPathAndVideoPath(mContext, vMetadata.getSubtitleTrack(i).path, vMetadata.getFile().getPath());
-                        if (log.isDebugEnabled()) log.debug("onSubtitleMetadataUpdated: extsub name={}, path={}, videoPath={}, isExternal={}, langFromPath={}", vMetadata.getSubtitleTrack(i).name, vMetadata.getSubtitleTrack(i).path, vMetadata.getFile().getPath(), vMetadata.getSubtitleTrack(i).isExternal, lang);
-                        if (lang != null) {
-                            if (log.isDebugEnabled()) log.debug("onSubtitleMetadataUpdated: extsub name might not be null add track name with lang={}", lang);
-                            mSubtitleInfoController.addTrack(lang, true);
-                        } else { // this should never happen
-                            log.warn("onSubtitleMetadataUpdated: extsub name and lang are null, add track name to unknown");
-                            mSubtitleInfoController.addTrack(getText(R.string.unknown_track_name), true);
-                        }
-                    } else {
-                        // internal subtitle get name from name
-                    if (log.isDebugEnabled()) log.debug("onSubtitleMetadataUpdated: intsub add track name with name={} replacing language code in {}", vMetadata.getSubtitleTrack(i).name, vMetadata.getSubtitleTrack(i).language);
                     SubtitleTrack track = vMetadata.getSubtitleTrack(i);
-                    String format = VideoUtils.getSubtitleFormatLabel(mContext, track.format);
-                    mSubtitleInfoController.addTrack(generateTrackName(mContext, track.name, track.language, format, false), false);
+                    String clearName = com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels
+                            .formatTrackLabel(mContext, track, videoPath);
+                    if (clearName == null || clearName.isBlank()) {
+                        clearName = getText(R.string.unknown_track_name).toString();
                     }
+                    mSubtitleInfoController.addTrack(clearName, track != null && track.isExternal);
                 }
                 mSubtitleInfoController.addSeparator();
                 mSubtitleInfoController.addSettings(getText(R.string.player_pref_subtitle_delay_title), R.drawable.ic_menu_delay, SUBTITLE_MENU_DELAY);
@@ -4739,6 +5194,7 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                 mSubtitleManager.setColor(color);
                 setSubtitleVpos(vpos, "onSubtitleMetadataUpdated");
                 mSubtitleManager.setOutlineState(outline);
+                mSubtitleManager.setPhoneBackground(outline);
                 // mVideoInfo.subtitleTrack is the track number with the none track 0<=mVideoInfo.subtitleTrack<=nbTrack, nbTrack for none track
                 // but mSubtitleInfoController is the track number with the none track (i.e. nbTrack + 1) at position 0
                 // at this point mVideoInfo.subtitleTrack is the track number to be used

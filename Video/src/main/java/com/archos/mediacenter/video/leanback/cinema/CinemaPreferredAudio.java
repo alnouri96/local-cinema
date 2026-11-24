@@ -8,8 +8,6 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import androidx.media3.common.C;
-import androidx.media3.common.Tracks;
 import androidx.preference.PreferenceManager;
 
 import com.archos.mediacenter.video.R;
@@ -107,9 +105,9 @@ public final class CinemaPreferredAudio {
     }
 
     public static String displayName(Context context, String tag) {
-        LangSpec spec = CATALOG.get(normalizeTag(tag));
-        if (spec == null) return tag == null ? "" : tag.toUpperCase(Locale.ROOT);
-        return CinemaUi.arabic(context) ? spec.ar() : spec.en();
+        String resolved = com.meedx.providers.UnifiedSubtitleConfig.languageDisplay(tag, CinemaUi.arabic(context));
+        if (resolved != null && !resolved.isBlank()) return resolved;
+        return tag == null ? "" : tag.toUpperCase(Locale.ROOT);
     }
 
     public static String label(Context context) {
@@ -174,24 +172,6 @@ public final class CinemaPreferredAudio {
             }
         }
         return false;
-    }
-
-    static boolean knownUnavailable(Tracks tracks, String[] preferred) {
-        if (preferred == null || preferred.length == 0) return false;
-        boolean known = false;
-        for (Tracks.Group group : tracks.getGroups()) {
-            if (group.getType() != C.TRACK_TYPE_AUDIO) continue;
-            for (int index = 0; index < group.length; index++) {
-                if (!group.isTrackSupported(index)) continue;
-                String language = group.getTrackFormat(index).language;
-                if (language == null || language.isBlank()) return false;
-                String base = language.toLowerCase(Locale.ROOT).split("[-_]", 2)[0];
-                if ("und".equals(base) || "mul".equals(base)) return false;
-                for (String tag : preferred) if (tag.equals(base)) return false;
-                known = true;
-            }
-        }
-        return known;
     }
 
     /** Interactive TV dialog allowing users to order audio languages sequentially (1, 2, 3...), add, or remove. */

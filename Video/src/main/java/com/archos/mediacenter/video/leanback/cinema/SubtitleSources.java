@@ -24,11 +24,9 @@ public final class SubtitleSources {
     }
 
     static String label(Context context) {
-        return switch (selected(context)) {
-            case 1 -> CinemaUi.label(context, "بحث OpenSubtitles", "Search OpenSubtitles");
-            case 2 -> CinemaUi.label(context, "بحث في المصدرين", "Search Subtitles (All)");
-            default -> CinemaUi.label(context, "بحث عن الترجمة", "Search Subtitles");
-        };
+        boolean ar = CinemaUi.arabic(context);
+        return (ar ? "بحث ذكي · " : "Smart Search · ")
+                + com.meedx.providers.UnifiedSubtitleConfig.searchSelectionSummary(context, ar);
     }
 
     static void settings(Activity activity) {
@@ -36,12 +34,10 @@ public final class SubtitleSources {
     }
 
     static void search(Activity activity, Video video) {
-        switch (selected(activity)) {
-            case 1 -> start(activity, video, true);
-            case 2 -> activity.startActivity(new Intent(activity, SubsourceSearchActivity.class)
-                    .putExtra(VideoDetailsFragment.EXTRA_VIDEO, video).putExtra("both_providers", true));
-            default -> start(activity, video, false);
-        }
+        Intent intent = new Intent(activity, SubsourceSearchActivity.class);
+        if (video != null) intent.putExtra(VideoDetailsFragment.EXTRA_VIDEO, video);
+        intent.putExtra("both_providers", true);
+        activity.startActivity(intent);
     }
 
     private static void start(Activity activity, Video video, boolean openSubtitles) {

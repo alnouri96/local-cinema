@@ -92,9 +92,12 @@ public final class StorageCacheHeaderPreference extends Preference {
         card.addView(headerRow, new LinearLayout.LayoutParams(-1, -2));
 
         TextView heading = new TextView(c);
-        heading.setText(ar ? "التخزين والكاش (Storage & Cache)" : "Storage & Cache");
+        heading.setText(ar ? "تنظيف الكاش" : "Cache Cleaner");
         heading.setTextColor(GOLD);
-        heading.setTextSize(16);
+        heading.setTextSize(15);
+        heading.setSingleLine(true);
+        heading.setMaxLines(1);
+        heading.setEllipsize(android.text.TextUtils.TruncateAt.END);
         heading.setTypeface(Typeface.DEFAULT_BOLD);
         heading.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
         headerRow.addView(heading, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -111,60 +114,54 @@ public final class StorageCacheHeaderPreference extends Preference {
         badgeBg.setColor(GOLD);
         badgeBg.setCornerRadius(dp(c, 10));
         totalBadge.setBackground(badgeBg);
-        totalBadge.setPadding(dp(c, 10), dp(c, 4), dp(c, 10), dp(c, 4));
+        totalBadge.setPadding(dp(c, 10), dp(c, 3), dp(c, 10), dp(c, 3));
         headerRow.addView(totalBadge);
 
-        // Breakdown Container
-        LinearLayout rowsBox = new LinearLayout(c);
-        rowsBox.setOrientation(LinearLayout.VERTICAL);
-        GradientDrawable boxBg = new GradientDrawable();
-        boxBg.setColor(0xff151619);
-        boxBg.setStroke(dp(c, 1), 0xff2c2d33);
-        boxBg.setCornerRadius(dp(c, 12));
-        rowsBox.setBackground(boxBg);
-        rowsBox.setPadding(dp(c, 12), dp(c, 10), dp(c, 12), dp(c, 10));
-        var boxLp = new LinearLayout.LayoutParams(-1, -2);
-        boxLp.topMargin = dp(c, 10);
-        card.addView(rowsBox, boxLp);
-
-        addBreakdownRow(c, rowsBox,
-                ar ? "كاش التطبيق والصور" : "App & Image Cache",
-                BrowserDownloadManager.formatBytes(breakdown.appImageCacheBytes()),
-                false);
-        addBreakdownRow(c, rowsBox,
-                ar ? "كاش المتصفح" : "Browser Cache",
-                BrowserDownloadManager.formatBytes(breakdown.browserCacheBytes()),
-                true);
-        addBreakdownRow(c, rowsBox,
-                ar ? "ملفات البث المؤقتة" : "Temp Stream Files",
-                BrowserDownloadManager.formatBytes(breakdown.tempStreamBytes()),
-                true);
+        // Compact single-box breakdown summary + inline button
+        TextView compactLine = new TextView(c);
+        compactLine.setText(ar
+                ? ("التطبيق والصور: " + BrowserDownloadManager.formatBytes(breakdown.appImageCacheBytes())
+                    + " · المتصفح: " + BrowserDownloadManager.formatBytes(breakdown.browserCacheBytes())
+                    + " · البث المؤقت: " + BrowserDownloadManager.formatBytes(breakdown.tempStreamBytes()))
+                : ("App & Images: " + BrowserDownloadManager.formatBytes(breakdown.appImageCacheBytes())
+                    + " · Browser: " + BrowserDownloadManager.formatBytes(breakdown.browserCacheBytes())
+                    + " · Temp: " + BrowserDownloadManager.formatBytes(breakdown.tempStreamBytes())));
+        compactLine.setTextSize(12.5f);
+        compactLine.setTextColor(0xffe4e4e7);
+        compactLine.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
+        var sumLp = new LinearLayout.LayoutParams(-1, -2);
+        sumLp.topMargin = dp(c, 8);
+        card.addView(compactLine, sumLp);
 
         TextView safetyNote = new TextView(c);
         safetyNote.setText(ar
-                ? "يمسح الكاش وملفات البث المؤقتة فقط — تبقى حسابات Trakt والمفضلة والسجل والإضافات (uBlock) والمفاتيح محفوظة بأمان."
-                : "Clears caches and temporary stream buffers only — Trakt, bookmarks, history, extensions (uBlock), and keys stay safe.");
+                ? "لا يمس حساب Trakt أو المفضلة أو الإضافات أو الإعدادات."
+                : "Preserves Trakt, bookmarks, extensions, keys & settings.");
         safetyNote.setTextSize(11.5f);
         safetyNote.setTextColor(0xffa1a1aa);
+        safetyNote.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
         var noteLp = new LinearLayout.LayoutParams(-1, -2);
-        noteLp.topMargin = dp(c, 8);
+        noteLp.topMargin = dp(c, 4);
         card.addView(safetyNote, noteLp);
 
         MaterialButton clearBtn = new MaterialButton(c, null,
                 com.google.android.material.R.attr.materialButtonStyle);
         String btnText = clearing
-                ? (ar ? "جاري مسح الكاش..." : "Clearing Cache...")
-                : (ar ? "مسح الكاش (Clear Cache)" : "Clear Cache");
+                ? (ar ? "جاري المسح..." : "Clearing...")
+                : (ar ? "مسح الكاش" : "Clear Cache");
         clearBtn.setText(btnText);
+        clearBtn.setAllCaps(false);
+        clearBtn.setSingleLine(true);
+        clearBtn.setMaxLines(1);
         clearBtn.setEnabled(!clearing);
         clearBtn.setCornerRadius(dp(c, 12));
-        clearBtn.setMinHeight(dp(c, 42));
+        clearBtn.setMinHeight(dp(c, 40));
         clearBtn.setBackgroundTintList(ColorStateList.valueOf(GOLD));
         clearBtn.setTextColor(0xff141517);
         clearBtn.setTypeface(Typeface.DEFAULT_BOLD);
         clearBtn.setOnClickListener(v -> confirmAndClearCache(c, ar));
         var btnLp = new LinearLayout.LayoutParams(-1, -2);
-        btnLp.topMargin = dp(c, 10);
+        btnLp.topMargin = dp(c, 8);
         card.addView(clearBtn, btnLp);
     }
 

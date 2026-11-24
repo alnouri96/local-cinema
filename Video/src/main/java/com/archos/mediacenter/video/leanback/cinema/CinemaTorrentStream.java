@@ -332,7 +332,53 @@ final class CinemaTorrentStream {
         }
     }
 
+    private static volatile File activeDirectory;
+
+    static boolean isActiveDirectory(File candidate) {
+        File active = activeDirectory;
+        if (active == null || candidate == null) return false;
+        try {
+            return active.getCanonicalPath().equals(candidate.getCanonicalPath());
+        } catch (IOException ignored) {
+            return active.getAbsolutePath().equals(candidate.getAbsolutePath());
+        }
+    }
+
+    static long purgeOrphanedCaches(Context context) {
+        if (context == null) return 0L;
+        long freed = 0L;
+        var roots = new java.util.ArrayList<File>();
+        roots.add(context.getCacheDir());
+        try {
+            java.util.Collections.addAll(roots, context.getExternalCacheDirs());
+        } catch (Exception ignored) {}
+        for (File root : roots) {
+            if (root == null || !root.isDirectory()) continue;
+            File[] children = root.listFiles();
+            if (children == null) continue;
+            for (File child : children) {
+                if (child.isDirectory() && child.getName().startsWith("addon-torrent-") && !isActiveDirectory(child)) {
+                    freed += dirSize(child);
+                    deleteTree(child);
+                }
+            }
+        }
+        return freed;
+    }
+
+    private static long dirSize(File f) {
+        if (f == null || !f.exists()) return 0L;
+        if (f.isFile()) return Math.max(0L, f.length());
+        long total = 0L;
+        File[] children = f.listFiles();
+        if (children != null) {
+            for (File c : children) total += dirSize(c);
+        }
+        return total;
+    }
+
     private File createCacheDirectory() throws IOException {
+        purgeOrphanedCaches(context);
         var caches = new java.util.ArrayList<File>();
         caches.add(context.getCacheDir());
         java.util.Collections.addAll(caches, context.getExternalCacheDirs());
@@ -341,7 +387,9 @@ final class CinemaTorrentStream {
         for (File cache : caches) {
             if (cache.getUsableSpace() <= STORAGE_RESERVE) continue;
             try {
-                return Files.createTempDirectory(cache.toPath(), "addon-torrent-").toFile();
+                File dir = Files.createTempDirectory(cache.toPath(), "addon-torrent-").toFile();
+                activeDirectory = dir;
+                return dir;
             } catch (IOException | SecurityException unavailable) {
                 // Try the other app-owned cache if this volume is unavailable.
             }
@@ -482,7 +530,10 @@ final class CinemaTorrentStream {
                     if (manager != null) manager.stop();
                 } catch (RuntimeException | LinkageError ignored) {
                 } finally {
-                    if (directory != null) deleteTree(directory);
+                    if (directory != null) {
+                        if (isActiveDirectory(directory)) activeDirectory = null;
+                        deleteTree(directory);
+                    }
                 }
             }
         }, "tv-torrent-cleanup").start();

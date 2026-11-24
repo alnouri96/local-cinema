@@ -31,13 +31,20 @@ import org.mozilla.geckoview.WebResponse;
 public final class CinemaBrowser {
     private static final String UBO_ID = "uBlock0@raymondhill.net";
     private static final String[] NAMES = {
-            "YTS", "Torrenting", "UIndex", "Knaben", "SubSource", "TMDB",
-            "Cinemana", "Share Shabakaty"
+            "MEEDX WEB", "Cinemana", "YTS", "TorrentGalaxy",
+            "Torrenting", "UIndex", "Knaben", "SubSource", "TMDB", "Share Shabakaty"
     };
     private static final String[] BOOKMARKS = {
-            "https://en.yts.lu/", "https://www.torrenting.com/featured", "https://uindex.org/",
-            "https://knaben.info/", "https://subsource.net", "https://www.themoviedb.org/",
-            "https://cinemana.shabakaty.com/home", "https://share.shabakaty.com/index"
+            "https://meedx.pages.dev/",
+            "https://cinemana.shabakaty.com/home",
+            "https://en.yts.lu/",
+            "https://torrentgalaxy.info/",
+            "https://www.torrenting.com/featured",
+            "https://uindex.org/",
+            "https://knaben.info/",
+            "https://subsource.net",
+            "https://www.themoviedb.org/",
+            "https://share.shabakaty.com/index"
     };
     private static final String TORRENT_SEARCH = "https://knaben.org/search/";
     private static GeckoRuntime runtime;
@@ -686,7 +693,7 @@ public final class CinemaBrowser {
                 Uri destination = Uri.parse(request.uri);
                 String scheme = destination.getScheme();
                 if ("stremio".equalsIgnoreCase(scheme)) {
-                    if (session == active && request.hasUserGesture && !request.isRedirect) {
+                    if (session == active) {
                         context.startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW, destination,
                                 context, TvHubActivity.class));
                     }
@@ -948,24 +955,45 @@ public final class CinemaBrowser {
                     var entry = entries.getJSONObject(i);
                     items.add(new Site(entry.getString("name"), entry.getString("url")));
                 }
-                if (!settings.getBoolean("default_sites_v2", false)) {
-                    boolean changed = false;
-                    for (int i = 0; i < NAMES.length; i++) {
+                if (!settings.getBoolean("default_sites_v4", false)) {
+                    // One-time v19 default ordering: 1. MEEDX WEB, 2. Cinemana, 3. YTS, 4. TorrentGalaxy,
+                    // followed by remaining defaults & any user-saved custom sites in their existing order.
+                    var reordered = new ArrayList<Site>();
+                    for (int i = 0; i < 4; i++) {
+                        String pinnedKey = bookmarkKey(BOOKMARKS[i]);
+                        Site existing = null;
+                        for (int j = 0; j < items.size(); j++) {
+                            if (pinnedKey != null && pinnedKey.equals(bookmarkKey(items.get(j).url()))) {
+                                existing = items.remove(j);
+                                break;
+                            }
+                        }
+                        if (existing != null) {
+                            String fixedName = (i == 0 && "MEEDX".equalsIgnoreCase(existing.name()))
+                                    ? NAMES[0] : existing.name();
+                            reordered.add(new Site(fixedName, existing.url()));
+                        } else {
+                            reordered.add(new Site(NAMES[i], BOOKMARKS[i]));
+                        }
+                    }
+                    reordered.addAll(items);
+                    for (int i = 4; i < NAMES.length; i++) {
                         String key = bookmarkKey(BOOKMARKS[i]);
-                        boolean exists = key != null && items.stream().anyMatch(s -> key.equals(bookmarkKey(s.url())));
-                        if (!exists) {
-                            items.add(new Site(NAMES[i], BOOKMARKS[i]));
-                            changed = true;
-                        }
+                        boolean exists = key != null && reordered.stream().anyMatch(s -> key.equals(bookmarkKey(s.url())));
+                        if (!exists) reordered.add(new Site(NAMES[i], BOOKMARKS[i]));
                     }
-                    settings.edit().putBoolean("default_sites_v2", true).apply();
-                    if (changed) {
-                        var merged = new org.json.JSONArray();
-                        for (Site site : items) {
-                            merged.put(new org.json.JSONObject(java.util.Map.of("name", site.name(), "url", site.url())));
-                        }
-                        settings.edit().putString("sites", merged.toString()).apply();
+                    items.clear();
+                    items.addAll(reordered);
+                    var merged = new org.json.JSONArray();
+                    for (Site site : items) {
+                        merged.put(new org.json.JSONObject(java.util.Map.of("name", site.name(), "url", site.url())));
                     }
+                    settings.edit()
+                            .putBoolean("default_sites_v2", true)
+                            .putBoolean("default_sites_v3", true)
+                            .putBoolean("default_sites_v4", true)
+                            .putString("sites", merged.toString())
+                            .apply();
                 }
                 return items;
             } catch (org.json.JSONException error) {
@@ -973,7 +1001,11 @@ public final class CinemaBrowser {
             }
         }
         for (int i = 0; i < NAMES.length; i++) items.add(new Site(NAMES[i], BOOKMARKS[i]));
-        settings.edit().putBoolean("default_sites_v2", true).apply();
+        settings.edit()
+                .putBoolean("default_sites_v2", true)
+                .putBoolean("default_sites_v3", true)
+                .putBoolean("default_sites_v4", true)
+                .apply();
         return items;
     }
 
@@ -1088,13 +1120,34 @@ public final class CinemaBrowser {
             tile.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
             tile.setFocusable(true);
             var icon = new android.widget.TextView(context);
-            icon.setText(site == null ? "+" : site.name().substring(0, 1).toUpperCase(java.util.Locale.ROOT));
-            icon.setTextSize(24);
-            icon.setTextColor(0xffdddddd);
+            String badgeText = "+";
+            int badgeColor = 0xffdddddd;
+            int frameBg = 0xff1c1c1e;
+            int frameStroke = 0xff2c2c2e;
+            if (site != null) {
+                String lowUrl = site.url() == null ? "" : site.url().toLowerCase(java.util.Locale.ROOT);
+                if (lowUrl.contains("torrentgalaxy")) {
+                    badgeText = "TG";
+                    badgeColor = 0xffc4b5fd;
+                    frameBg = 0xff231b35;
+                    frameStroke = 0xff5b3fa6;
+                } else if (lowUrl.contains("meedx.pages.dev")) {
+                    badgeText = "M";
+                    badgeColor = 0xffe5a93b;
+                    frameBg = 0xff231f16;
+                    frameStroke = 0xff6e5624;
+                } else {
+                    badgeText = site.name().substring(0, 1).toUpperCase(java.util.Locale.ROOT);
+                }
+            }
+            icon.setText(badgeText);
+            icon.setTextSize(badgeText.length() > 1 ? 18 : 24);
+            icon.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            icon.setTextColor(badgeColor);
             icon.setGravity(android.view.Gravity.CENTER);
             var iconFrame = new FrameLayout(context);
-            var frame = surface(0xff1c1c1e, 16);
-            frame.setStroke(dp(1), 0xff2c2c2e);
+            var frame = surface(frameBg, 16);
+            frame.setStroke(dp(1), frameStroke);
             iconFrame.setBackground(frame);
             iconFrame.addView(icon, new FrameLayout.LayoutParams(-1, -1));
             tile.addView(iconFrame, new LinearLayout.LayoutParams(dp(52), dp(52)));
@@ -1105,7 +1158,7 @@ public final class CinemaBrowser {
                 bindFavicon(site.url(), image, icon);
             }
             var label = new android.widget.TextView(context);
-            label.setText(site == null ? "Add" : site.name());
+            label.setText(site == null ? "+ Add" : site.name());
             label.setTextSize(12);
             label.setGravity(android.view.Gravity.CENTER);
             label.setSingleLine(true);
@@ -1116,16 +1169,7 @@ public final class CinemaBrowser {
                 else openPage(site.url());
             });
             if (site != null) tile.setOnLongClickListener(view -> {
-                new AlertDialog.Builder(context).setTitle(site.name())
-                        .setItems(new String[]{"Edit", "Remove"}, (dialog, choice) -> {
-                            if (choice == 0) editSite(index, "");
-                            else {
-                                String removedUrl = items.get(index).url();
-                                items.remove(index);
-                                SiteFaviconManager.deleteIfUnused(context, removedUrl, remainingKnownSiteUrls(items));
-                                saveSites(items);
-                            }
-                        }).show();
+                showSiteOptionsDialog(items, index);
                 return true;
             });
             var slot = new LinearLayout.LayoutParams(0, dp(98), 1);
@@ -1134,6 +1178,78 @@ public final class CinemaBrowser {
         }
         int missing = (columns - (items.size() + 1) % columns) % columns;
         for (int i = 0; i < missing; i++) row.addView(new View(context), new LinearLayout.LayoutParams(0, 1, 1));
+    }
+
+    private void showSiteOptionsDialog(ArrayList<Site> items, int index) {
+        if (index < 0 || index >= items.size()) return;
+        Site site = items.get(index);
+        boolean ar = isArabicUi();
+        var labels = new ArrayList<String>();
+        var actions = new ArrayList<Runnable>();
+        if (index > 0) {
+            labels.add(ar ? "نقل إلى البداية (المركز 1)" : "Move to Start (Position 1)");
+            actions.add(() -> moveSite(items, index, 0));
+            labels.add(ar ? "نقل خطوة للأمام" : "Move Forward");
+            actions.add(() -> moveSite(items, index, index - 1));
+        }
+        if (index < items.size() - 1) {
+            labels.add(ar ? "نقل خطوة للخلف" : "Move Backward");
+            actions.add(() -> moveSite(items, index, index + 1));
+            labels.add(ar ? "نقل إلى النهاية" : "Move to End");
+            actions.add(() -> moveSite(items, index, items.size() - 1));
+        }
+        if (items.size() > 2) {
+            labels.add(ar ? "نقل إلى موضع محدد…" : "Move to Position…");
+            actions.add(() -> showMoveSitePositionDialog(items, index));
+        }
+        labels.add(ar ? "تعديل الموقع" : "Edit");
+        actions.add(() -> editSite(index, ""));
+        labels.add(ar ? "حذف الموقع" : "Remove");
+        actions.add(() -> {
+            String removedUrl = items.get(index).url();
+            items.remove(index);
+            SiteFaviconManager.deleteIfUnused(context, removedUrl, remainingKnownSiteUrls(items));
+            saveSites(items);
+        });
+        new AlertDialog.Builder(context)
+                .setTitle(site.name() + "  (#" + (index + 1) + ")")
+                .setItems(labels.toArray(new String[0]), (dialog, choice) -> {
+                    if (choice >= 0 && choice < actions.size()) actions.get(choice).run();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void showMoveSitePositionDialog(ArrayList<Site> items, int fromIndex) {
+        if (fromIndex < 0 || fromIndex >= items.size()) return;
+        Site target = items.get(fromIndex);
+        boolean ar = isArabicUi();
+        String[] slots = new String[items.size()];
+        for (int i = 0; i < items.size(); i++) {
+            Site s = items.get(i);
+            slots[i] = (i + 1) + ". " + s.name() + (i == fromIndex ? (ar ? " (الحالي)" : " (Current)") : "");
+        }
+        new AlertDialog.Builder(context)
+                .setTitle(ar ? ("اختر الموضع الجديد لـ " + target.name()) : ("Move \"" + target.name() + "\" to Position"))
+                .setItems(slots, (d, toIndex) -> moveSite(items, fromIndex, toIndex))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void moveSite(ArrayList<Site> items, int fromIndex, int toIndex) {
+        if (fromIndex < 0 || fromIndex >= items.size() || toIndex < 0 || toIndex >= items.size() || fromIndex == toIndex) return;
+        Site moved = items.remove(fromIndex);
+        items.add(toIndex, moved);
+        saveSites(items);
+        boolean ar = isArabicUi();
+        CinemaSnackBanner.show(context, ar
+                ? ("تم نقل " + moved.name() + " إلى المركز " + (toIndex + 1))
+                : ("Moved " + moved.name() + " to position #" + (toIndex + 1)));
+    }
+
+    private boolean isArabicUi() {
+        var loc = androidx.core.os.ConfigurationCompat.getLocales(context.getResources().getConfiguration()).get(0);
+        return loc != null && "ar".equalsIgnoreCase(loc.getLanguage());
     }
 
     private void editSite(int index, String initialUrl) {

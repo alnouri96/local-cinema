@@ -168,6 +168,8 @@ public class TVMenu extends LinearLayout implements FocusableTVCardView, TVSlave
 
     public void clean(){
         ti.clear();
+        current = 0;
+        lastScroll = 0;
         this.removeAllViews();
         if(slaveView!=null)
             slaveView.clean();

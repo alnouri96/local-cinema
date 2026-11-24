@@ -199,37 +199,80 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
     @Override
     public void onCreatePreferences(@Nullable Bundle savedInstanceState, @Nullable String rootKey) {
         addPreferencesFromResource(R.xml.pref_headers);
+        Context ctx = requireContext();
+        PreferenceScreen screen = getPreferenceScreen();
+
+        // Collect existing XML preference pages so we can place them into clean visual categories
+        Preference appearancePref = screen.findPreference(getString(R.string.pref_key_appearance_settings));
+        Preference behaviorPref = screen.findPreference(getString(R.string.pref_key_behavior_settings));
+        Preference networkPref = screen.findPreference(getString(R.string.pref_key_network_settings));
+        Preference storagePref = screen.findPreference(getString(R.string.pref_key_storage_settings));
+        Preference limitationsPref = screen.findPreference(getString(R.string.pref_key_limitations_settings));
+        Preference schedulingPref = screen.findPreference(getString(R.string.pref_key_scheduling_settings));
+        Preference feedPref = screen.findPreference(getString(R.string.pref_key_feed_settings));
+        Preference streamingPref = screen.findPreference(getString(R.string.pref_key_streaming_settings));
+        screen.removeAll();
+
+        // 1. Local Cinema & Sync
+        var catSync = new androidx.preference.PreferenceCategory(ctx);
+        catSync.setKey("cat_cinema_sync");
+        catSync.setTitle(l("السينما المحلية والمزامنة", "Local Cinema & Sync"));
+        screen.addPreference(catSync);
+
+        var tvSync = new Preference(ctx);
+        tvSync.setKey("sync_settings_with_tv");
+        tvSync.setTitle(R.string.cinema_sync_with_tv);
+        tvSync.setSummary(R.string.cinema_sync_tv_description);
+        tvSync.setIcon(R.drawable.ic_lan_24px);
+        tvSync.setOnPreferenceClickListener(preference -> {
+            org.proninyaroslav.libretorrent.cinema_hub.TvHubActivity.openSyncSettings(requireContext());
+            return true;
+        });
+        catSync.addPreference(tvSync);
+
+        var unifiedSubs = new Preference(ctx);
+        unifiedSubs.setKey("unified_subtitle_settings");
+        unifiedSubs.setTitle(l("الترجمة", "Subtitles"));
+        unifiedSubs.setSummary(l("المصادر واللغة والمزامنة", "Sources, language & sync"));
+        unifiedSubs.setIcon(R.drawable.ic_language_24);
+        unifiedSubs.setOnPreferenceClickListener(preference -> {
+            org.proninyaroslav.libretorrent.cinema_hub.TvHubActivity.openUnifiedSubtitleSettings(requireContext());
+            return true;
+        });
+        catSync.addPreference(unifiedSubs);
+
         googleAccountPref = new GoogleAccountHeaderPreference(
-                requireContext(),
+                ctx,
                 this::startSettingsGoogleSignInCheck,
                 () -> startSettingsGoogleBackup(true),
                 () -> startSettingsGoogleBackup(false),
                 this::signOutGoogle,
                 () -> localBackupCreate.launch(LocalCinemaBackupManager.defaultLocalFilename()),
                 () -> localBackupOpen.launch(new String[]{"application/json", "text/plain", "*/*"}));
-        googleAccountPref.setOrder(-100);
-        getPreferenceScreen().addPreference(googleAccountPref);
+        catSync.addPreference(googleAccountPref);
 
-        storageCachePref = new StorageCacheHeaderPreference(requireContext());
-        storageCachePref.setOrder(-90);
-        getPreferenceScreen().addPreference(storageCachePref);
+        // 2. Storage & Maintenance
+        var catStorage = new androidx.preference.PreferenceCategory(ctx);
+        catStorage.setKey("cat_storage_maintenance");
+        catStorage.setTitle(l("التخزين والكاش", "Storage & Cache"));
+        screen.addPreference(catStorage);
 
-        var tvSync = new Preference(requireContext());
-        tvSync.setKey("sync_settings_with_tv");
-        tvSync.setTitle(R.string.cinema_sync_with_tv);
-        tvSync.setSummary(R.string.cinema_sync_tv_description);
-        tvSync.setOrder(-110);
-        tvSync.setOnPreferenceClickListener(preference -> {
-            org.proninyaroslav.libretorrent.cinema_hub.TvHubActivity.openSyncSettings(requireContext());
-            return true;
-        });
-        getPreferenceScreen().addPreference(tvSync);
+        storageCachePref = new StorageCacheHeaderPreference(ctx);
+        catStorage.addPreference(storageCachePref);
+        if (storagePref != null) catStorage.addPreference(storagePref);
 
-        var language = new Preference(requireContext());
+        // 3. App & Interface
+        var catInterface = new androidx.preference.PreferenceCategory(ctx);
+        catInterface.setKey("cat_app_interface");
+        catInterface.setTitle(l("التطبيق والواجهة", "App & Interface"));
+        screen.addPreference(catInterface);
+
+        if (appearancePref != null) catInterface.addPreference(appearancePref);
+
+        var language = new Preference(ctx);
         language.setKey("app_language");
         language.setTitle(R.string.locale_app);
         language.setIcon(R.drawable.ic_language_24);
-        language.setOrder(500);
         language.setOnPreferenceClickListener(p -> {
             var current = androidx.appcompat.app.AppCompatDelegate.getApplicationLocales().toLanguageTags();
             int checked = current.startsWith("ar") ? 1 : current.startsWith("en") ? 2 : 0;
@@ -243,52 +286,64 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
                     }).setNegativeButton(android.R.string.cancel, null).show();
             return true;
         });
-        getPreferenceScreen().addPreference(language);
+        catInterface.addPreference(language);
+        if (behaviorPref != null) catInterface.addPreference(behaviorPref);
+        if (streamingPref != null) catInterface.addPreference(streamingPref);
 
-        var updates = new Preference(requireContext());
-        updates.setKey("meedx_updates");
-        updates.setTitle(com.meedx.updates.AppUpdates.title(requireContext()));
-        updates.setSummary(com.meedx.updates.AppUpdates.displayVersion(org.proninyaroslav.libretorrent.BuildConfig.VERSION_NAME));
-        updates.setIcon(R.drawable.ic_system_update_24);
-        updates.setOrder(502);
-        updates.setOnPreferenceClickListener(p -> {
-            com.meedx.updates.AppUpdates.settings(requireActivity(), false,
-                new com.meedx.updates.AppUpdates.NoteLabels(R.string.cinema_update_patch_notes,
-                        R.string.cinema_update_notes_missing));
-            return true;
-        });
-        getPreferenceScreen().addPreference(updates);
+        // 4. Downloads & Network
+        var catTorrent = new androidx.preference.PreferenceCategory(ctx);
+        catTorrent.setKey("cat_downloads_network");
+        catTorrent.setTitle(l("التحميلات والشبكة", "Downloads & Network"));
+        screen.addPreference(catTorrent);
 
-        var permissions = new Preference(requireContext());
+        if (networkPref != null) catTorrent.addPreference(networkPref);
+        if (limitationsPref != null) catTorrent.addPreference(limitationsPref);
+        if (schedulingPref != null) catTorrent.addPreference(schedulingPref);
+        if (feedPref != null) catTorrent.addPreference(feedPref);
+
+        // 5. System & Updates
+        var catSystem = new androidx.preference.PreferenceCategory(ctx);
+        catSystem.setKey("cat_system_updates");
+        catSystem.setTitle(l("النظام والصلاحيات", "System & Permissions"));
+        screen.addPreference(catSystem);
+
+        var permissions = new Preference(ctx);
         permissions.setKey("permissions_wizard");
-        permissions.setTitle(l("صلاحيات التطبيق والبطارية", "App Permissions & Battery Setup"));
-        permissions.setSummary(l("التحقق من الصلاحيات الأساسية للخلفية والشبكة والتخزين",
-                "Verify background, network, and storage permissions"));
+        permissions.setTitle(l("أذونات التطبيق", "App Permissions"));
+        permissions.setSummary(l("التخزين والإشعارات والريموت العائم", "Storage, notifications & overlay"));
         permissions.setIcon(R.drawable.ic_verified_shield_24);
-        permissions.setOrder(503);
         permissions.setOnPreferenceClickListener(p -> {
             PhonePermissionsWizardDialog.show(requireActivity());
             return true;
         });
-        getPreferenceScreen().addPreference(permissions);
+        catSystem.addPreference(permissions);
+
+        var updates = new Preference(ctx);
+        updates.setKey("meedx_updates");
+        updates.setTitle(com.meedx.updates.AppUpdates.title(ctx));
+        updates.setSummary(com.meedx.updates.AppUpdates.displayVersion(org.proninyaroslav.libretorrent.BuildConfig.VERSION_NAME));
+        updates.setIcon(R.drawable.ic_system_update_24);
+        updates.setOnPreferenceClickListener(p -> {
+            com.meedx.updates.AppUpdates.settings(requireActivity(), false,
+                    new com.meedx.updates.AppUpdates.NoteLabels(R.string.cinema_update_patch_notes,
+                            R.string.cinema_update_notes_missing));
+            return true;
+        });
+        catSystem.addPreference(updates);
     }
 
-    @Override
-    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
-        var binding = FragmentPreferenceBinding.bind(view);
-        binding.appBar.setTitle(R.string.settings);
-        binding.appBar.setNavigationIcon(null);
-
-        if (activity == null) {
-            activity = (AppCompatActivity) requireActivity();
-        }
-
-        for (var i = 0; i < getPreferenceScreen().getPreferenceCount(); i++) {
-            var preference = getPreferenceScreen().getPreference(i);
+    private void attachHeaderClicks(androidx.preference.PreferenceGroup group) {
+        for (var i = 0; i < group.getPreferenceCount(); i++) {
+            var preference = group.getPreference(i);
+            if (preference instanceof androidx.preference.PreferenceGroup sub) {
+                attachHeaderClicks(sub);
+                continue;
+            }
             String key = preference.getKey();
             if ("google_account_cloud_backup".equals(key)
                     || "cinema_storage_and_cache".equals(key)
                     || "sync_settings_with_tv".equals(key)
+                    || "unified_subtitle_settings".equals(key)
                     || "external_api_keys".equals(key)
                     || "meedx_updates".equals(key)
                     || "app_language".equals(key)
@@ -301,6 +356,19 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
                 return true;
             });
         }
+    }
+
+    @Override
+    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
+        var binding = FragmentPreferenceBinding.bind(view);
+        binding.appBar.setTitle(R.string.settings);
+        binding.appBar.setNavigationIcon(null);
+
+        if (activity == null) {
+            activity = (AppCompatActivity) requireActivity();
+        }
+
+        attachHeaderClicks(getPreferenceScreen());
 
         super.onViewCreated(view, savedInstanceState);
     }

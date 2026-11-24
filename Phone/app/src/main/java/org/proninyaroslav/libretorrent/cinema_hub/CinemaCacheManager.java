@@ -119,6 +119,7 @@ public final class CinemaCacheManager {
                     deleteChildren(new File(extRoot, "temp"));
                 }
                 pruneStaleExtensionTempFiles(app.getCacheDir());
+                com.meedx.updates.AppUpdates.pruneStaleUpdateApks(app, org.proninyaroslav.libretorrent.BuildConfig.VERSION_CODE);
                 BrowserDownloadManager.get(app).purgeOrphanedStagingFiles();
 
                 // Enforce Browser Cache cap (120 MB)

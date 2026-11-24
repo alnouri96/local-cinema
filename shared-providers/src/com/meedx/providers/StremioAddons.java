@@ -131,6 +131,10 @@ public final class StremioAddons {
         }
     }
 
+    public record StreamSubtitle(String id, String url, String lang) {}
+
+    public record AddonMetaHint(String titleEn, String titleFa, String imdbId, int year) {}
+
     public static final class Stream {
         public final String addonName;
         public final String title;
@@ -144,28 +148,35 @@ public final class StremioAddons {
         public final String userAgent;
         public final String referer;
         public final Map<String, String> headers;
+        public final List<StreamSubtitle> subtitles;
 
         public Stream(String addonName, String title, String quality, String url, String format) {
             this(addonName, title, quality, url, format, -1, 0, -1);
         }
 
         Stream(String addonName, String title, String quality, String url, String format, int fileIndex, long sizeBytes, int seeds) {
-            this(addonName, title, quality, url, format, fileIndex, sizeBytes, seeds, List.of(), "", "", Map.of());
+            this(addonName, title, quality, url, format, fileIndex, sizeBytes, seeds, List.of(), "", "", Map.of(), List.of());
         }
 
         Stream(String addonName, String title, String quality, String url, String format, int fileIndex,
                long sizeBytes, int seeds, List<String> languages) {
-            this(addonName, title, quality, url, format, fileIndex, sizeBytes, seeds, languages, "", "", Map.of());
+            this(addonName, title, quality, url, format, fileIndex, sizeBytes, seeds, languages, "", "", Map.of(), List.of());
         }
 
         Stream(String addonName, String title, String quality, String url, String format, int fileIndex,
                long sizeBytes, int seeds, List<String> languages, String userAgent, String referer) {
-            this(addonName, title, quality, url, format, fileIndex, sizeBytes, seeds, languages, userAgent, referer, Map.of());
+            this(addonName, title, quality, url, format, fileIndex, sizeBytes, seeds, languages, userAgent, referer, Map.of(), List.of());
         }
 
         Stream(String addonName, String title, String quality, String url, String format, int fileIndex,
                long sizeBytes, int seeds, List<String> languages, String userAgent, String referer,
                Map<String, String> headers) {
+            this(addonName, title, quality, url, format, fileIndex, sizeBytes, seeds, languages, userAgent, referer, headers, List.of());
+        }
+
+        Stream(String addonName, String title, String quality, String url, String format, int fileIndex,
+               long sizeBytes, int seeds, List<String> languages, String userAgent, String referer,
+               Map<String, String> headers, List<StreamSubtitle> subtitles) {
             this.languages = languages;
             this.seeds = seeds;
             this.fileIndex = fileIndex;
@@ -178,6 +189,7 @@ public final class StremioAddons {
             this.userAgent = userAgent == null ? "" : userAgent;
             this.referer = referer == null ? "" : referer;
             this.headers = headers == null || headers.isEmpty() ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(headers));
+            this.subtitles = subtitles == null || subtitles.isEmpty() ? List.of() : List.copyOf(subtitles);
         }
 
         public boolean torrent() { return "torrent".equals(format); }
@@ -700,6 +712,16 @@ public final class StremioAddons {
         return identity.contains("opensubtitles") || identity.contains("subtitle");
     }
 
+    public static boolean providesSubtitles(Addon addon) {
+        if (addon == null) return false;
+        if (addon.resources >= 0) return (addon.resources & SUBTITLES) != 0;
+        BuiltIn bi = builtIn(addon);
+        if (bi != null) return (bi.resources() & SUBTITLES) != 0;
+        JSONObject cached = manifestRules.get(addon.manifestUrl);
+        if (cached != null) return (resourceMask(cached) & SUBTITLES) != 0;
+        return subtitleOnly(addon);
+    }
+
     public static boolean mayCatalog(Addon addon) {
         if (addon == null) return false;
         if (addon.resources >= 0) return (addon.resources & CATALOGS) != 0;
@@ -1187,6 +1209,80 @@ public final class StremioAddons {
         return List.copyOf(episodes.values());
     }
 
+    private static List<StreamSubtitle> parseInlineSubtitles(JSONArray arr) {
+        if (arr == null || arr.length() == 0) return List.of();
+        var out = new ArrayList<StreamSubtitle>();
+        for (int i = 0; i < Math.min(arr.length(), 24); i++) {
+            JSONObject row = arr.optJSONObject(i);
+            if (row == null) continue;
+            String url = optStr(row, "url");
+            if (!isHttpUrl(url)) continue;
+            out.add(new StreamSubtitle(optStr(row, "id"), url, optStr(row, "lang")));
+        }
+        return out;
+    }
+
+    /**
+     * Fetches English/original title, IMDb ID, and release year hints from a Stremio add-on's
+     * /meta/{type}/{id}.json endpoint (e.g. Persian Stremio returns title_en, title_fa, releaseInfo).
+     * Falls back cleanly to extracting any Latin slug from custom IDs (e.g. iplocal_catalog___safar-be-limoonia).
+     */
+    public static AddonMetaHint fetchAddonMetaHint(Addon addon, String mediaType, String id) {
+        String titleEn = "";
+        String titleFa = "";
+        String imdbId = (id != null && id.matches("tt[0-9]+")) ? id : "";
+        int year = -1;
+        if (addon != null && addon.baseUrl != null && !addon.baseUrl.isBlank() && id != null && !id.isBlank()) {
+            String metaType = (mediaType == null || mediaType.isBlank()) ? "movie" : mediaType;
+            try {
+                JSONObject meta = new JSONObject(fetchText(addon.baseUrl + "/meta/"
+                        + Uri.encode(metaType) + "/" + Uri.encode(id) + ".json")).optJSONObject("meta");
+                if (meta != null) {
+                    titleEn = optStr(meta, "title_en");
+                    titleFa = optStr(meta, "title_fa");
+                    String metaName = optStr(meta, "name");
+                    if (titleEn.isBlank() && !metaName.isBlank() && !UnifiedSubtitleEngine.containsNonLatin(metaName)) {
+                        titleEn = metaName;
+                    }
+                    String foundImdb = optStr(meta, "imdb_id");
+                    if (foundImdb.matches("tt[0-9]+")) imdbId = foundImdb;
+                    String rel = optStr(meta, "releaseInfo");
+                    var ym = Pattern.compile("(19|20)\\d{2}").matcher(rel);
+                    if (ym.find()) {
+                        try { year = Integer.parseInt(ym.group()); } catch (Exception ignored) {}
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+        if (titleEn.isBlank() && id != null && id.contains("___")) {
+            String[] segs = id.split("___");
+            if (segs.length >= 2) {
+                String slug = segs[1].replaceAll("[-_]+", " ").trim();
+                if (!slug.isBlank() && !UnifiedSubtitleEngine.containsNonLatin(slug)) {
+                    titleEn = slug;
+                }
+            }
+        }
+        return new AddonMetaHint(titleEn, titleFa, imdbId, year);
+    }
+
+    /**
+     * Queries a specific Stremio add-on's /subtitles/{type}/{itemId}.json directly, supporting
+     * custom idPrefixes (such as Persian Stremio's "ip..." IDs) as well as standard IMDb IDs.
+     */
+    public static List<StreamSubtitle> fetchAddonSubtitles(String addonBaseUrl, String mediaType, String itemId) {
+        if (addonBaseUrl == null || addonBaseUrl.isBlank() || itemId == null || itemId.isBlank()) return List.of();
+        String base = addonBaseUrl.endsWith("/") ? addonBaseUrl.substring(0, addonBaseUrl.length() - 1) : addonBaseUrl;
+        String type = ("series".equalsIgnoreCase(mediaType) || "episode".equalsIgnoreCase(mediaType)) ? "series" : "movie";
+        try {
+            JSONArray rows = new JSONObject(fetchText(base + "/subtitles/" + type + "/" + Uri.encode(itemId) + ".json"))
+                    .optJSONArray("subtitles");
+            return parseInlineSubtitles(rows);
+        } catch (Exception ignored) {
+            return List.of();
+        }
+    }
+
     public static List<String> arabicSubtitleUrls(Context context, String imdb, int season, int episode) {
         return subtitleUrls(context, imdb, season, episode, "ar");
     }
@@ -1433,9 +1529,10 @@ public final class StremioAddons {
                 if (size <= 0) size = displaySize(row.optString("size") + " " + title + " " + (hints == null ? "" : hints.optString("filename")));
                 String metadata = title + " " + (hints == null ? "" : hints.optString("filename"));
                 String languages = row.optString("language", row.optString("languages", ""));
+                List<StreamSubtitle> streamSubs = parseInlineSubtitles(row.optJSONArray("subtitles"));
                 results.add(new Stream(addon.name, title, extractQuality(metadata), url, format,
                         Math.max(-1, row.optInt("fileIdx", -1)), Math.max(0, size), seeds(row, hints, title),
-                        extractLanguages(languages + " " + metadata), streamUa, streamReferer, extraHeaders));
+                        extractLanguages(languages + " " + metadata), streamUa, streamReferer, extraHeaders, streamSubs));
             }
         } catch (HttpFailure failure) {
             if (failure.code == 401 || failure.code == 403 || failure.code == 410 || failure.code == 429) {

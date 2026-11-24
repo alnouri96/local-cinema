@@ -266,7 +266,7 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
     private void openSeriesAudioTracks() {
         Episode episode = currentEpisode();
         if (episode == null || episode.getFileUri() == null) {
-            CinemaLanguagePreferences.showDialog(this, null);
+            CinemaPreferredAudio.choose(this, null);
             return;
         }
         io.execute(() -> {
@@ -293,11 +293,12 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
                     }
                 }
                 List<String> items = new ArrayList<>();
+                boolean ar = CinemaUi.arabic(this);
                 for (int n = 0; n < count; n++) {
                     var track = resolved.getAudioTrack(n);
                     String lang = (track.language == null || track.language.isBlank() || "und".equals(track.language))
                             ? getString(com.archos.mediacenter.video.R.string.cinema_unknown_language)
-                            : new Locale(track.language).getDisplayLanguage(Locale.ENGLISH);
+                            : com.meedx.providers.UnifiedSubtitleConfig.languageDisplay(track.language, ar);
                     String spec = (track.format == null ? "" : track.format)
                             + (track.format != null && !track.format.isBlank() && track.channels != null && !track.channels.isBlank() ? " · " : "")
                             + (track.channels == null ? "" : track.channels);
@@ -306,13 +307,13 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
                     items.add(label);
                 }
                 int priorityRowIndex = items.size();
-                items.add("🌐  " + getString(com.archos.mediacenter.video.R.string.cinema_pref_languages_title)
+                items.add("🌐  " + getString(com.archos.mediacenter.video.R.string.cinema_pref_audio_lang)
                         + "  (" + CinemaPreferredAudio.label(this) + ")");
                 CinemaUi.dialog(this)
                         .setTitle(getString(com.archos.mediacenter.video.R.string.cinema_audio_tracks))
                         .setItems(items.toArray(new String[0]), (dialog, index) -> {
                             if (index == priorityRowIndex) {
-                                CinemaLanguagePreferences.showDialog(this, null);
+                                CinemaPreferredAudio.choose(this, null);
                                 return;
                             }
                             if (index >= 0 && index < count) {
@@ -328,18 +329,47 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
     }
 
     private void subtitleMenu(View anchor){
-        Episode episode=currentEpisode();
-        if(episode==null)return;
-        CinemaActionMenu.show(anchor,
-                new CinemaActionMenu.Action(this.getString(com.archos.mediacenter.video.R.string.cinema_choose_from_episode_folder),()->{
-                    Intent intent=new Intent(this,CinemaFileBrowserActivity.class);
-                    intent.putExtra(CinemaFileBrowserActivity.EXTRA_FILTER_MODE, CinemaFileBrowserActivity.FILTER_SUBTITLES_ONLY);
-                    startActivityForResult(intent, 914);
-                }),
-                new CinemaActionMenu.Action(this.getString(com.archos.mediacenter.video.R.string.cinema_pref_languages_title),
-                        () -> CinemaLanguagePreferences.showDialog(this, null)),
-                new CinemaActionMenu.Action(SubtitleSources.label(this), () -> SubtitleSources.search(this, episode)),
-                new CinemaActionMenu.Action(SubtitleSources.title(this), () -> SubtitleSources.settings(this)));
+        Episode episode = currentEpisode();
+        if (episode == null) return;
+        int savedChoice = episode.getFileUri() != null ? CinemaTrackChoices.embedded(this, episode.getFileUri()) : -2;
+        int activeMode = switch (savedChoice) {
+            case -2 -> CinemaSubtitleHubDialog.hubModeFromCentral(this);
+            case -3 -> CinemaSubtitleHubDialog.MODE_MOVIE_SOURCE;
+            case -1 -> CinemaSubtitleHubDialog.MODE_OFF;
+            default -> CinemaSubtitleHubDialog.MODE_CUSTOM_TRACK;
+        };
+        CinemaSubtitleHubDialog.create(this)
+                .title(label(this, "مركز الترجمة · ", "Subtitle Hub · ")
+                        + String.format(java.util.Locale.US, "S%02dE%02d", episode.getSeasonNumber(), episode.getEpisodeNumber()))
+                .subtitleMode(activeMode,
+                        () -> {
+                            CinemaSubtitleHubDialog.saveCentralMode(this,
+                                    com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_AUTO);
+                            if (episode.getFileUri() != null) CinemaTrackChoices.embedded(this, episode.getFileUri(), -2);
+                            Toast.makeText(this, getString(com.archos.mediacenter.video.R.string.cinema_subtitle_choice_saved_for_playback), Toast.LENGTH_SHORT).show();
+                        },
+                        () -> {
+                            CinemaSubtitleHubDialog.saveCentralMode(this,
+                                    com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_MOVIE_SOURCE);
+                            if (episode.getFileUri() != null) CinemaTrackChoices.embedded(this, episode.getFileUri(), -3);
+                            Toast.makeText(this, getString(com.archos.mediacenter.video.R.string.cinema_subtitle_choice_saved_for_playback), Toast.LENGTH_SHORT).show();
+                        },
+                        () -> CinemaAutoSubtitleFetcher.fetchNow(this, episode.getFileUri(), episode.getShowName(),
+                                null, null, -1, true, episode.getSeasonNumber(), episode.getEpisodeNumber(),
+                                savedUri -> {
+                                    if (episode.getFileUri() != null) CinemaTrackChoices.embedded(this, episode.getFileUri(), -3);
+                                },
+                                () -> SubtitleSources.search(this, episode)),
+                        () -> {
+                            CinemaSubtitleHubDialog.saveCentralMode(this,
+                                    com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_OFF);
+                            if (episode.getFileUri() != null) CinemaTrackChoices.embedded(this, episode.getFileUri(), -1);
+                            Toast.makeText(this, getString(com.archos.mediacenter.video.R.string.cinema_subtitle_choice_saved_for_playback), Toast.LENGTH_SHORT).show();
+                        })
+                .onSearchOnline(() -> SubtitleSources.search(this, episode))
+                .onPickMovieSource(() -> startActivityForResult(
+                        CinemaFileBrowserActivity.subtitlePickerIntent(this, episode.getFileUri(), false), 914))
+                .show();
     }
 
     private void moreMenu(View anchor){

@@ -50,6 +50,7 @@ import java.util.ArrayList;
  */
 public class TVCardView extends FrameLayout implements Checkable, FocusableTVCardView, TVSlaveView {
     private static final float MIN_FOCUSED_CARDVIEW_HEIGHT_COEFF = (float) 1.1;
+    private float expandedWidthFactor = 1.2f;
     private int pos;
     private int originalWidth;
     private Boolean expandedState;
@@ -126,6 +127,11 @@ public class TVCardView extends FrameLayout implements Checkable, FocusableTVCar
         }
     }
     //dimensions for animations
+
+    public void setExpandedWidthFactor(float factor) {
+        this.expandedWidthFactor = Math.max(1.2f, Math.min(2.4f, factor));
+        if (slaveView != null) slaveView.setExpandedWidthFactor(this.expandedWidthFactor);
+    }
 
     public TVCardView getSlaveView(){return slaveView;}
     public int getCurrentWidth() {
@@ -244,6 +250,7 @@ public class TVCardView extends FrameLayout implements Checkable, FocusableTVCar
             this.slaveView.setOriginalWidth(originalWidth);
             this.slaveView.setOriginalHeight(originalHeight);
             this.slaveView.setOriginalX(originalX);
+            this.slaveView.setExpandedWidthFactor(expandedWidthFactor);
             for(View v:others){
                 if(v instanceof TVSlaveView){
                     if(((TVSlaveView)v).getSlaveView()==null)
@@ -440,17 +447,21 @@ public class TVCardView extends FrameLayout implements Checkable, FocusableTVCar
             boolean scale = true;
             int new_cardview_height = (int) MIN_FOCUSED_CARDVIEW_HEIGHT_COEFF*originalHeight;
             float coeff_image_view = (float) 1.1;
+            DisplayMetrics metrics = mContext.getResources().getDisplayMetrics();
+            int expandedWidth = Math.round(originalWidth * expandedWidthFactor);
+            int maxWidthCap = Math.round(metrics.widthPixels * 0.62f);
+            if (expandedWidth > maxWidthCap) expandedWidth = maxWidthCap;
             if (others.size() > 0) {
                 scale = false;
                 coeff_image_view = (float) 0.55;
                 int totalHeight = 0;
+                int widthSpec = MeasureSpec.makeMeasureSpec(expandedWidth, MeasureSpec.AT_MOST);
                 for (View v : others) {
-                    if (v.getMeasuredHeight() == 0) v.measure(MeasureSpec.UNSPECIFIED, MeasureSpec.UNSPECIFIED);
+                    v.measure(widthSpec, MeasureSpec.UNSPECIFIED);
                     totalHeight += v.getMeasuredHeight();
                 }
                 int desiredHeight = (int) (totalHeight + originalHeight * coeff_image_view + 36);
                 new_cardview_height = Math.max((int) (originalHeight * 2.2f), desiredHeight);
-                DisplayMetrics metrics = mContext.getResources().getDisplayMetrics();
                 int maxCap = Math.round(metrics.heightPixels * 0.80f);
                 if (new_cardview_height > maxCap) new_cardview_height = maxCap;
             }
@@ -458,9 +469,9 @@ public class TVCardView extends FrameLayout implements Checkable, FocusableTVCar
                 new_cardview_height= (int) (MIN_FOCUSED_CARDVIEW_HEIGHT_COEFF*originalHeight);
 
             a = new ExpandAnimation(
-                    (int)(originalX+((float)(originalWidth-originalWidth*1.2))/2.0),
-                    (int) (originalWidth*1.2), (int)( new_cardview_height),
-                    scale?(float)(1.2):originalWidth*(float)(1.2),
+                    Math.round(originalX + (originalWidth - expandedWidth) / 2.0f),
+                    expandedWidth, (int)( new_cardview_height),
+                    scale?(float)(1.2):(float) expandedWidth,
                     scale?(float)(1.2):originalHeight*coeff_image_view, scale, 255, null);
             a.setAnimationListener(new Animation.AnimationListener() {
                 @Override

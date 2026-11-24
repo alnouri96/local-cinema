@@ -3,330 +3,829 @@ package com.archos.mediacenter.video.leanback.cinema;
 import android.app.Activity;
 import android.content.Intent;
 import android.database.Cursor;
+import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.Gravity;
+import android.view.View;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
+import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
-import androidx.appcompat.app.AlertDialog;
+import android.widget.Toast;
+
 import androidx.preference.PreferenceManager;
+
+import com.archos.mediacenter.video.R;
 import com.archos.mediacenter.video.browser.adapters.mappers.VideoCursorMapper;
-import com.archos.mediacenter.video.browser.adapters.object.Video;
-import com.archos.mediacenter.video.browser.adapters.object.Movie;
 import com.archos.mediacenter.video.browser.adapters.object.Episode;
+import com.archos.mediacenter.video.browser.adapters.object.Movie;
 import com.archos.mediacenter.video.browser.adapters.object.NonIndexedVideo;
+import com.archos.mediacenter.video.browser.adapters.object.Video;
 import com.archos.mediacenter.video.leanback.LeanbackActivity;
 import com.archos.mediacenter.video.leanback.details.VideoDetailsFragment;
 import com.archos.mediascraper.BaseTags;
-import com.meedx.providers.ApiKeyStore;
+import com.meedx.providers.SubtitleArabicTranslator;
 import com.meedx.providers.SubtitleMatch;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.meedx.providers.UnifiedSubtitleConfig;
+import com.meedx.providers.UnifiedSubtitleEngine;
+
 import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
 import static com.archos.mediacenter.video.leanback.cinema.CinemaUi.*;
 
+/**
+ * Unified Smart Multi-Source Subtitle Search on TV:
+ * - Resolves Arabic/Persian/non-English titles into verified English/IMDb candidates without false guessing.
+ * - Provides a one-click Title Candidates Switcher (English suggestions, Original source title, Manual/Phone paste).
+ * - Lets users search All Enabled sources, a single source, or any multi-select subset.
+ * - Supports one-click Arabic translation for English/Persian/foreign subtitles via live-verified SubtitleArabicTranslator.
+ */
 public class SubsourceSearchActivity extends LeanbackActivity {
-    private final ExecutorService io=Executors.newSingleThreadExecutor();
-    private final ExecutorService openIo = Executors.newSingleThreadExecutor();
-    private LinearLayout openResults;
-    private boolean bothProviders;
-    private final Handler handler=new Handler(Looper.getMainLooper());
-    private Video video;private String imdb;private int season=-1,episode=-1,year=-1;
-    private Double videoFps;
-    private String searchTitle;
-    private String downloadRelease;
+    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final Handler handler = new Handler(Looper.getMainLooper());
+
+    private Video video;
+    private String imdb = "";
+    private int season = -1;
+    private int episode = -1;
+    private int year = -1;
+    private boolean isSeries = false;
+    private String rawDisplayTitle = "";
+    private String intentEnglishHint = "";
+    private String resolvedEnglishTitle = "";
     private String language;
-    private TextView languageButton;
-    private EditText query;private TextView status;private LinearLayout results;
-    private SubsourceClient api;private boolean busy;private int requestGeneration;
-    private final List<Match> matches=new ArrayList<>();
-    private record Match(long id,String release,String language,SubtitleMatch.Result rank){}
-    private String l(String ar,String en){return label(this,ar,en);}
-    @Override public void onCreate(Bundle state){
-        super.onCreate(state);bothProviders=getIntent().getBooleanExtra("both_providers",false);language=CinemaAutoSubtitles.preferredLanguage(this);video=(Video)getIntent().getSerializableExtra(VideoDetailsFragment.EXTRA_VIDEO);
-        ScrollView scroll=new ScrollView(this);scroll.setBackground(CinemaUi.surface());LinearLayout content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);content.setPadding(dp(this,CinemaTokens.UTILITY_GUTTER),dp(this,CinemaTokens.SAFE),dp(this,CinemaTokens.UTILITY_GUTTER),dp(this,CinemaTokens.SAFE));scroll.addView(content);setContentView(scroll);
-        TextView title=text(this,CinemaTokens.PAGE_TITLE,true);title.setText(bothProviders ? SubtitleSources.label(this) : l("بحث عن الترجمة","Search Subtitles"));content.addView(title);
-        status=text(this,CinemaTokens.LABEL,false);status.setPadding(0,dp(this,12),0,dp(this,12));content.addView(status);
-        query=new EditText(this);query.setTextColor(android.graphics.Color.WHITE);query.setSingleLine(true);query.setHintTextColor(0xff8899aa);query.setHint(l("اسم الفيلم أو المسلسل","Movie or show title"));content.addView(CinemaPhoneLink.pasteBadge(this));content.addView(query);
-        languageButton=button(content,languageLabel(),this::chooseLanguage);
-        button(content,l("بحث","Search"),this::search);
-        button(content,SubtitleSources.title(this),()->startActivity(new Intent(this,SubsourceSettingsActivity.class)));
-        openResults = new LinearLayout(this);
-        openResults.setOrientation(LinearLayout.VERTICAL);
-        content.addView(openResults);
-        results=new LinearLayout(this);results.setOrientation(LinearLayout.VERTICAL);content.addView(results);
-        status.setText(l("جارٍ قراءة معلومات الفيديو…","Reading video information…"));
-        io.execute(()->{
-            try{
-                if(video==null){long id=getIntent().getLongExtra("video_id",-1);
-                    if(id>=0){try(Cursor c=getContentResolver().query(com.archos.mediaprovider.video.VideoStore.Video.Media.EXTERNAL_CONTENT_URI,
-                            com.archos.mediacenter.video.browser.loader.VideoLoader.mProjection,"_id=?",new String[]{Long.toString(id)},null)){
-                        if(c!=null&&c.moveToFirst()){VideoCursorMapper m=new VideoCursorMapper();m.bindColumns(c);video=(Video)m.bind(c);}}}
-                    if(video==null&&getIntent().getData()!=null)video=new NonIndexedVideo(getIntent().getData(),getIntent().getData(),getIntent().getStringExtra("title"),null);
-                }
-                if(video==null)throw new Exception();
-                String intentTitle=cleanTitle(getIntent().getStringExtra("title"));
-                String intentHeading=cleanTitle(getIntent().getStringExtra("addon_heading"));
-                String intentImdb=cleanTitle(getIntent().getStringExtra("imdb_id"));
-                int intentSeason=getIntent().getIntExtra("season",-1);
-                int intentEpisode=getIntent().getIntExtra("episode",-1);
-                if(intentImdb.matches("tt[0-9]+"))imdb=intentImdb;
-                if(intentSeason>0)season=intentSeason;
-                if(intentEpisode>0)episode=intentEpisode;
-                if(video instanceof Movie movie)year=movie.getYear();
-                if(video instanceof Episode ep){season=ep.getSeasonNumber();episode=ep.getEpisodeNumber();}
-                BaseTags tags=video.getFullScraperTags(getApplicationContext());if(tags!=null&&(imdb==null||imdb.isBlank()))imdb=tags.getImdbId();
-                searchTitle=cleanTitle(video.getName());
-                if(video instanceof Movie movie&&!arabic(this))try{CinemaArtwork.Art art=CinemaArtwork.load(getApplicationContext(),movie.getOnlineId(),false,"en");if(art!=null&&!cleanTitle(art.title()).isEmpty())searchTitle=cleanTitle(art.title());}catch(Exception ignored){}
-                if(tags instanceof com.archos.mediascraper.EpisodeTags ep){
-                    com.archos.mediascraper.ShowTags show=com.archos.mediascraper.TagsFactory.buildShowTags(getApplicationContext(),ep.getShowId());
-                    if(show!=null){if(imdb==null||imdb.isBlank())imdb=show.getImdbId();if(!cleanTitle(show.getTitle()).isEmpty())searchTitle=cleanTitle(show.getTitle());}
-                }
-                Uri uri=video.getFileUri();
-                boolean isHttp=uri!=null&&("http".equalsIgnoreCase(uri.getScheme())||"https".equalsIgnoreCase(uri.getScheme()));
-                if(!video.hasScraperData()&&!isHttp){
-                    com.archos.mediascraper.preprocess.SearchInfo parsed=com.archos.mediascraper.preprocess.SearchPreprocessor.instance().parseFileBased(uri,uri);
-                    if(parsed instanceof com.archos.mediascraper.preprocess.MovieSearchInfo movie){String n=cleanTitle(movie.getName());if(!n.isEmpty())searchTitle=n;try{year=Integer.parseInt(movie.getYear());}catch(Exception ignored){}}
-                    if(parsed instanceof com.archos.mediascraper.preprocess.TvShowSearchInfo show){String n=cleanTitle(show.getShowName());if(!n.isEmpty())searchTitle=n;if(season<0)season=show.getSeason();if(episode<0)episode=show.getEpisode();}
-                }
-                if(!intentHeading.isEmpty()&&(searchTitle.isEmpty()||isHttp||"video".equalsIgnoreCase(searchTitle)))searchTitle=intentHeading;
-                else if(!intentTitle.isEmpty()&&(searchTitle.isEmpty()||isHttp||"video".equalsIgnoreCase(searchTitle)))searchTitle=stripEpisodeSuffix(intentTitle);
-                if(searchTitle.isEmpty())searchTitle=stripEpisodeSuffix(intentTitle);
-                if(video.isIndexed())try(Cursor fps=getContentResolver().query(com.archos.mediaprovider.video.VideoStore.Video.Media.EXTERNAL_CONTENT_URI,
-                        new String[]{com.archos.mediaprovider.video.VideoStore.Video.VideoColumns.ARCHOS_FRAMES_PER_THOUSAND_SECONDS},"_id=?",new String[]{Long.toString(video.getId())},null)){
-                    if(fps!=null&&fps.moveToFirst()&&fps.getDouble(0)>0)videoFps=fps.getDouble(0)/1000.0;
-                }catch(Exception ignored){/* Unknown frame rate is not treated as evidence. */}
-                handler.post(()->{
-                    if(isDestroyed())return;
-                    query.setText(searchTitle);
-                    query.setSelection(query.getText().length());
-                    if(!searchTitle.isEmpty()||(imdb!=null&&imdb.matches("tt[0-9]+")))search();
-                    else{status.setText(l("اكتب اسم الفيلم أو المسلسل ثم اضغط بحث","Type the movie or show title and press Search"));query.requestFocus();}
-                });
-            }catch(Exception e){message(l("تعذر قراءة معلومات الفيديو","Could not read video information"));}
-        });
-    }
-    private static String cleanTitle(String raw){if(raw==null)return "";String t=raw.trim();return (t.isEmpty()||"null".equalsIgnoreCase(t))?"":t;}
-    private static String stripEpisodeSuffix(String title){return title==null?"":title.replaceAll("(?i)\\s*S\\d{1,2}\\s*E\\d{1,3}.*$","").trim();}
-    private TextView button(LinearLayout parent,String text,Runnable action){TextView t=CinemaUi.text(this,CinemaTokens.BODY,false);t.setText(text);t.setPadding(dp(this,16),dp(this,11),dp(this,16),dp(this,11));focusable(t);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.topMargin=dp(this,8);parent.addView(t,p);t.setOnClickListener(v->action.run());return t;}
-    private String languageLabel(){
-        return l("لغة البحث · ","Search language · ")+CinemaAutoSubtitles.languageLabel(language);
+    private List<UnifiedSubtitleEngine.TitleCandidate> titleCandidates = List.of();
+    private String activeChipKey = "";
+
+    private EditText query;
+    private TextView resolvedBadge;
+    private HorizontalScrollView candidatesScroll;
+    private LinearLayout candidatesRow;
+    private TextView status;
+    private LinearLayout sourceCard;
+    private LinearLayout languageCard;
+    private LinearLayout results;
+    private boolean busy;
+    private int requestGeneration;
+
+    private String l(String ar, String en) { return label(this, ar, en); }
+
+    @Override
+    public void onCreate(Bundle state) {
+        super.onCreate(state);
+        CinemaSubtitleSyncBridge.ensureBootstrapped(this);
+        boolean rtl = arabic(this);
+        language = UnifiedSubtitleConfig.primaryLanguage(this);
+        video = (Video) getIntent().getSerializableExtra(VideoDetailsFragment.EXTRA_VIDEO);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackground(CinemaUi.surface());
+        scroll.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+        scroll.setClipChildren(false);
+        scroll.setClipToPadding(false);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+        content.setClipChildren(false);
+        content.setClipToPadding(false);
+        content.setPadding(dp(this, CinemaTokens.UTILITY_GUTTER), dp(this, CinemaTokens.SAFE),
+                dp(this, CinemaTokens.UTILITY_GUTTER), dp(this, CinemaTokens.SAFE));
+        scroll.addView(content);
+        setContentView(scroll);
+
+        TextView title = text(this, CinemaTokens.PAGE_TITLE, true);
+        title.setText(l("البحث الذكي عن الترجمة", "Smart Multi-Source Subtitle Search"));
+        content.addView(title);
+
+        resolvedBadge = text(this, 13, true);
+        resolvedBadge.setTextColor(CinemaTokens.GOLD);
+        resolvedBadge.setBackground(rounded(0xff232018, dp(this, 10), 0xff5a4a24));
+        resolvedBadge.setPadding(dp(this, 12), dp(this, 8), dp(this, 12), dp(this, 8));
+        resolvedBadge.setVisibility(View.GONE);
+        LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(-1, -2);
+        badgeLp.topMargin = dp(this, 8);
+        content.addView(resolvedBadge, badgeLp);
+
+        status = text(this, CinemaTokens.LABEL, false);
+        status.setTextColor(0xffb8b8c0);
+        status.setPadding(0, dp(this, 10), 0, dp(this, 8));
+        content.addView(status);
+
+        content.addView(CinemaPhoneLink.pasteBadge(this));
+        query = new EditText(this);
+        query.setTextColor(Color.WHITE);
+        query.setSingleLine(true);
+        query.setHintTextColor(0xff8899aa);
+        query.setHint(l("اسم الفيلم أو المسلسل (بالعربية أو الإنجليزية)", "Movie or show title (Arabic or English)"));
+        query.setBackground(rounded(0xff1d1e24, dp(this, 10), 0xff3b3932));
+        query.setPadding(dp(this, 14), dp(this, 12), dp(this, 14), dp(this, 12));
+        LinearLayout.LayoutParams qLp = new LinearLayout.LayoutParams(-1, -2);
+        qLp.bottomMargin = dp(this, 8);
+        content.addView(query, qLp);
+
+        // Quick Title Candidates Switcher (English Suggestions / Original Source Title / Manual Edit & Paste)
+        candidatesScroll = new HorizontalScrollView(this);
+        candidatesScroll.setHorizontalScrollBarEnabled(false);
+        candidatesScroll.setClipChildren(false);
+        candidatesScroll.setClipToPadding(false);
+        candidatesScroll.setVisibility(View.GONE);
+        candidatesRow = new LinearLayout(this);
+        candidatesRow.setOrientation(LinearLayout.HORIZONTAL);
+        candidatesRow.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+        candidatesRow.setClipChildren(false);
+        candidatesRow.setClipToPadding(false);
+        candidatesRow.setPadding(0, dp(this, 2), 0, dp(this, 6));
+        candidatesScroll.addView(candidatesRow);
+        LinearLayout.LayoutParams csLp = new LinearLayout.LayoutParams(-1, -2);
+        csLp.bottomMargin = dp(this, 8);
+        content.addView(candidatesScroll, csLp);
+
+        // Source Selector (All Enabled / Single Source / Multi-Select)
+        sourceCard = settingsCard(this, content, R.drawable.cinema_ic_addons,
+                l("مصادر البحث عن الترجمة", "Subtitle Search Sources"),
+                UnifiedSubtitleConfig.searchSelectionSummary(this, rtl),
+                null, null, this::openSourcePickerDialog);
+
+        // Language Selector
+        languageCard = settingsCard(this, content, R.drawable.cinema_globe,
+                l("لغة البحث", "Search Language"),
+                UnifiedSubtitleConfig.languageDisplay(language, rtl),
+                null, null, this::chooseLanguage);
+
+        // Action Buttons Row (Search + Unified Settings)
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setClipChildren(false);
+        btnRow.setClipToPadding(false);
+        LinearLayout.LayoutParams brLp = new LinearLayout.LayoutParams(-1, -2);
+        brLp.bottomMargin = dp(this, 14);
+        content.addView(btnRow, brLp);
+
+        TextView searchBtn = actionPill(l("بحث الآن", "Search Now"), true, this::runSearch);
+        LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(0, -2, 1f);
+        sLp.setMarginEnd(dp(this, 10));
+        btnRow.addView(searchBtn, sLp);
+
+        TextView settingsBtn = actionPill(l("إعدادات ومصادر الترجمة", "Subtitle Settings & Sources"), false,
+                () -> startActivity(new Intent(this, SubsourceSettingsActivity.class)));
+        btnRow.addView(settingsBtn, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        results = new LinearLayout(this);
+        results.setOrientation(LinearLayout.VERTICAL);
+        results.setClipChildren(false);
+        results.setClipToPadding(false);
+        content.addView(results);
+
+        status.setText(l("جارٍ تحليل معلومات الفيديو وجلب الاسم الإنجليزي الأصلي…",
+                "Reading video info & resolving original English title…"));
+        loadVideoMetadataAndSearch();
     }
 
-    private void chooseLanguage(){
-        if(busy)return;
-        CinemaAutoSubtitles.chooseLanguage(this,language,true,selected->{
-            language=selected;
-            languageButton.setText(languageLabel());
-            search();
-        });
+    @Override
+    public void onResume() {
+        super.onResume();
+        if (sourceCard != null) {
+            updateSettingsCardSubtitle(sourceCard, UnifiedSubtitleConfig.searchSelectionSummary(this, arabic(this)));
+        }
     }
-    private void message(String text){handler.post(()->{if(!isDestroyed())status.setText(text);});}
-    private void fail(Exception e){if(e instanceof SubsourceClient.ApiException a)message(a.userMessage(this));else message(l("تعذرت العملية. تحقق من الشبكة وصلاحية البيانات.","The operation failed. Check the connection and data."));}
-    private void search(){
-        if(busy||video==null)return;
-        String title=query.getText().toString().trim();if(title.isEmpty())return;
-        busy=true;results.removeAllViews();openResults.removeAllViews();status.setText(l("جارٍ البحث في المصادر المفتوحة والمحفوظة…","Searching open & configured subtitle sources…"));int token=++requestGeneration;
-        searchZeroAndOpen(title, token);
-        io.execute(()->{
-            try{
-                List<String> keys=new ApiKeyStore(this).read();
-                if(keys.isEmpty()){
-                    handler.post(()->{busy=false;});
-                    return;
-                }
-                api=new SubsourceClient(getApplicationContext(),keys.get(0));
-                boolean useImdb=imdb!=null&&imdb.matches("tt[0-9]+")&&title.equals(searchTitle);
-                String path=useImdb?"/movies/search?searchType=imdb&imdb="+SubsourceClient.encode(imdb):"/movies/search?searchType=text&q="+SubsourceClient.encode(title);
-                if(!useImdb&&year>0)path+="&year="+year;
-                if(season>=0)path+="&season="+season;
-                JSONArray found=api.json(path).getJSONArray("data");
-                List<JSONObject> unique=new ArrayList<>();Set<Long> ids=new HashSet<>();
-                for(int n=0;n<found.length();n++){JSONObject movie=found.getJSONObject(n);long id=movie.optLong("movieId",-1);if(id>=0&&ids.add(id)&&(!useImdb||imdb.equals(movie.optString("imdbId"))))unique.add(movie);}
-                handler.post(()->{
-                    if(isDestroyed()||token!=requestGeneration)return;
-                    busy=false;
-                    List<JSONObject> exact=new ArrayList<>();for(JSONObject candidate:unique){boolean identity=useImdb&&imdb!=null&&imdb.equals(candidate.optString("imdbId"));boolean rightSeason=season<0||candidate.optInt("season",-1)==season;if(identity&&rightSeason)exact.add(candidate);}
-                    if(exact.size()==1){loadSubtitles(exact.get(0).optLong("movieId"),1,true);return;}
-                    status.setText(unique.isEmpty()?l("لم تُعثر نتائج مطابقة","No matching titles found"):l("اختر العمل الصحيح والسنة","Choose the correct title and year"));
-                    for(JSONObject movie:unique)button(results,movie.optString("title")+" · "+movie.optInt("releaseYear")+(movie.optInt("season",0)>0?" · S"+movie.optInt("season"):""),()->loadSubtitles(movie.optLong("movieId"),1,true));
-                    if(results.getChildCount()>0)results.getChildAt(0).requestFocus();
-                });
-            }catch(Exception e){fail(e);handler.post(()->busy=false);}
-        });
-    }
-    private void searchZeroAndOpen(String title, int token) {
-        openResults.removeAllViews();
-        String key = com.meedx.providers.ProviderKeys.get(this, com.meedx.providers.ProviderKeys.OPEN_SUBTITLES);
-        String identity = title.equals(searchTitle) ? imdb : null;
-        String chosenLanguage = language;
-        boolean isSeries = season >= 0 || episode >= 0;
-        openIo.execute(() -> {
-            // 1. Keyless Zero-Account open subtitles (OpenSubtitles v3 + Wyzie)
-            try {
-                String resolvedImdb = identity;
-                if (resolvedImdb == null || !resolvedImdb.matches("tt[0-9]+")) {
-                    com.meedx.providers.OpenMetadata.Item found = com.meedx.providers.OpenMetadata.lookup(
-                            new com.meedx.providers.OpenMetadata.Query(title, year > 0 ? year : 0, isSeries), null);
-                    if (found != null && found.imdb() != null && found.imdb().matches("tt[0-9]+")) {
-                        resolvedImdb = found.imdb();
-                    }
-                }
-                List<com.meedx.providers.ZeroConfigSubtitles.Item> freeList =
-                        com.meedx.providers.ZeroConfigSubtitles.search(resolvedImdb, isSeries, season, episode, chosenLanguage);
-                handler.post(() -> {
-                    if (isDestroyed() || isFinishing() || token != requestGeneration) return;
-                    for (com.meedx.providers.ZeroConfigSubtitles.Item item : freeList) {
-                        button(openResults, "[" + item.source + "] " + CinemaAutoSubtitles.languageLabel(item.language)
-                                + "\n" + item.release, () -> downloadZeroConfig(item));
-                    }
-                    if (!freeList.isEmpty()) {
-                        status.setText(l("نتائج مجانية جاهزة للتحميل الفوري (بدون حساب).",
-                                "Free subtitles ready for instant download (Zero-Account)."));
-                        if (openResults.getChildCount() > 0 && results.getChildCount() == 0) {
-                            openResults.getChildAt(0).requestFocus();
-                        }
-                    }
-                });
-            } catch (Exception ignored) {}
 
-            // 2. Optional user OpenSubtitles API results when key is configured
-            if (!key.isEmpty()) {
-                try {
-                    List<OpenSubtitleSearch.Match> found = OpenSubtitleSearch.search(
-                            key, title, identity, season, episode, chosenLanguage);
-                    handler.post(() -> {
-                        if (isDestroyed() || isFinishing() || token != requestGeneration) return;
-                        for (OpenSubtitleSearch.Match match : found) {
-                            button(openResults, "[OpenSubtitles API] " + CinemaAutoSubtitles.languageLabel(match.language())
-                                    + "\n" + match.name(), () -> confirmOpen(match));
-                        }
-                    });
-                } catch (Exception ignored) {}
+    private TextView actionPill(String labelText, boolean primary, Runnable click) {
+        TextView tv = text(this, 15, true);
+        tv.setText(labelText);
+        tv.setGravity(Gravity.CENTER);
+        tv.setFocusable(true);
+        tv.setClickable(true);
+        tv.setPadding(dp(this, 14), dp(this, 12), dp(this, 14), dp(this, 12));
+        Runnable rest = () -> {
+            tv.setBackground(rounded(primary ? 0xff2b2517 : 0xff1d1e21, dp(this, 10),
+                    primary ? CinemaTokens.GOLD : 0xff34322c));
+            tv.setTextColor(primary ? CinemaTokens.GOLD : CinemaTokens.TEXT);
+        };
+        rest.run();
+        tv.setOnFocusChangeListener((v, has) -> {
+            if (has) {
+                tv.setBackground(rounded(CinemaTokens.FOCUS, dp(this, 10), CinemaTokens.FOCUS));
+                tv.setTextColor(0xff141517);
             } else {
-                handler.post(() -> {
-                    if (isDestroyed() || isFinishing() || token != requestGeneration) return;
-                    if (openResults.getChildCount() == 0 && results.getChildCount() == 0 && !busy) {
-                        status.setText(l("لم يتم العثور على ترجمات مطابقة حالياً.", "No matching subtitles found."));
+                rest.run();
+            }
+        });
+        tv.setOnClickListener(v -> click.run());
+        return tv;
+    }
+
+    private void renderTitleCandidateChips() {
+        candidatesRow.removeAllViews();
+        boolean hasAny = false;
+
+        // 1. Top 1–3 verified English/IMDb candidates
+        for (int i = 0; i < Math.min(3, titleCandidates.size()); i++) {
+            final UnifiedSubtitleEngine.TitleCandidate cand = titleCandidates.get(i);
+            String chipLabel = cand.title() + (cand.year() > 0 ? " (" + cand.year() + ")" : "");
+            String chipKey = "cand:" + cand.title() + ":" + cand.imdbId();
+            boolean active = chipKey.equals(activeChipKey);
+            addCandidateChip(chipLabel, active, () -> {
+                if (busy) return;
+                activeChipKey = chipKey;
+                resolvedEnglishTitle = cand.title();
+                imdb = cand.imdbId();
+                if (cand.year() > 0) year = cand.year();
+                query.setText(cand.title());
+                query.setSelection(query.getText().length());
+                renderTitleCandidateChips();
+                runSearch();
+            });
+            hasAny = true;
+        }
+
+        // 2. Original source title chip (e.g. Persian / Arabic / filename title as-is)
+        if (rawDisplayTitle != null && !rawDisplayTitle.isBlank()) {
+            boolean alreadyShown = false;
+            for (UnifiedSubtitleEngine.TitleCandidate c : titleCandidates) {
+                if (c.title().equalsIgnoreCase(rawDisplayTitle)) {
+                    alreadyShown = true;
+                    break;
+                }
+            }
+            if (!alreadyShown) {
+                String origKey = "orig:" + rawDisplayTitle;
+                boolean active = origKey.equals(activeChipKey);
+                addCandidateChip(getString(R.string.cinema_sub_chip_source_title, rawDisplayTitle), active, () -> {
+                    if (busy) return;
+                    activeChipKey = origKey;
+                    resolvedEnglishTitle = rawDisplayTitle;
+                    imdb = "";
+                    query.setText(rawDisplayTitle);
+                    query.setSelection(query.getText().length());
+                    renderTitleCandidateChips();
+                    runSearch();
+                });
+                hasAny = true;
+            }
+        }
+
+        // 3. Manual Edit / Phone Paste chip
+        addCandidateChip(getString(R.string.cinema_sub_chip_manual_paste), false, () -> {
+            query.requestFocus();
+            query.selectAll();
+            try {
+                InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (imm != null) imm.showSoftInput(query, InputMethodManager.SHOW_IMPLICIT);
+            } catch (Exception ignored) {}
+        });
+        hasAny = true;
+
+        candidatesScroll.setVisibility(hasAny ? View.VISIBLE : View.GONE);
+    }
+
+    private void addCandidateChip(String labelText, boolean active, Runnable click) {
+        TextView chip = text(this, 13, true);
+        chip.setText(active ? (labelText + " ✓") : labelText);
+        chip.setSingleLine(true);
+        chip.setFocusable(true);
+        chip.setClickable(true);
+        chip.setPadding(dp(this, 12), dp(this, 8), dp(this, 12), dp(this, 8));
+        Runnable rest = () -> {
+            chip.setBackground(rounded(active ? 0xff2b2517 : 0xff1d1e24, dp(this, 16),
+                    active ? CinemaTokens.GOLD : 0xff3b3932));
+            chip.setTextColor(active ? 0xfff8e2a6 : CinemaTokens.TEXT);
+        };
+        rest.run();
+        chip.setOnFocusChangeListener((v, has) -> {
+            if (has) {
+                chip.setBackground(rounded(CinemaTokens.FOCUS, dp(this, 16), CinemaTokens.FOCUS));
+                chip.setTextColor(0xff141517);
+            } else {
+                rest.run();
+            }
+        });
+        chip.setOnClickListener(v -> click.run());
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.setMarginEnd(dp(this, 8));
+        candidatesRow.addView(chip, lp);
+    }
+
+    private void loadVideoMetadataAndSearch() {
+        io.execute(() -> {
+            try {
+                if (video == null) {
+                    long id = getIntent().getLongExtra("video_id", -1);
+                    if (id >= 0) {
+                        try (Cursor c = getContentResolver().query(
+                                com.archos.mediaprovider.video.VideoStore.Video.Media.EXTERNAL_CONTENT_URI,
+                                com.archos.mediacenter.video.browser.loader.VideoLoader.mProjection,
+                                "_id=?", new String[]{Long.toString(id)}, null)) {
+                            if (c != null && c.moveToFirst()) {
+                                VideoCursorMapper m = new VideoCursorMapper();
+                                m.bindColumns(c);
+                                video = (Video) m.bind(c);
+                            }
+                        }
                     }
+                    if (video == null && getIntent().getData() != null) {
+                        video = new NonIndexedVideo(getIntent().getData(), getIntent().getData(),
+                                getIntent().getStringExtra("title"), null);
+                    }
+                }
+                String intentTitle = cleanTitle(getIntent().getStringExtra("title"));
+                intentEnglishHint = cleanTitle(getIntent().getStringExtra("english_title"));
+                String intentHeading = cleanTitle(getIntent().getStringExtra("addon_heading"));
+                String intentImdb = cleanTitle(getIntent().getStringExtra("imdb_id"));
+                int intentYear = getIntent().getIntExtra("release_year", -1);
+                int intentSeason = getIntent().getIntExtra("season", -1);
+                int intentEpisode = getIntent().getIntExtra("episode", -1);
+                if (intentImdb.matches("tt[0-9]+")) imdb = intentImdb;
+                if (intentYear > 0) year = intentYear;
+                if (intentSeason > 0) season = intentSeason;
+                if (intentEpisode > 0) episode = intentEpisode;
+
+                if (video instanceof Movie movie && year <= 0) year = movie.getYear();
+                if (video instanceof Episode ep) {
+                    season = ep.getSeasonNumber();
+                    episode = ep.getEpisodeNumber();
+                    isSeries = true;
+                }
+                if (video != null) {
+                    BaseTags tags = video.getFullScraperTags(getApplicationContext());
+                    if (tags != null && imdb.isEmpty() && tags.getImdbId() != null) imdb = tags.getImdbId();
+                    rawDisplayTitle = cleanTitle(video.getName());
+                    if (tags instanceof com.archos.mediascraper.EpisodeTags epTags) {
+                        isSeries = true;
+                        com.archos.mediascraper.ShowTags show = com.archos.mediascraper.TagsFactory
+                                .buildShowTags(getApplicationContext(), epTags.getShowId());
+                        if (show != null) {
+                            if (imdb.isEmpty() && show.getImdbId() != null) imdb = show.getImdbId();
+                            if (!cleanTitle(show.getTitle()).isEmpty()) rawDisplayTitle = cleanTitle(show.getTitle());
+                        }
+                    }
+                    Uri uri = video.getFileUri();
+                    boolean isHttp = uri != null && ("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()));
+                    if (!isHttp && uri != null) {
+                        try {
+                            com.archos.mediascraper.preprocess.SearchInfo parsed =
+                                    com.archos.mediascraper.preprocess.SearchPreprocessor.instance().parseFileBased(uri, uri);
+                            if (parsed instanceof com.archos.mediascraper.preprocess.MovieSearchInfo m) {
+                                String fn = cleanTitle(m.getName());
+                                if (!fn.isEmpty() && (!UnifiedSubtitleEngine.containsNonLatin(fn) || rawDisplayTitle.isEmpty())) {
+                                    if (intentEnglishHint.isEmpty() && !UnifiedSubtitleEngine.containsNonLatin(fn)) {
+                                        intentEnglishHint = fn;
+                                    }
+                                    if (rawDisplayTitle.isEmpty()) rawDisplayTitle = fn;
+                                }
+                                if (year <= 0) {
+                                    try { year = Integer.parseInt(m.getYear()); } catch (Exception ignored) {}
+                                }
+                            } else if (parsed instanceof com.archos.mediascraper.preprocess.TvShowSearchInfo s) {
+                                isSeries = true;
+                                String fn = cleanTitle(s.getShowName());
+                                if (!fn.isEmpty() && (!UnifiedSubtitleEngine.containsNonLatin(fn) || rawDisplayTitle.isEmpty())) {
+                                    if (intentEnglishHint.isEmpty() && !UnifiedSubtitleEngine.containsNonLatin(fn)) {
+                                        intentEnglishHint = fn;
+                                    }
+                                    if (rawDisplayTitle.isEmpty()) rawDisplayTitle = fn;
+                                }
+                                if (season <= 0) season = s.getSeason();
+                                if (episode <= 0) episode = s.getEpisode();
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                }
+                if (!intentHeading.isEmpty() && (rawDisplayTitle.isEmpty() || "video".equalsIgnoreCase(rawDisplayTitle))) {
+                    rawDisplayTitle = intentHeading;
+                } else if (!intentTitle.isEmpty() && (rawDisplayTitle.isEmpty() || "video".equalsIgnoreCase(rawDisplayTitle))) {
+                    rawDisplayTitle = stripEpisodeSuffix(intentTitle);
+                }
+                if (season > 0 || episode > 0) isSeries = true;
+
+                UnifiedSubtitleEngine.ResolvedQuery rq = UnifiedSubtitleEngine.resolveQuery(
+                        getApplicationContext(), rawDisplayTitle, intentEnglishHint, imdb, year, isSeries, season, episode);
+                resolvedEnglishTitle = rq.englishTitle;
+                titleCandidates = rq.candidates;
+                if (!rq.imdbId.isEmpty()) imdb = rq.imdbId;
+                if (rq.year > 0) year = rq.year;
+                if (rq.season > 0) season = rq.season;
+                if (rq.episode > 0) episode = rq.episode;
+                isSeries = rq.isSeries;
+
+                if (!titleCandidates.isEmpty()) {
+                    var top = titleCandidates.get(0);
+                    activeChipKey = "cand:" + top.title() + ":" + top.imdbId();
+                } else {
+                    activeChipKey = "orig:" + rawDisplayTitle;
+                }
+
+                handler.post(() -> {
+                    if (isDestroyed() || isFinishing()) return;
+                    query.setText(resolvedEnglishTitle);
+                    query.setSelection(query.getText().length());
+                    renderTitleCandidateChips();
+                    updateResolvedBanner(rq);
+                    if (!resolvedEnglishTitle.isEmpty() || !imdb.isEmpty()) {
+                        runSearch();
+                    } else {
+                        status.setText(l("اكتب اسم الفيلم أو المسلسل ثم اضغط بحث", "Type a movie or show title and press Search"));
+                        query.requestFocus();
+                    }
+                });
+            } catch (Exception e) {
+                handler.post(() -> {
+                    if (!isDestroyed()) status.setText(l("تعذر قراءة معلومات الفيديو", "Could not read video information"));
                 });
             }
         });
     }
 
-    private void downloadZeroConfig(com.meedx.providers.ZeroConfigSubtitles.Item item) {
+    private void updateResolvedBanner(UnifiedSubtitleEngine.ResolvedQuery rq) {
+        if (rq == null) {
+            resolvedBadge.setVisibility(View.GONE);
+            return;
+        }
+        StringBuilder info = new StringBuilder();
+        if (rq.resolvedFromNonEnglish && !rq.englishTitle.equalsIgnoreCase(rq.displayTitle)) {
+            info.append(l("تم جلب الاسم الإنجليزي تلقائياً: ", "Resolved English title: "))
+                    .append(rq.englishTitle);
+        } else if (!rq.imdbId.isEmpty() || (rq.isSeries && rq.season > 0 && rq.episode > 0)) {
+            info.append(l("بيانات البحث: ", "Matched metadata: ")).append(rq.englishTitle);
+        }
+        if (info.length() > 0) {
+            if (rq.year > 0) info.append(" (").append(rq.year).append(")");
+            if (rq.isSeries && rq.season > 0 && rq.episode > 0) {
+                info.append(String.format(Locale.US, " · S%02dE%02d", rq.season, rq.episode));
+            }
+            if (!rq.imdbId.isEmpty()) info.append(" · ").append(rq.imdbId);
+            resolvedBadge.setText(info.toString());
+            resolvedBadge.setVisibility(View.VISIBLE);
+        } else {
+            resolvedBadge.setVisibility(View.GONE);
+        }
+    }
+
+    private void openSourcePickerDialog() {
+        boolean rtl = arabic(this);
+        List<UnifiedSubtitleConfig.ProviderInfo> providers = UnifiedSubtitleConfig.allProviders();
+        boolean allMode = UnifiedSubtitleConfig.MODE_ALL.equals(UnifiedSubtitleConfig.searchSelectionMode(this));
+        Set<String> selected = new LinkedHashSet<>(UnifiedSubtitleConfig.selectedSearchSources(this));
+
+        boolean[] allFlag = {allMode};
+        boolean[] checks = new boolean[providers.size()];
+        for (int i = 0; i < providers.size(); i++) {
+            checks[i] = !allMode && selected.contains(providers.get(i).id);
+        }
+
+        ListView list = new ListView(this);
+        list.setDivider(null);
+        list.setDividerHeight(dp(this, 4));
+        list.setPadding(dp(this, 14), dp(this, 8), dp(this, 14), dp(this, 8));
+        list.setSelector(rounded(0xff35281b, dp(this, 12), CinemaTokens.GOLD));
+
+        var adapter = new android.widget.BaseAdapter() {
+            @Override public int getCount() { return providers.size() + 1; }
+            @Override public Object getItem(int pos) { return pos == 0 ? "ALL" : providers.get(pos - 1); }
+            @Override public long getItemId(int pos) { return pos; }
+            @Override public View getView(int pos, View recycled, android.view.ViewGroup parent) {
+                LinearLayout row = new LinearLayout(SubsourceSearchActivity.this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setMinimumHeight(dp(SubsourceSearchActivity.this, 50));
+                row.setPaddingRelative(dp(SubsourceSearchActivity.this, 14), dp(SubsourceSearchActivity.this, 8),
+                        dp(SubsourceSearchActivity.this, 14), dp(SubsourceSearchActivity.this, 8));
+
+                ImageView box = new ImageView(SubsourceSearchActivity.this);
+                boolean isChecked = pos == 0 ? allFlag[0] : checks[pos - 1];
+                box.setImageDrawable(createCinemaCheckDrawable(SubsourceSearchActivity.this, isChecked));
+                int sz = dp(SubsourceSearchActivity.this, 22);
+                LinearLayout.LayoutParams bLp = new LinearLayout.LayoutParams(sz, sz);
+                bLp.setMarginEnd(dp(SubsourceSearchActivity.this, 12));
+                row.addView(box, bLp);
+
+                LinearLayout col = new LinearLayout(SubsourceSearchActivity.this);
+                col.setOrientation(LinearLayout.VERTICAL);
+                TextView t1 = text(SubsourceSearchActivity.this, 15, true);
+                TextView t2 = text(SubsourceSearchActivity.this, 12, false);
+                if (pos == 0) {
+                    t1.setText(l("الكل (جميع المصادر المفعّلة معاً)", "All Enabled Sources Together"));
+                    t2.setText(l("يبحث بالتوازي في جميع المصادر المفتوحة والمحفوظة", "Parallel search across all enabled sources"));
+                    t1.setTextColor(isChecked ? CinemaTokens.GOLD : Color.WHITE);
+                } else {
+                    UnifiedSubtitleConfig.ProviderInfo p = providers.get(pos - 1);
+                    boolean ready = p.keyless || UnifiedSubtitleConfig.hasKey(SubsourceSearchActivity.this, p);
+                    t1.setText(p.name + (ready ? "" : l(" (يحتاج مفتاح API)", " (API key needed)")));
+                    t2.setText(rtl ? p.arType : p.enType);
+                    t1.setTextColor(isChecked ? CinemaTokens.GOLD : (ready ? Color.WHITE : 0xff8a8a94));
+                }
+                t2.setTextColor(0xffa1a1aa);
+                col.addView(t1);
+                col.addView(t2);
+                row.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
+                return row;
+            }
+        };
+        list.setAdapter(adapter);
+        list.setOnItemClickListener((p, v, pos, id) -> {
+            if (pos == 0) {
+                allFlag[0] = true;
+                for (int i = 0; i < checks.length; i++) checks[i] = false;
+            } else {
+                allFlag[0] = false;
+                checks[pos - 1] = !checks[pos - 1];
+                boolean any = false;
+                for (boolean c : checks) if (c) { any = true; break; }
+                if (!any) allFlag[0] = true;
+            }
+            adapter.notifyDataSetChanged();
+        });
+
+        dialog(this)
+                .setTitle(l("اختر مصدر واحد أو عدة مصادر للبحث", "Choose One or Multiple Search Sources"))
+                .setView(list)
+                .setPositiveButton(l("تطبيق والبحث", "Apply & Search"), (d, w) -> {
+                    if (allFlag[0]) {
+                        UnifiedSubtitleConfig.setSearchSelectionAll(this);
+                    } else {
+                        Set<String> picked = new LinkedHashSet<>();
+                        for (int i = 0; i < providers.size(); i++) {
+                            if (checks[i]) picked.add(providers.get(i).id);
+                        }
+                        UnifiedSubtitleConfig.setSearchSelectionCustom(this, picked);
+                    }
+                    CinemaSubtitleSyncBridge.onTvSubtitleConfigChanged(this);
+                    updateSettingsCardSubtitle(sourceCard, UnifiedSubtitleConfig.searchSelectionSummary(this, rtl));
+                    runSearch();
+                })
+                .setNegativeButton(R.string.addon_back, null)
+                .show();
+        list.requestFocus();
+    }
+
+    private void chooseLanguage() {
+        if (busy) return;
+        CinemaAutoSubtitles.chooseLanguage(this, language, true, selected -> {
+            language = selected == null ? "" : UnifiedSubtitleConfig.canonicalLangName(selected);
+            updateSettingsCardSubtitle(languageCard, language.isEmpty()
+                    ? l("كل اللغات", "All languages")
+                    : UnifiedSubtitleConfig.languageDisplay(language, arabic(this)));
+            runSearch();
+        });
+    }
+
+    private void runSearch() {
+        if (busy) return;
+        String inputTitle = query.getText().toString().trim();
+        if (inputTitle.isEmpty() && imdb.isEmpty()) return;
+
+        busy = true;
+        results.removeAllViews();
+        int token = ++requestGeneration;
+        boolean rtl = arabic(this);
+        Set<String> targetSources = UnifiedSubtitleConfig.selectedSearchSources(this);
+        Set<String> runnable = UnifiedSubtitleConfig.runnableSources(this, targetSources);
+        status.setText(l("جارٍ البحث في ", "Searching ") + runnable.size()
+                + l(" مصدر… (", " source(s)… (") + UnifiedSubtitleConfig.searchSelectionSummary(this, rtl) + ")");
+
+        String videoFileName = video != null ? video.getFileNameWithExtension() : inputTitle;
+        boolean manualEdited = !inputTitle.equalsIgnoreCase(resolvedEnglishTitle);
+        boolean explicitlyPickedOriginal = activeChipKey.startsWith("orig:");
+        String chosenLang = language;
+
+        io.execute(() -> {
+            try {
+                UnifiedSubtitleEngine.ResolvedQuery rq;
+                if (!explicitlyPickedOriginal && (manualEdited || UnifiedSubtitleEngine.containsNonLatin(inputTitle))) {
+                    rq = UnifiedSubtitleEngine.resolveQuery(getApplicationContext(), inputTitle,
+                            manualEdited ? null : intentEnglishHint,
+                            manualEdited ? "" : imdb, manualEdited ? -1 : year, isSeries, season, episode);
+                    if (!rq.englishTitle.isBlank()) resolvedEnglishTitle = rq.englishTitle;
+                    if (!rq.imdbId.isBlank()) imdb = rq.imdbId;
+                    if (!rq.candidates.isEmpty()) titleCandidates = rq.candidates;
+                } else {
+                    rq = new UnifiedSubtitleEngine.ResolvedQuery(rawDisplayTitle, inputTitle, imdb, year,
+                            isSeries, season, episode, false, titleCandidates);
+                }
+
+                List<String> langs = new ArrayList<>();
+                if (chosenLang != null && !chosenLang.isBlank()) langs.add(chosenLang);
+                else langs.addAll(UnifiedSubtitleConfig.languagePriorities(getApplicationContext()));
+
+                List<UnifiedSubtitleEngine.Candidate> found = UnifiedSubtitleEngine.search(
+                        getApplicationContext(), rq, langs, targetSources, videoFileName);
+
+                boolean usedOtherLangFallback = false;
+                if (found.isEmpty() && "arabic".equals(chosenLang)) {
+                    // Automatically look for English / Persian / other available subtitles that can be translated to Arabic!
+                    List<UnifiedSubtitleEngine.Candidate> alt = UnifiedSubtitleEngine.search(
+                            getApplicationContext(), rq, List.of("english", "persian", ""), targetSources, videoFileName);
+                    if (!alt.isEmpty()) {
+                        found = alt;
+                        usedOtherLangFallback = true;
+                    }
+                }
+
+                final List<UnifiedSubtitleEngine.Candidate> finalFound = found;
+                final boolean fallbackShown = usedOtherLangFallback;
+
+                handler.post(() -> {
+                    if (isDestroyed() || isFinishing() || token != requestGeneration) return;
+                    busy = false;
+                    if (!explicitlyPickedOriginal && rq.resolvedFromNonEnglish
+                            && !rq.englishTitle.equals(query.getText().toString().trim())) {
+                        query.setText(rq.englishTitle);
+                        query.setSelection(query.getText().length());
+                    }
+                    renderTitleCandidateChips();
+                    updateResolvedBanner(rq);
+                    results.removeAllViews();
+                    if (finalFound.isEmpty()) {
+                        status.setText(l("لم يتم العثور على ترجمات مطابقة في المصادر المحددة. جرّب تبديل الاسم المقترح أعلاه أو توسيع المصادر.",
+                                "No matching subtitles found. Try switching title candidates above or enabling more sources."));
+                        return;
+                    }
+                    status.setText(fallbackShown
+                            ? getString(R.string.cinema_sub_fallback_other_langs)
+                            : l("عُثر على " + finalFound.size() + " ترجمة مرتّبة حسب التوافق:",
+                                    "Found " + finalFound.size() + " subtitles ranked by match:"));
+                    for (UnifiedSubtitleEngine.Candidate cand : finalFound) {
+                        String langLabel = UnifiedSubtitleConfig.languageDisplay(cand.languageCanon, rtl);
+                        String titleLine = "[" + cand.sourceBadge + "] · " + langLabel
+                                + " (" + cand.format + ") · " + confidence(cand.confidence);
+                        String subLine = cand.releaseName;
+                        settingsCard(this, results, R.drawable.cinema_subtitles,
+                                titleLine, subLine, null, null, () -> confirmDownload(cand));
+                    }
+                    if (results.getChildCount() > 0) results.getChildAt(0).requestFocus();
+                });
+            } catch (Exception e) {
+                handler.post(() -> {
+                    if (isDestroyed() || token != requestGeneration) return;
+                    busy = false;
+                    status.setText(l("تعذّر البحث. تحقق من الاتصال بالإنترنت.", "Search failed. Check your network connection."));
+                });
+            }
+        });
+    }
+
+    private String confidence(SubtitleMatch.Confidence c) {
+        if (c == null) return l("توافق جيد", "Good match");
+        return switch (c) {
+            case EXCELLENT -> l("توافق ممتاز ★", "Excellent ★");
+            case HIGH -> l("توافق مرتفع", "High match");
+            case MEDIUM -> l("توافق متوسط", "Medium");
+            case UNCERTAIN -> l("تطابق عام", "General");
+        };
+    }
+
+    private void confirmDownload(UnifiedSubtitleEngine.Candidate cand) {
+        String langLabel = UnifiedSubtitleConfig.languageDisplay(cand.languageCanon, arabic(this));
+        boolean canTranslateToArabic = !"arabic".equalsIgnoreCase(cand.languageCanon);
+        var builder = dialog(this)
+                .setTitle("[" + cand.sourceBadge + "] · " + langLabel)
+                .setMessage(cand.releaseName + "\n" + confidence(cand.confidence) + " · " + cand.format)
+                .setNegativeButton(R.string.addon_back, null);
+        if (canTranslateToArabic) {
+            builder.setPositiveButton(R.string.cinema_sub_translate_to_ar, (d, w) -> downloadCandidate(cand, true))
+                    .setNeutralButton(R.string.cinema_sub_apply_original_lang, (d, w) -> downloadCandidate(cand, false));
+        } else {
+            builder.setPositiveButton(l("تحميل وتفعيل", "Download & Apply"), (d, w) -> downloadCandidate(cand, false));
+        }
+        builder.show();
+    }
+
+    private void downloadCandidate(UnifiedSubtitleEngine.Candidate cand, boolean translateToArabic) {
         if (busy) return;
         busy = true;
-        downloadRelease = item.release;
-        status.setText(l("جارٍ تنزيل الترجمة…", "Downloading subtitle…"));
-        openIo.execute(() -> {
+        status.setText(l("جارٍ تنزيل الترجمة من ", "Downloading subtitle from ") + cand.sourceBadge + "…");
+        io.execute(() -> {
             try {
-                byte[] raw = com.meedx.providers.ZeroConfigSubtitles.download(item.url);
-                byte[] clean = SubtitleStorage.utf8(raw);
-                String safeName = item.release != null && item.release.toLowerCase(java.util.Locale.ROOT).matches(".*\\.(srt|vtt|ass|ssa)$")
-                        ? item.release : "subtitle.srt";
+                List<UnifiedSubtitleEngine.SubtitleFile> files = UnifiedSubtitleEngine.download(
+                        getApplicationContext(), cand, season, episode);
                 handler.post(() -> {
                     busy = false;
-                    if (!isDestroyed()) save(new SubtitleStorage.Entry(safeName, clean), 0L);
+                    if (isDestroyed() || isFinishing()) return;
+                    if (files.size() == 1) {
+                        saveDownloadedFile(files.get(0), cand, translateToArabic);
+                    } else {
+                        String[] names = new String[files.size()];
+                        for (int i = 0; i < files.size(); i++) names[i] = files.get(i).name;
+                        dialog(this)
+                                .setTitle(l("اختر ملف الحلقة أو الفيلم", "Choose the subtitle file"))
+                                .setItems(names, (d, which) -> saveDownloadedFile(files.get(which), cand, translateToArabic))
+                                .setNegativeButton(R.string.addon_back, null)
+                                .show();
+                    }
                 });
             } catch (Exception e) {
                 handler.post(() -> {
                     busy = false;
-                    if (!isDestroyed()) status.setText(l("تعذّر تنزيل الترجمة المختارة.", "Could not download selected subtitle."));
+                    if (!isDestroyed()) {
+                        status.setText(l("تعذّر تنزيل هذه الترجمة. جرّب نتيجة أخرى.",
+                                "Could not download this subtitle. Try another result."));
+                        Toast.makeText(this, l("فشل تنزيل الترجمة", "Subtitle download failed"), Toast.LENGTH_SHORT).show();
+                    }
                 });
             }
         });
     }
 
-    private TextView textLabel(String message) {
-        TextView view = text(this, CinemaTokens.LABEL, false);
-        view.setText(message);
-        return view;
-    }
-
-    private void confirmOpen(OpenSubtitleSearch.Match match) {
-        CinemaUi.dialog(this).setTitle("[OpenSubtitles]").setMessage(match.name())
-                .setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton(l("تحميل", "Download"), (dialog, index) -> {
-                    Intent intent = new Intent(this, com.archos.mediacenter.video.utils.SubtitlesDownloaderActivity2.class);
-                    intent.putExtra(com.archos.mediacenter.video.utils.SubtitlesDownloaderActivity2.FILE_URL, video.getFilePath());
-                    intent.putExtra("cinema_open_subtitle_id", match.id());
-                    intent.putExtra("cinema_open_subtitle_name", match.name());
-                    intent.putExtra("cinema_open_subtitle_language", match.language());
-                    startActivity(intent);
-                }).show();
-    }
-
-    private void loadSubtitles(long movieId,int page,boolean reset){
-        if(busy)return;busy=true;status.setText(l("جارٍ قراءة الترجمات…","Loading subtitles…"));if(reset)matches.clear();
-        String filter=language.isEmpty()?"":"&language="+SubsourceClient.encode(language);
-        io.execute(()->{
-            try{
-                JSONObject response=api.json("/subtitles?movieId="+movieId+filter+"&limit=100&page="+page+"&sort=rating");JSONArray subs=response.getJSONArray("data");
-                for(int n=0;n<subs.length();n++){
-                    JSONObject sub=subs.getJSONObject(n);
-                    String resultLanguage=sub.optString("language");
-                    JSONArray releases=sub.optJSONArray("releaseInfo");if(releases==null)releases=new JSONArray().put(sub.optString("releaseInfo",""));
-                    Match best=null;
-                    for(int r=0;r<releases.length();r++){
-                        String release=releases.optString(r,"");JSONObject votes=sub.optJSONObject("rating");
-                        Double fps=null;try{double f=Double.parseDouble(sub.optString("framerate"));if(f>0)fps=f;}catch(Exception ignored){}
-                        SubtitleMatch.Result rank=SubtitleMatch.rank(video.getFileNameWithExtension(),release,true,season,episode,videoFps,fps,null,null,votes==null?0:votes.optInt("good"),votes==null?0:votes.optInt("bad"));
-                        Match candidate=new Match(sub.optLong("subtitleId",-1),release,resultLanguage,rank);if(!rank.episodeConflict()&&(best==null||rank.score()>best.rank.score()))best=candidate;
+    private void saveDownloadedFile(UnifiedSubtitleEngine.SubtitleFile file,
+                                    UnifiedSubtitleEngine.Candidate cand,
+                                    boolean translateToArabic) {
+        Uri targetVideo = video != null ? video.getFileUri() : getIntent().getData();
+        if (targetVideo == null) {
+            Toast.makeText(this, l("لا يوجد مسار فيديو لحفظ الترجمة", "No video URI to bind subtitle"), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        busy = true;
+        status.setText(translateToArabic
+                ? getString(R.string.cinema_sub_translating_ar, 0)
+                : l("جارٍ حفظ الترجمة وتطبيقها…", "Saving and applying subtitle…"));
+        io.execute(() -> {
+            try {
+                byte[] payload = file.utf8Bytes;
+                String saveName = file.name;
+                String saveLang = cand.languageCanon;
+                String saveSource = cand.sourceBadge;
+                if (translateToArabic) {
+                    byte[] translated = SubtitleArabicTranslator.translateToArabicSrt(
+                            payload, file.extension,
+                            pct -> handler.post(() -> {
+                                if (!isDestroyed() && !isFinishing()) {
+                                    status.setText(getString(R.string.cinema_sub_translating_ar, pct));
+                                }
+                            }),
+                            () -> !isDestroyed() && !isFinishing());
+                    if (translated == null || translated.length == 0) {
+                        handler.post(() -> {
+                            busy = false;
+                            if (!isDestroyed()) {
+                                status.setText(getString(R.string.cinema_sub_translated_ar_fail));
+                                Toast.makeText(this, R.string.cinema_sub_translated_ar_fail, Toast.LENGTH_LONG).show();
+                            }
+                        });
+                        return;
                     }
-                    if(best!=null&&best.id>=0){Match add=best;matches.removeIf(m->m.id==add.id);matches.add(best);}
+                    payload = translated;
+                    saveName = file.name.replaceFirst("(?i)\\.(srt|vtt|ass|ssa)$", "") + ".ar.srt";
+                    saveLang = "arabic";
+                    saveSource = cand.sourceBadge + " → العربية";
                 }
-                long selected=CinemaAutoSubtitles.selected(this,video.getFileUri());
-                matches.sort(Comparator.comparingInt((Match m)->m.language.equals("ar")?1:0).reversed().thenComparing(Comparator.comparingInt((Match m)->m.id==selected?1:0).reversed()).thenComparing(Comparator.comparingInt((Match m)->m.rank.score()).reversed()));JSONObject pagination=response.optJSONObject("pagination");int pages=pagination==null?page:pagination.optInt("pages",page);
-                List<Match> snapshot=new ArrayList<>(matches);
-                Uri savedSelection;
-                try(SubtitleStorage storage=new SubtitleStorage(this)){savedSelection=storage.lookup(video.getFileUri());}
-
-                handler.post(()->{
-                    if(isDestroyed())return;results.removeAllViews();status.setText(snapshot.isEmpty()?l("لا توجد ترجمة مطابقة لهذه الحلقة أو الفيلم","No matching subtitles for this episode or movie"):l("النتائج المحملة مرتبة حسب أدلة تطابق الإصدار. المعلومات الناقصة تعني توافقاً غير مؤكد.","Loaded results are ranked by release evidence. Missing information means uncertain compatibility."));
-                    if(savedSelection!=null)button(results,"Selected subtitle · saved\n"+PreferenceManager.getDefaultSharedPreferences(this).getString(SubtitleStorage.preferenceKey(video.getFileUri())+"_subsource_release",savedSelection.getLastPathSegment()),()->{setResult(Activity.RESULT_OK,new Intent().setData(savedSelection));finish();});
-                    for(Match m:snapshot)if(m.id!=selected||savedSelection==null)button(results,"[Subsource] "+(m.id==selected?"Selected · ":"")+confidence(m.rank.confidence())+" · "+CinemaAutoSubtitles.languageLabel(m.language)+"\n"+m.release,()->confirm(m));
-                    if(page<pages)button(results,l("تحميل المزيد من النتائج","Load more results"),()->loadSubtitles(movieId,page+1,false));
-                    if(results.getChildCount()>0)results.getChildAt(0).requestFocus();
+                try (SubtitleStorage storage = new SubtitleStorage(this)) {
+                    long subId = 0L;
+                    try { subId = Long.parseLong(cand.externalId); } catch (Exception ignored) {}
+                    SubtitleStorage.Entry entry = new SubtitleStorage.Entry(saveName, payload);
+                    SubtitleStorage.Saved saved = storage.save(targetVideo, entry, subId,
+                            saveLang, saveSource, () -> !isDestroyed());
+                    if (subId > 0L) CinemaAutoSubtitles.remember(this, targetVideo, subId);
+                    PreferenceManager.getDefaultSharedPreferences(this).edit()
+                            .putString(SubtitleStorage.preferenceKey(targetVideo) + "_subsource_release", cand.releaseName)
+                            .apply();
+                    handler.post(() -> {
+                        busy = false;
+                        if (isDestroyed() || isFinishing()) return;
+                        Toast.makeText(this, translateToArabic
+                                ? getString(R.string.cinema_sub_translated_ar_ok)
+                                : l("تم تحميل وتفعيل الترجمة من ", "Subtitle applied from ") + cand.sourceBadge + " ✓",
+                                Toast.LENGTH_SHORT).show();
+                        setResult(Activity.RESULT_OK, new Intent().setData(saved.uri()));
+                        finish();
+                    });
+                }
+            } catch (Exception e) {
+                handler.post(() -> {
+                    busy = false;
+                    if (!isDestroyed()) status.setText(l("فشل حفظ ملف الترجمة.", "Failed to save subtitle file."));
                 });
-            }catch(Exception e){fail(e);}finally{handler.post(()->busy=false);}
+            }
         });
     }
-    private String confidence(SubtitleMatch.Confidence c){return switch(c){case EXCELLENT->l("توافق ممتاز","Excellent match");case HIGH->l("توافق مرتفع","High match");case MEDIUM->l("توافق متوسط","Medium match");case UNCERTAIN->l("توافق غير مؤكد","Uncertain match");};}
-    private void confirm(Match match){
-        CinemaUi.dialog(this).setTitle(confidence(match.rank.confidence())).setMessage(match.release+"\n"+(match.rank.confidence()==SubtitleMatch.Confidence.UNCERTAIN?l("لا توجد معلومات كافية لتأكيد تطابق الإصدار.","Not enough information to confirm a release match."):""))
-                .setNegativeButton(android.R.string.cancel,null).setPositiveButton(l("تحميل","Download"),(d,w)->download(match)).show();
+
+    private static String cleanTitle(String raw) {
+        if (raw == null) return "";
+        String t = raw.trim();
+        return (t.isEmpty() || "null".equalsIgnoreCase(t)) ? "" : t;
     }
-    private void download(Match match){
-        downloadRelease=match.release;
-        if(busy)return;busy=true;status.setText(l("جارٍ تنزيل الترجمة المختارة…","Downloading selected subtitle…"));
-        io.execute(()->{try{
-            List<SubtitleStorage.Entry> files=SubtitleStorage.unpack(api.download(match.id));
-            handler.post(()->{if(isDestroyed())return;if(files.size()==1)save(files.get(0),match.id);else{
-                String[] names=new String[files.size()];for(int n=0;n<files.size();n++)names[n]=files.get(n).name();
-                CinemaUi.dialog(this).setTitle(l("اختر ملف الحلقة أو الفيلم","Choose the episode or movie file")).setItems(names,(d,w)->save(files.get(w),match.id)).setNegativeButton(android.R.string.cancel,null).show();
-            }});
-        }catch(Exception e){fail(e);}finally{handler.post(()->busy=false);}});
+
+    private static String stripEpisodeSuffix(String title) {
+        return title.replaceAll("(?i)[\\s·-]+S\\d{1,2}E\\d{1,3}.*$", "").trim();
     }
-    private void save(SubtitleStorage.Entry file,long id){
-        status.setText(l("جارٍ حفظ الترجمة…","Saving subtitle…"));
-        io.execute(()->{try(SubtitleStorage storage=new SubtitleStorage(this)){
-            SubtitleStorage.Saved saved=storage.save(video.getFileUri(),file,id);
-            CinemaAutoSubtitles.remember(this,video.getFileUri(),id);
-            if(downloadRelease!=null)PreferenceManager.getDefaultSharedPreferences(this).edit().putString(SubtitleStorage.preferenceKey(video.getFileUri())+"_subsource_release",downloadRelease).commit();
-            handler.post(()->{if(isDestroyed())return;CinemaUi.dialog(this).setTitle(l("تم حفظ الترجمة","Subtitle saved"))
-                    .setMessage((saved.besideVideo()?l("بجانب الفيديو:\n","Beside the video:\n"):l("في التخزين المحلي للتطبيق لأن المصدر لا يسمح بالكتابة:\n","In private app storage because the source is not writable:\n"))+saved.uri())
-                    .setPositiveButton(android.R.string.ok,(d,w)->{setResult(Activity.RESULT_OK,new Intent().setData(saved.uri()));finish();}).show();});
-        }catch(Exception e){fail(e);}});
+
+    @Override
+    protected void onDestroy() {
+        io.shutdownNow();
+        handler.removeCallbacksAndMessages(null);
+        super.onDestroy();
     }
-    @Override public void onDestroy(){requestGeneration++;handler.removeCallbacksAndMessages(null);io.shutdownNow();openIo.shutdownNow();super.onDestroy();}
 }

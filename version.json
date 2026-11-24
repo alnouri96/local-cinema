@@ -1,26 +1,26 @@
 {
   "tv": {
-    "latestVersionCode": 17,
-    "latestVersionName": "1.0.0-beta.17",
-    "versionCode": 17,
-    "versionName": "1.0.0-beta.17",
-    "releaseDate": "2026-11-23",
-    "fileName": "LocalCinema-TV-v1.0.0-beta.17.apk",
-    "apkUrl": "https://github.com/alnouri96/meedx/releases/download/v1.0.0-beta.17/LocalCinema-TV-v1.0.0-beta.17.apk",
-    "sizeBytes": 48768208,
-    "sha256": "539b38314f456192e0c784c172aa914bc05ecf8d0051b45a2c4e98e244f4d3fc",
-    "changelog": "Upgraded TV Live with automatic focus on the first channel card, split and translated bilingual categories with saved selection, merged Favorite Countries channels with a searchable country picker, and global Nexonic IPTV alongside iptv-org. Rebuilt Add-ons Settings with clear high-contrast checkboxes, a dedicated Manage Installed Add-ons button, and separate per-add-on settings with instant two-way sync. Live add-on channels now play directly without the torrent source picker, pass full proxy headers, auto-switch between HLS and MPEG-TS streams, fail over to alternate links, and clean up retired broken add-ons such as Best Torrents. Added ordered audio language priority (1, 2, 3...) across Movies and Series, unified Movie and Series action bars with Language Priority inside Audio Tracks, restructured Main Settings without duplicates, enabled All Files Access in File Browser and the Permissions Wizard, and prepared OTA updates for future repository migration."
+    "latestVersionCode": 19,
+    "latestVersionName": "1.0.0-beta.19",
+    "versionCode": 19,
+    "versionName": "1.0.0-beta.19",
+    "releaseDate": "2026-11-24",
+    "fileName": "LocalCinema-TV-v1.0.0-beta.19.apk",
+    "apkUrl": "https://github.com/alnouri96/local-cinema/releases/download/v1.0.0-beta.19/LocalCinema-TV-v1.0.0-beta.19.apk",
+    "sizeBytes": 48978332,
+    "sha256": "19d98263bcdaf1f7f93977555922ebd7ce4dec7e8c3a37c1cdc76ed5d608a2c6",
+    "changelog": "Unified the TV subtitle system around one central config (UnifiedSubtitleConfig) synced across TV, Phone, and Google Cloud Backup, with grouped embedded video subtitles, a live timing overlay bar, one-click Arabic translation, and strict search filtering. Added direct Install on TV support from Phone, upgraded the in-app update dialog for the main v2 update channel with D-Pad focus and Downloader code 3213660, and improved safe cache maintenance."
   },
   "phone": {
-    "latestVersionCode": 17,
-    "latestVersionName": "1.0.0-beta.17",
-    "versionCode": 17,
-    "versionName": "1.0.0-beta.17",
-    "releaseDate": "2026-11-23",
-    "fileName": "LocalCinema-Manager-Phone-v1.0.0-beta.17.apk",
-    "apkUrl": "https://github.com/alnouri96/meedx/releases/download/v1.0.0-beta.17/LocalCinema-Manager-Phone-v1.0.0-beta.17.apk",
-    "sizeBytes": 111388910,
-    "sha256": "9bdde0aee0c228da32a819706597ce8796f6a756cccd447e0aa3ab4e7631ffc3",
-    "changelog": "Updated shared Stremio add-ons and Live TV preferences to support full proxy headers, automatic cleanup of retired broken add-ons, and Favorite Countries view mode parity with TV. Prepared the in-app updater allowlist for upcoming repository migration and fixed the third-party licenses link."
+    "latestVersionCode": 19,
+    "latestVersionName": "1.0.0-beta.19",
+    "versionCode": 19,
+    "versionName": "1.0.0-beta.19",
+    "releaseDate": "2026-11-24",
+    "fileName": "LocalCinema-Manager-Phone-v1.0.0-beta.19.apk",
+    "apkUrl": "https://github.com/alnouri96/local-cinema/releases/download/v1.0.0-beta.19/LocalCinema-Manager-Phone-v1.0.0-beta.19.apk",
+    "sizeBytes": 111406594,
+    "sha256": "c45b4cd3d1f0a49e123318d3d0682365e629a52d37f06a67eee46ce39568270a",
+    "changelog": "Updated the Browser Sites grid with MEEDX WEB, Cinemana, YTS, and TorrentGalaxy first plus long-press site reordering. Streamlined External Addons on Phone by removing the heavy stream-addon list and Paste/Search controls while adding direct Install on TV confirmation for Curated Addons and Stremio links. Cleaned up Settings titles and single-line Cloud Backup action buttons, added subtitle config to Google Cloud Backup, and upgraded the in-app update popup for the main v2 update channel."
   }
 }

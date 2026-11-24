@@ -100,6 +100,7 @@ public class TVMenuItem extends LinearLayout implements Checkable, TVSlaveView{
             } else {
                 tv.setTextColor(isDisabled ? 0xFF686873 : 0xFFF4F4F6);
             }
+            com.archos.mediacenter.video.leanback.cinema.CinemaUi.enableMarquee(tv);
         }
         boolean checked = isChecked();
         if (info instanceof RadioButton rb) {

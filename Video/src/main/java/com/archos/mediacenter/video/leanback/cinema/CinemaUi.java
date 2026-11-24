@@ -539,20 +539,23 @@ public final class CinemaUi {
         textCol.setOrientation(android.widget.LinearLayout.VERTICAL);
         TextView titleTv = text(context, CinemaTokens.BODY, true);
         titleTv.setText(title);
-        titleTv.setMaxLines(2);
+        enableMarquee(titleTv);
         titleTv.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
         textCol.addView(titleTv);
 
-        TextView subTv = null;
+        TextView subTv = text(context, CinemaTokens.CAPTION, false);
+        subTv.setMaxLines(2);
+        subTv.setTextColor(0xffd4b55b);
+        subTv.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
+        subTv.setPadding(0, dp(context, 3), 0, 0);
         if (subtitle != null && !subtitle.isBlank()) {
-            subTv = text(context, CinemaTokens.CAPTION, false);
             subTv.setText(subtitle);
-            subTv.setMaxLines(2);
-            subTv.setTextColor(0xffd4b55b);
-            subTv.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
-            subTv.setPadding(0, dp(context, 3), 0, 0);
-            textCol.addView(subTv);
+            subTv.setVisibility(View.VISIBLE);
+        } else {
+            subTv.setText("");
+            subTv.setVisibility(View.GONE);
         }
+        textCol.addView(subTv);
         row.addView(textCol, new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
 
         if (toggleState != null) {
@@ -572,7 +575,7 @@ public final class CinemaUi {
         Runnable styleRest = () -> {
             row.setBackground(rounded(0xff1d1e21, dp(context, 10), 0xff34322c));
             titleTv.setTextColor(CinemaTokens.TEXT);
-            if (finalSub != null) finalSub.setTextColor(0xffd4b55b);
+            finalSub.setTextColor(0xffd4b55b);
             icon.setColorFilter(CinemaTokens.GOLD);
         };
         styleRest.run();
@@ -581,7 +584,7 @@ public final class CinemaUi {
             if (hasFocus) {
                 row.setBackground(rounded(CinemaTokens.FOCUS, dp(context, 10), CinemaTokens.FOCUS));
                 titleTv.setTextColor(0xff141517);
-                if (finalSub != null) finalSub.setTextColor(0xff3a3114);
+                finalSub.setTextColor(0xff2c240d);
                 icon.setColorFilter(0xff141517);
                 if (onFocusHook != null) onFocusHook.run();
             } else {
@@ -596,5 +599,28 @@ public final class CinemaUi {
         p.bottomMargin = dp(context, 10);
         container.addView(row, p);
         return row;
+    }
+
+    /** Enables smooth continuous horizontal marquee scrolling for long single-line TV labels. */
+    public static void enableMarquee(TextView tv) {
+        if (tv == null) return;
+        tv.setSingleLine(true);
+        tv.setEllipsize(android.text.TextUtils.TruncateAt.MARQUEE);
+        tv.setMarqueeRepeatLimit(-1);
+        tv.setHorizontallyScrolling(true);
+        tv.setSelected(true);
+    }
+
+    /** Updates the subtitle line of a {@link #settingsCard} while preserving active focus contrast. */
+    public static void updateSettingsCardSubtitle(android.widget.LinearLayout card, String subtitle) {
+        if (card == null || card.getChildCount() < 2) return;
+        if (card.getChildAt(1) instanceof android.widget.LinearLayout col
+                && col.getChildCount() >= 2
+                && col.getChildAt(1) instanceof TextView sub) {
+            boolean hasText = subtitle != null && !subtitle.isBlank();
+            sub.setText(hasText ? subtitle : "");
+            sub.setVisibility(hasText ? View.VISIBLE : View.GONE);
+            sub.setTextColor(card.hasFocus() ? 0xff2c240d : 0xffd4b55b);
+        }
     }
 }

@@ -70,9 +70,12 @@ public class SettingsHeaderAdapter extends CustomPreferenceGroupAdapter {
     public void onAttachedToRecyclerView(@NonNull RecyclerView recyclerView) {
         super.onAttachedToRecyclerView(recyclerView);
 
-        var pref = getItem(0);
-        if (pref != null) {
-            markAsOpen(pref.getKey());
+        for (int i = 0; i < getItemCount(); i++) {
+            var pref = getItem(i);
+            if (pref != null && !(pref instanceof androidx.preference.PreferenceCategory) && pref.isSelectable() && pref.getKey() != null) {
+                markAsOpen(pref.getKey());
+                break;
+            }
         }
     }
 
@@ -83,7 +86,7 @@ public class SettingsHeaderAdapter extends CustomPreferenceGroupAdapter {
         var context = holder.itemView.getContext();
         var item = getItem(position);
 
-        if (item != null && isSelectable && item.getKey().equals(curOpenItemKey)) {
+        if (item != null && isSelectable && item.getKey() != null && item.getKey().equals(curOpenItemKey)) {
             setSelectableBackground(context, holder);
         }
     }

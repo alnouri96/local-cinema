@@ -54,11 +54,27 @@ import static com.archos.mediacenter.video.leanback.cinema.CinemaUi.*;
  */
 public final class CinemaFileBrowserActivity extends LeanbackActivity {
     public static final String EXTRA_FILTER_MODE = "cinema_filter_mode";
+    public static final String EXTRA_INITIAL_VIDEO_URI = "cinema_initial_video_uri";
     public static final String FILTER_ALL = "all";
     public static final String FILTER_IMAGES_ONLY = "images";
     public static final String FILTER_SUBTITLES_ONLY = "subtitles";
     static final String IMAGE_MODE = "cinema_image_mode";
     static final String SELECTED_IMAGES = "cinema_selected_images";
+
+    /** Shared DRY factory opening the subtitle picker directly inside the movie's own source folder. */
+    public static Intent subtitlePickerIntent(android.content.Context context, Uri videoUri, boolean secondary) {
+        Intent intent = new Intent(context, CinemaFileBrowserActivity.class);
+        intent.putExtra(EXTRA_FILTER_MODE, FILTER_SUBTITLES_ONLY);
+        if (videoUri != null) {
+            intent.putExtra(EXTRA_INITIAL_VIDEO_URI, videoUri.toString());
+        }
+        if (secondary) {
+            intent.putExtra("secondary_subtitle", true);
+        }
+        return intent;
+    }
+
+    private Uri movieSourceFolderUri;
 
     private final ExecutorService folders = Executors.newSingleThreadExecutor();
     private final ExecutorService thumbs = Executors.newFixedThreadPool(2);
@@ -194,7 +210,13 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
             layoutButton.setText(layoutLabel());
             updateLayout();
         });
-        if (!imagesOnly) {
+        if (subtitlesOnly) {
+            control(tools, getString(R.string.cinema_sub_browse_other_storage), () -> {
+                path.clear();
+                selected = null;
+                load();
+            });
+        } else if (!imagesOnly) {
             control(tools, getString(R.string.cinema_network_files), () -> startActivity(new Intent(this,
                     com.archos.mediacenter.video.leanback.network.NetworkRootActivity.class)));
         }
@@ -247,7 +269,40 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
 
         refreshActionStrip();
         updateLayout();
+        if (subtitlesOnly) {
+            movieSourceFolderUri = resolveMovieSourceParent(getIntent().getStringExtra(EXTRA_INITIAL_VIDEO_URI));
+            if (movieSourceFolderUri != null) {
+                path.push(new Item(getString(R.string.cinema_sub_pick_movie_source), movieSourceFolderUri, true, 0L, 0L));
+            }
+        }
         load();
+    }
+
+    private static Uri resolveMovieSourceParent(String rawVideoUri) {
+        if (rawVideoUri == null || rawVideoUri.isBlank()) return null;
+        try {
+            Uri uri = Uri.parse(rawVideoUri);
+            String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(java.util.Locale.ROOT);
+            if ("http".equals(scheme) || "https".equals(scheme) || "content".equals(scheme)) {
+                return null;
+            }
+            if (scheme.isEmpty() && rawVideoUri.startsWith("/")) {
+                java.io.File f = new java.io.File(rawVideoUri);
+                java.io.File parent = f.isDirectory() ? f : f.getParentFile();
+                return parent != null ? Uri.fromFile(parent) : null;
+            }
+            String s = uri.toString();
+            int q = s.indexOf('?');
+            if (q > 0) s = s.substring(0, q);
+            while (s.endsWith("/") && s.length() > scheme.length() + 4) {
+                s = s.substring(0, s.length() - 1);
+            }
+            int slash = s.lastIndexOf('/');
+            if (slash > scheme.length() + 3) {
+                return Uri.parse(s.substring(0, slash + 1));
+            }
+        } catch (Exception ignored) {}
+        return null;
     }
 
     private void requestStoragePermissions() {
@@ -740,6 +795,9 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
                         result.add(new Item(photo.name(), photo.uri(), false, photo.changed(), photo.size()));
                     }
                 } else {
+                    boolean scanCompanionSubs = subtitlesOnly && movieSourceFolderUri != null
+                            && movieSourceFolderUri.equals(folder.uri());
+                    List<com.archos.filecorelibrary.MetaFile2> subsDirs = new ArrayList<>();
                     for (var file : RawListerFactoryWithUpnp.getRawListerForUrl(folder.uri()).getFileList()) {
                         String name = file.getName();
                         if (name == null || ".".equals(name) || "..".equals(name)) continue;
@@ -748,6 +806,22 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
                         if (subtitlesOnly && !directory && !CinemaFileOperations.isSubtitleName(name)) continue;
                         result.add(new Item(name, file.getUri(), directory, file.lastModified(),
                                 directory ? 0 : file.getComputedLength()));
+                        if (scanCompanionSubs && directory
+                                && (name.equalsIgnoreCase("subs") || name.equalsIgnoreCase("subtitles")
+                                || name.equalsIgnoreCase("sub"))) {
+                            subsDirs.add(file);
+                        }
+                    }
+                    // Surface subtitle files inside companion Subs/ / Subtitles/ folders immediately
+                    for (var subDir : subsDirs) {
+                        try {
+                            for (var subFile : RawListerFactoryWithUpnp.getRawListerForUrl(subDir.getUri()).getFileList()) {
+                                String sn = subFile.getName();
+                                if (sn == null || subFile.isDirectory() || !CinemaFileOperations.isSubtitleName(sn)) continue;
+                                result.add(new Item(subDir.getName() + "/" + sn, subFile.getUri(), false,
+                                        subFile.lastModified(), subFile.getComputedLength()));
+                            }
+                        } catch (Exception ignored) {}
                     }
                 }
             } catch (Exception failure) {

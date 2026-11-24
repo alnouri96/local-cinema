@@ -506,17 +506,6 @@ final class TvHubLibraryController {
                     || ("torrent".equals(e.kind) && e.torrentId != null && !e.torrentId.isBlank());
             if (hasDirectSource) {
                 host.add(actions, e.watched ? host.l("تشغيل", "Play") : host.l("استئناف", "Resume"), () -> replayWatchEntry(e));
-            } else if (e.imdbId != null && e.imdbId.matches("tt[0-9]+")) {
-                if (com.meedx.providers.StremioAddons.hasEnabled(host)) {
-                    host.add(actions, host.l("بث عبر الإضافات", "Stream via Addons"), () ->
-                            host.connection.resolveAndPickAddonStream(e.imdbId, Math.max(0, e.season), Math.max(0, e.episode)));
-                } else {
-                    host.add(actions, host.l("أضف إضافة للبث", "Addons Setup"), () -> {
-                        if (host.tabLayout != null && host.tabLayout.getTabAt(TvHubActivity.CONNECTION_TAB) != null) {
-                            host.tabLayout.selectTab(host.tabLayout.getTabAt(TvHubActivity.CONNECTION_TAB));
-                        }
-                    });
-                }
             }
             host.add(actions, e.watched ? host.getString(org.proninyaroslav.libretorrent.R.string.cinema_mark_unwatched)
                     : host.getString(org.proninyaroslav.libretorrent.R.string.cinema_mark_watched), () -> {
@@ -585,19 +574,6 @@ final class TvHubLibraryController {
                     : host.l("فيلم · Trakt Watchlist", "Movie · Trakt Watchlist"))
                     + (w.year > 0 ? " · " + w.year : ""), 13));
             var wlActions = host.row(wlCard);
-            if (w.imdbId != null && w.imdbId.matches("tt[0-9]+")) {
-                if (com.meedx.providers.StremioAddons.hasEnabled(host)) {
-                    host.add(wlActions, host.l("بث عبر الإضافات", "Stream via Addons"), () ->
-                            host.connection.resolveAndPickAddonStream(w.imdbId, "show".equals(w.mediaType) ? 1 : 0,
-                                    "show".equals(w.mediaType) ? 1 : 0));
-                } else {
-                    host.add(wlActions, host.l("أضف إضافة للبث", "Addons Setup"), () -> {
-                        if (host.tabLayout != null && host.tabLayout.getTabAt(TvHubActivity.CONNECTION_TAB) != null) {
-                            host.tabLayout.selectTab(host.tabLayout.getTabAt(TvHubActivity.CONNECTION_TAB));
-                        }
-                    });
-                }
-            }
             host.add(wlActions, host.l("إزالة", "Remove"), () -> {
                 PhoneWatchStore.removeFromWatchlist(host, w.itemKey);
                 if (com.meedx.providers.TraktSyncClient.isConnected(host)) {

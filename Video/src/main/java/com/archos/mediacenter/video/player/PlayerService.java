@@ -1829,18 +1829,59 @@ public class PlayerService extends Service implements Player.Listener, IndexHelp
         // selection logic
         if (nbTrack != 0) {
             int explicit=com.archos.mediacenter.video.leanback.cinema.CinemaTrackChoices.embedded(this,mVideoInfo.uri);
-            if(explicit!=-2){int target=nbTrack,ordinal=0;boolean valid=explicit==-1;for(int i=0;i<nbTrack;i++){if(!vMetadata.getSubtitleTrack(i).isExternal){if(ordinal++==explicit){target=i;valid=true;break;}}}if(valid){mVideoInfo.subtitleTrack=target;mVideoInfo.subtitleLanguage=null;mCinemaManualSubtitle=true;if(explicit>=0)mHideSubtitles=false;}}
+            int centralMode = com.meedx.providers.UnifiedSubtitleConfig.preferredSubtitleMode(this);
+            boolean preferSourceOnly = (explicit == -3)
+                    || (explicit == -2 && centralMode == com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_MOVIE_SOURCE);
+            boolean centralOff = (explicit == -2 && centralMode == com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_OFF);
+            if (centralOff) {
+                mVideoInfo.subtitleTrack = nbTrack;
+                mVideoInfo.subtitleLanguage = null;
+                mHideSubtitles = true;
+                mCinemaManualSubtitle = true;
+            } else if (explicit != -2 && !preferSourceOnly) {
+                int target=nbTrack,ordinal=0;boolean valid=explicit==-1;for(int i=0;i<nbTrack;i++){if(!vMetadata.getSubtitleTrack(i).isExternal){if(ordinal++==explicit){target=i;valid=true;break;}}}if(valid){mVideoInfo.subtitleTrack=target;mVideoInfo.subtitleLanguage=null;mCinemaManualSubtitle=true;if(explicit>=0)mHideSubtitles=false;}
+            }
             int noneTrack = nbTrack; // here it tracks mVideoInfo.subtitleTrack that are the tracks of the video (not the none from menu)
             boolean cinemaArabicSelected=false;
-            // Explicit per-file choices win; otherwise Arabic embedded tracks have priority.
+            // Explicit per-file choices win; otherwise honor UnifiedSubtitleConfig.autoSelectPriority
             if (!mCinemaManualSubtitle) {
-                mSubsFavoriteLanguage="ara"; mHideSubtitles=false;
-                mVideoInfo.subtitleTrack=-1; mVideoInfo.subtitleLanguage=null;
-                for (int i=0;i<nbTrack;i++) {
-                    VideoMetadata.SubtitleTrack track=vMetadata.getSubtitleTrack(i);
-                    if (!track.isExternal && com.archos.mediacenter.video.leanback.cinema.CinemaAutoSubtitles.matchesPreferredLanguage(this,track.language,track.name)) {
-                        mVideoInfo.subtitleTrack=i; mVideoInfo.subtitleLanguage="ar";
-                        mHideSubtitles=false; mCinemaSelectedSubtitleName=null; cinemaArabicSelected=true; mCinemaSubtitleEpoch++; break;
+                int autoPrio = preferSourceOnly
+                        ? com.meedx.providers.UnifiedSubtitleConfig.AUTO_PRIORITY_SOURCE_FIRST
+                        : com.meedx.providers.UnifiedSubtitleConfig.autoSelectPriority(this);
+                String prefLang = com.meedx.providers.UnifiedSubtitleConfig.primaryLanguage(this);
+                String prefIso2 = com.archos.mediacenter.video.leanback.cinema.CinemaLanguagePreferences.toIso2(prefLang);
+                mSubsFavoriteLanguage = prefIso2.isEmpty() ? "ara" : prefIso2;
+                mHideSubtitles = false;
+                mVideoInfo.subtitleTrack = -1;
+                mVideoInfo.subtitleLanguage = null;
+                String videoPath = vMetadata.getFile() != null ? vMetadata.getFile().getPath()
+                        : (mUri != null ? mUri.toString() : "");
+                if (autoPrio != com.meedx.providers.UnifiedSubtitleConfig.AUTO_PRIORITY_ONLINE_DIRECT) {
+                    boolean[] passes = (autoPrio == com.meedx.providers.UnifiedSubtitleConfig.AUTO_PRIORITY_EMBEDDED_FIRST)
+                            ? new boolean[]{false, true}   // Embedded -> Movie Source
+                            : new boolean[]{true, false};  // Movie Source -> Embedded (default)
+                    outerPick:
+                    for (boolean wantExternal : passes) {
+                        for (int i = 0; i < nbTrack; i++) {
+                            VideoMetadata.SubtitleTrack track = vMetadata.getSubtitleTrack(i);
+                            if (track == null || track.isExternal != wantExternal) continue;
+                            String canon = track.isExternal
+                                    ? com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels
+                                            .resolveExternalLanguageCanonical(getApplicationContext(), track, videoPath)
+                                    : com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleLabels
+                                            .resolveEmbeddedLanguageCanonical(track.language, track.name);
+                            if (prefLang.equals(canon)
+                                    || (!track.isExternal && com.archos.mediacenter.video.leanback.cinema.CinemaAutoSubtitles
+                                            .matchesPreferredLanguage(this, track.language, track.name))) {
+                                mVideoInfo.subtitleTrack = i;
+                                mVideoInfo.subtitleLanguage = prefIso2.isEmpty() ? "ar" : prefIso2;
+                                mHideSubtitles = false;
+                                mCinemaSelectedSubtitleName = null;
+                                cinemaArabicSelected = true;
+                                mCinemaSubtitleEpoch++;
+                                break outerPick;
+                            }
+                        }
                     }
                 }
             }
@@ -2006,14 +2047,24 @@ public class PlayerService extends Service implements Player.Listener, IndexHelp
         }
 
         if (!mCinemaManualSubtitle && !mIsPreparingSubs && !mUri.equals(mCinemaAutoAttempt)) {
-            boolean hasPreferredLanguage=false;
-            for(int i=0;i<nbTrack;i++) {
-                VideoMetadata.SubtitleTrack track=vMetadata.getSubtitleTrack(i);
-                if(com.archos.mediacenter.video.leanback.cinema.CinemaAutoSubtitles.matchesPreferredLanguage(this,track.language,track.name)) hasPreferredLanguage=true;
-                if(track.isExternal && track.path!=null && com.archos.mediacenter.video.leanback.cinema.CinemaAutoSubtitles.matchesPreferredLanguage(this,extractLanguageCode(getSubLanguageFromSubPathAndVideoPath(getApplicationContext(),track.path,vMetadata.getFile().getPath())),null)) hasPreferredLanguage=true;
+            int explicitMode = com.archos.mediacenter.video.leanback.cinema.CinemaTrackChoices.embedded(this, mVideoInfo.uri);
+            int centralMode = com.meedx.providers.UnifiedSubtitleConfig.preferredSubtitleMode(this);
+            boolean onlineDirect = com.meedx.providers.UnifiedSubtitleConfig.autoSelectPriority(this)
+                    == com.meedx.providers.UnifiedSubtitleConfig.AUTO_PRIORITY_ONLINE_DIRECT;
+            boolean onlineAllowed = com.meedx.providers.UnifiedSubtitleConfig.autoSubtitlesEnabled(this)
+                    && explicitMode != -3
+                    && centralMode != com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_MOVIE_SOURCE
+                    && centralMode != com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_OFF;
+            boolean hasPreferredLanguage = false;
+            for (int i = 0; i < nbTrack; i++) {
+                VideoMetadata.SubtitleTrack track = vMetadata.getSubtitleTrack(i);
+                if (com.archos.mediacenter.video.leanback.cinema.CinemaAutoSubtitles.matchesPreferredLanguage(this, track.language, track.name))
+                    hasPreferredLanguage = true;
+                if (track.isExternal && track.path != null && com.archos.mediacenter.video.leanback.cinema.CinemaAutoSubtitles.matchesPreferredLanguage(this, extractLanguageCode(getSubLanguageFromSubPathAndVideoPath(getApplicationContext(), track.path, vMetadata.getFile().getPath())), null))
+                    hasPreferredLanguage = true;
             }
-            mCinemaAutoAttempt=mUri;
-            if(!hasPreferredLanguage && mPreferences.getBoolean("subsource_enabled",true)) {
+            mCinemaAutoAttempt = mUri;
+            if ((onlineDirect || !hasPreferredLanguage) && onlineAllowed) {
                 mCinemaAutoState="searching";
                 final Uri requested=mUri; final long videoId=mVideoInfo.id; final int epoch=mCinemaSubtitleEpoch;
                 java.util.concurrent.CompletableFuture.runAsync(()->{

@@ -71,27 +71,44 @@ public final class ZeroConfigSubtitles {
             }
         } catch (Exception ignored) {}
 
-        // 2. Wyzie keyless subtitle mirror fallback
+        // 2. OpenSubtitles Legacy REST keyless fallback (replaces discontinued Wyzie mirror)
         if (dedup.isEmpty()) {
             try {
-                StringBuilder u = new StringBuilder("https://sub.wyzie.ru/search?id=").append(Uri.encode(imdbId));
-                if (isSeries && season > 0 && episode > 0) {
-                    u.append("&season=").append(season).append("&episode=").append(episode);
-                }
-                if (!wantedIso.isEmpty()) {
-                    u.append("&language=").append(Uri.encode(toTwoLetter(wantedIso)));
-                }
-                JSONArray arr = new JSONArray(get(u.toString()));
-                for (int i = 0; i < arr.length(); i++) {
-                    JSONObject s = arr.optJSONObject(i);
-                    if (s == null) continue;
-                    String subUrl = s.optString("url", "").trim();
-                    if (!subUrl.startsWith("https://") && !subUrl.startsWith("http://")) continue;
-                    String lang = s.optString("language", s.optString("display", wantedIso)).trim().toLowerCase(Locale.ROOT);
-                    String rel = s.optString("release", s.optString("fileName", "Free Subtitle"));
-                    String id = s.optString("id", Integer.toString(i));
-                    dedup.putIfAbsent(subUrl, new Item(id, rel, lang, subUrl, "Open Subtitles"));
-                    if (dedup.size() >= 25) break;
+                StringBuilder u = new StringBuilder("https://rest.opensubtitles.org/search");
+                if (isSeries && episode > 0) u.append("/episode-").append(episode);
+                u.append("/imdbid-").append(imdbId.substring(2));
+                if (isSeries && season > 0) u.append("/season-").append(season);
+                if (!wantedIso.isEmpty()) u.append("/sublanguageid-").append(Uri.encode(wantedIso));
+                HttpURLConnection conn = (HttpURLConnection) new URL(u.toString()).openConnection();
+                conn.setConnectTimeout(6000);
+                conn.setReadTimeout(9000);
+                conn.setRequestProperty("User-Agent", "TemporaryUserAgent");
+                try {
+                    if (conn.getResponseCode() == 200) {
+                        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                        try (InputStream in = conn.getInputStream()) {
+                            byte[] b = new byte[8192];
+                            int n;
+                            while ((n = in.read(b)) != -1 && bos.size() < 2 * 1024 * 1024) bos.write(b, 0, n);
+                        }
+                        String expectedImdbDigits = imdbId.substring(2).replaceFirst("^0+", "");
+                        JSONArray arr = new JSONArray(new String(bos.toByteArray(), StandardCharsets.UTF_8));
+                        for (int i = 0; i < arr.length(); i++) {
+                            JSONObject s = arr.optJSONObject(i);
+                            if (s == null) continue;
+                            String rowImdb = s.optString("IDMovieImdb", "").trim().replaceFirst("^0+", "");
+                            if (!rowImdb.isEmpty() && !rowImdb.equals(expectedImdbDigits)) continue;
+                            String subUrl = s.optString("SubDownloadLink", "").trim();
+                            if (!subUrl.startsWith("http")) continue;
+                            String lang = s.optString("SubLanguageID", wantedIso).trim().toLowerCase(Locale.ROOT);
+                            String rel = s.optString("SubFileName", "OpenSubtitles Free");
+                            String id = s.optString("IDSubtitleFile", Integer.toString(i));
+                            dedup.putIfAbsent(subUrl, new Item(id, rel, lang, subUrl, "OpenSubtitles Free"));
+                            if (dedup.size() >= 25) break;
+                        }
+                    }
+                } finally {
+                    conn.disconnect();
                 }
             } catch (Exception ignored) {}
         }
@@ -115,7 +132,15 @@ public final class ZeroConfigSubtitles {
                     if (out.size() + n > 4 * 1024 * 1024) throw new IOException("Subtitle too large");
                     out.write(buf, 0, n);
                 }
-                return out.toByteArray();
+                byte[] bytes = out.toByteArray();
+                if (bytes.length >= 2 && bytes[0] == (byte) 0x1f && bytes[1] == (byte) 0x8b) {
+                    try (java.util.zip.GZIPInputStream gz = new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(bytes));
+                         ByteArrayOutputStream unz = new ByteArrayOutputStream()) {
+                        while ((n = gz.read(buf)) != -1 && unz.size() < 4 * 1024 * 1024) unz.write(buf, 0, n);
+                        return unz.toByteArray();
+                    }
+                }
+                return bytes;
             }
         } finally {
             conn.disconnect();

@@ -52,6 +52,9 @@ final class CinemaSecondarySubtitle implements AutoCloseable {
     private boolean opaqueBg = false;
     private boolean visible = true;
     private long delayMs = 0L;
+    private String trackLabel = "";
+    private String trackPath = "";
+    private String trackLangCanon = "";
     private CinemaSecondarySubtitle partner;
 
     CinemaSecondarySubtitle(RelativeLayout root, IntSupplier position) {
@@ -92,6 +95,34 @@ final class CinemaSecondarySubtitle implements AutoCloseable {
 
     boolean hasCues() {
         return !cues.isEmpty();
+    }
+
+    String getTrackLabel() {
+        return trackLabel == null ? "" : trackLabel;
+    }
+
+    String getTrackPath() {
+        return trackPath == null ? "" : trackPath;
+    }
+
+    String getTrackLangCanon() {
+        return trackLangCanon == null ? "" : trackLangCanon;
+    }
+
+    void setTrackMeta(String label, String path, String langCanon) {
+        this.trackLabel = label == null ? "" : label;
+        this.trackPath = path == null ? "" : path;
+        this.trackLangCanon = langCanon == null ? "" : langCanon;
+    }
+
+    long getDelayMs() {
+        return delayMs;
+    }
+
+    void setDelayMs(long newDelayMs) {
+        delayMs = newDelayMs;
+        shown = "";
+        updateCue();
     }
 
     void setVideo(Uri uri) {
@@ -280,6 +311,9 @@ final class CinemaSecondarySubtitle implements AutoCloseable {
         cues = List.of();
         shown = "";
         delayMs = 0L;
+        trackLabel = "";
+        trackPath = "";
+        trackLangCanon = "";
         overlay.setText(null);
         overlay.setVisibility(View.GONE);
         handler.removeCallbacks(update);
@@ -350,20 +384,24 @@ final class CinemaSecondarySubtitle implements AutoCloseable {
         overlay.setPadding(opaqueBg ? 18 : 0, opaqueBg ? 8 : 0, opaqueBg ? 18 : 0, opaqueBg ? 8 : 0);
         int inset = CinemaUi.dp(context, 24);
         int dualPos = Math.max(0, Math.min(2, prefs.getInt("pref_dual_sub_position", 1)));
+        boolean pairedWithCastPrimary = partner != null && partner.hasCues();
         var layout = new RelativeLayout.LayoutParams(-1, -2);
         if (dualPos == 0) {
             if (primaryMode) {
                 layout.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
                 layout.setMargins(inset, inset, inset, CinemaUi.dp(context, bottomMarginDp));
-            } else if (partner != null && partner.hasCues() && partner.getOverlayId() != View.NO_ID) {
+            } else if (pairedWithCastPrimary && partner.getOverlayId() != View.NO_ID) {
                 layout.addRule(RelativeLayout.ABOVE, partner.getOverlayId());
                 layout.alignWithParent = true;
                 layout.setMargins(inset, inset, inset, CinemaUi.dp(context, 8));
             } else {
+                // Native SubtitleManager renders at bottom — place secondary clearly above it without overlap
+                int nativeVpos = prefs.getInt(PlayerActivity.KEY_SUBTITLE_VPOS, 64);
+                int safeBottomDp = Math.max(132, nativeVpos + 74);
                 layout.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
-                layout.setMargins(inset, inset, inset, CinemaUi.dp(context, Math.max(bottomMarginDp + 56, 84)));
+                layout.setMargins(inset, inset, inset, CinemaUi.dp(context, safeBottomDp));
             }
-        } else if (dualPos == 2) {
+        } else if (dualPos == 2 && pairedWithCastPrimary) {
             if (primaryMode) {
                 layout.addRule(RelativeLayout.ALIGN_PARENT_TOP);
                 layout.setMargins(inset, inset, inset, inset);
@@ -372,12 +410,13 @@ final class CinemaSecondarySubtitle implements AutoCloseable {
                 layout.setMargins(inset, inset, inset, CinemaUi.dp(context, bottomMarginDp));
             }
         } else {
+            // Default split (or native primary at bottom): secondary ALWAYS stays at TOP to prevent overlap!
             if (primaryMode) {
                 layout.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
                 layout.setMargins(inset, inset, inset, CinemaUi.dp(context, bottomMarginDp));
             } else {
                 layout.addRule(RelativeLayout.ALIGN_PARENT_TOP);
-                layout.setMargins(inset, inset, inset, inset);
+                layout.setMargins(inset, CinemaUi.dp(context, 26), inset, inset);
             }
         }
         overlay.setLayoutParams(layout);

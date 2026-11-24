@@ -195,13 +195,31 @@ public final class AppUpdates {
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPaddingRelative(dp(activity, 22), dp(activity, 20), dp(activity, 22), dp(activity, 8));
 
-        var heading = noteText(activity, label(activity, "Update available", "يتوفر تحديث جديد")
+        var heading = noteText(activity, label(activity, "New Update Available", "يوجد إصدار جديد متاح")
                 + " · " + displayVersion(release.name), 22, GOLD, true);
         androidx.core.view.ViewCompat.setAccessibilityHeading(heading, true);
         card.addView(heading);
         String size = release.size > 0 ? Formatter.formatFileSize(activity, release.size)
                 : label(activity, "Size unavailable", "الحجم غير متاح");
         card.addView(noteText(activity, size, 14, Color.WHITE, false));
+
+        if (tv) {
+            var tvInfo = new LinearLayout(activity);
+            tvInfo.setOrientation(LinearLayout.VERTICAL);
+            tvInfo.setBackground(noteSurface(activity, 0x26E5A93B, GOLD, 10));
+            tvInfo.setPaddingRelative(dp(activity, 14), dp(activity, 10), dp(activity, 14), dp(activity, 10));
+            var infoLp = new LinearLayout.LayoutParams(-1, -2);
+            infoLp.topMargin = dp(activity, 12);
+            tvInfo.addView(noteText(activity,
+                    label(activity, "Official Website: ", "الموقع الرسمي: ")
+                            + "\u202A" + UpdateConfig.DOWNLOADS_SITE_DISPLAY + "\u202C",
+                    14, Color.WHITE, false));
+            tvInfo.addView(noteText(activity,
+                    label(activity, "Downloader Code: ", "كود Downloader: ")
+                            + "\u202A" + UpdateConfig.DOWNLOADER_CODE + "\u202C",
+                    15, GOLD, true));
+            card.addView(tvInfo, infoLp);
+        }
 
         var bar = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
         bar.setIndeterminate(true);
@@ -241,7 +259,7 @@ public final class AppUpdates {
         AlertDialog dialog = new AlertDialog.Builder(activity, android.R.style.Theme_Material_Dialog_Alert)
                 .setView(wrapWithArtBackdrop(activity, tv, card))
                 .setNegativeButton(label(activity, "Later", "لاحقاً"), null)
-                .setPositiveButton(label(activity, "Update Now", "تحديث الآن"), null)
+                .setPositiveButton(label(activity, "Download", "تحميل"), null)
                 .show();
         if (dialog.getWindow() != null) {
             dialog.getWindow().setBackgroundDrawable(noteSurface(activity, SOFT_BLACK, 0xff665033, 18));
@@ -256,9 +274,9 @@ public final class AppUpdates {
         }
         var later = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
         var start = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-        styleNoteButton(activity, later);
-        styleNoteButton(activity, start);
-        if (tv) later.requestFocus();
+        styleNoteButton(activity, later, false);
+        styleNoteButton(activity, start, true);
+        if (tv) start.post(start::requestFocus);
         start.setOnClickListener(view -> {
             if (!DOWNLOADING.compareAndSet(false, true)) return;
             heading.setText(label(activity, "Downloading update…", "جارٍ تنزيل التحديث…") + " · " + displayVersion(release.name));
@@ -282,12 +300,19 @@ public final class AppUpdates {
         return view;
     }
 
-    private static void styleNoteButton(Activity activity, android.widget.Button button) {
+    private static void styleNoteButton(Activity activity, android.widget.Button button, boolean primary) {
         button.setAllCaps(false);
-        button.setTextColor(GOLD);
         var states = new StateListDrawable();
-        states.addState(new int[]{android.R.attr.state_focused}, noteSurface(activity, 0xff362816, GOLD, 10));
-        states.addState(new int[]{}, noteSurface(activity, 0xff242019, 0xff5a472d, 10));
+        if (primary) {
+            button.setTextColor(SOFT_BLACK);
+            button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            states.addState(new int[]{android.R.attr.state_focused}, noteSurface(activity, 0xfff7c968, Color.WHITE, 10));
+            states.addState(new int[]{}, noteSurface(activity, GOLD, 0xfff7c968, 10));
+        } else {
+            button.setTextColor(GOLD);
+            states.addState(new int[]{android.R.attr.state_focused}, noteSurface(activity, 0xff362816, GOLD, 10));
+            states.addState(new int[]{}, noteSurface(activity, 0xff242019, 0xff5a472d, 10));
+        }
         button.setBackground(states);
     }
 
@@ -303,9 +328,43 @@ public final class AppUpdates {
         return Math.round(value * context.getResources().getDisplayMetrics().density);
     }
 
+    /** Removes already-installed or stale downloaded update APKs from cacheDir/updates/. */
+    public static long pruneStaleUpdateApks(Context context, long installedVersionCode) {
+        if (context == null) return 0L;
+        File directory = new File(context.getCacheDir(), "updates");
+        if (!directory.isDirectory()) return 0L;
+        File[] files = directory.listFiles();
+        if (files == null) return 0L;
+        long freed = 0L;
+        long staleBefore = System.currentTimeMillis() - (24L * 60L * 60L * 1000L);
+        for (File f : files) {
+            if (!f.isFile()) continue;
+            String name = f.getName();
+            boolean shouldDelete = false;
+            if (name.startsWith("download-") && name.endsWith(".apk")) {
+                shouldDelete = f.lastModified() < staleBefore || !DOWNLOADING.get();
+            } else if (name.startsWith("update-") && name.endsWith(".apk")) {
+                try {
+                    long code = Long.parseLong(name.substring("update-".length(), name.length() - ".apk".length()));
+                    if (code <= installedVersionCode || f.lastModified() < staleBefore) {
+                        shouldDelete = true;
+                    }
+                } catch (NumberFormatException ignored) {
+                    shouldDelete = true;
+                }
+            }
+            if (shouldDelete) {
+                long len = Math.max(0L, f.length());
+                if (f.delete()) freed += len;
+            }
+        }
+        return freed;
+    }
+
     private static void download(Activity activity, Release release, ProgressBar bar, AlertDialog progress) {
         IO.execute(() -> {
             File directory = new File(activity.getCacheDir(), "updates");
+            pruneStaleUpdateApks(activity.getApplicationContext(), release.code - 1);
             File apk = new File(directory, "update-" + release.code + ".apk");
             boolean success = false;
             try {

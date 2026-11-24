@@ -534,6 +534,7 @@ public final class TvHubActivity extends AppCompatActivity {
     }
 
     private static final String OPEN_SYNC_SETTINGS = "open_sync_settings";
+    private static final String OPEN_UNIFIED_SUBTITLES = "open_unified_subtitles";
 
     public static void openSyncSettings(Context context) {
         context.startActivity(new Intent(context, TvHubActivity.class)
@@ -541,7 +542,19 @@ public final class TvHubActivity extends AppCompatActivity {
                 .putExtra(OPEN_SYNC_SETTINGS, true));
     }
 
+    public static void openUnifiedSubtitleSettings(Context context) {
+        context.startActivity(new Intent(context, TvHubActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                .putExtra(OPEN_UNIFIED_SUBTITLES, true));
+    }
+
     private void handleSyncSettingsIntent(Intent intent) {
+        if (intent.getBooleanExtra(OPEN_UNIFIED_SUBTITLES, false)) {
+            intent.removeExtra(OPEN_UNIFIED_SUBTITLES);
+            if (tabLayout != null) tabLayout.selectTab(tabLayout.getTabAt(CONNECTION_TAB));
+            main.post(() -> { if (!isDestroyed() && subtitles != null) subtitles.showUnifiedSubtitleSettingsSheet(); });
+            return;
+        }
         if (!intent.getBooleanExtra(OPEN_SYNC_SETTINGS, false)) return;
         intent.removeExtra(OPEN_SYNC_SETTINGS);
         if (tabLayout != null) tabLayout.selectTab(tabLayout.getTabAt(CONNECTION_TAB));
@@ -2488,6 +2501,7 @@ public final class TvHubActivity extends AppCompatActivity {
                                 case "ADDONS_SYNC" -> connection.handleAddonsSync(response.optJSONArray("addons"));
                                 case "REQUEST_ADDONS_SYNC" -> connection.sendAddonsSyncSnapshot();
                                 case "ADDONS_ACK" -> connection.onAddonsAck(response.optInt("count"));
+                                case "ADDON_TV_INSTALLED" -> connection.onAddonTvInstalled(response);
                                 case "ADDON_ENABLED" -> connection.onTvAddonEnabled(response.optString("manifest_url"),
                                         response.optBoolean("enabled"));
                                 case "ADDON_REMOVED" -> {
@@ -2498,6 +2512,7 @@ public final class TvHubActivity extends AppCompatActivity {
                                         response.optInt("file_index", -1), response.optString("title"),
                                         response.optString("imdb_id"), response.optInt("season"), response.optInt("episode"));
                                 case "API_KEYS_SYNC" -> connection.handleApiKeysSyncFromTv(response);
+                                case "SUBTITLE_CONFIG_SYNC" -> connection.handleSubtitleConfigSyncFromTv(response);
                                 case "FULL_SYNC_ACK" -> connection.onFullSyncAck(response);
                                 case com.meedx.providers.LiveChannelFavorites.PACKET ->
                                         connection.onFavoriteChannels(response.optJSONObject(com.meedx.providers.LiveChannelFavorites.FIELD));

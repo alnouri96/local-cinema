@@ -142,6 +142,11 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     private TextView librariesTile;
     private record DiscoverLocation(int strip,String key) {}
     private DiscoverLocation selectedDiscover,returningDiscover;
+    private final List<String> renderedSectionKeys = new ArrayList<>();
+    private final Map<String, Integer> sectionKeyToRowId = new java.util.HashMap<>();
+    private final Map<Integer, String> rowIdToSectionKey = new java.util.HashMap<>();
+    private int pendingContinueFocusPos = -1;
+
     private List<Integer> rowOrder(){
         List<Integer> order=HomePreferences.order(prefs);
         order.removeIf(id -> id == 6);
@@ -149,6 +154,47 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         if (hasNonMobileLibrary) order.removeIf(id -> id != 1);
         order.addAll(libraryRows.keySet());
         return order;
+    }
+
+    private List<String> activeSectionOrder() {
+        List<String> available = new ArrayList<>();
+        sectionKeyToRowId.clear();
+        rowIdToSectionKey.clear();
+        for (int id : rowOrder()) {
+            LibraryRow source = libraryRows.get(id);
+            String key = source != null ? HomePreferences.libSectionKey(source.name()) : HomePreferences.coreSectionKey(id);
+            if (!sectionKeyToRowId.containsKey(key)) {
+                available.add(key);
+                sectionKeyToRowId.put(key, id);
+                rowIdToSectionKey.put(id, key);
+            }
+        }
+        available.add(HomePreferences.KEY_TRAILER_TRENDING);
+        available.add(HomePreferences.KEY_TRAILER_NEW);
+        available.add(HomePreferences.KEY_TRAILER_COMING);
+        return HomePreferences.sectionOrder(prefs, available);
+    }
+
+    public static String sectionTitle(Context c, String sectionKey) {
+        if (sectionKey == null) return "";
+        if (HomePreferences.KEY_TRAILER_TRENDING.equals(sectionKey)) {
+            return label(c, "الإعلانات الرائجة", "Trending Trailers");
+        }
+        if (HomePreferences.KEY_TRAILER_NEW.equals(sectionKey)) {
+            return c.getString(com.archos.mediacenter.video.R.string.cinema_new_trailers);
+        }
+        if (HomePreferences.KEY_TRAILER_COMING.equals(sectionKey)) {
+            return c.getString(com.archos.mediacenter.video.R.string.cinema_coming_soon);
+        }
+        if (HomePreferences.isLibKey(sectionKey)) {
+            return HomePreferences.libNameFromKey(sectionKey);
+        }
+        if (sectionKey.startsWith("row:")) {
+            try {
+                return rowTitle(c, Integer.parseInt(sectionKey.substring(4)));
+            } catch (NumberFormatException ignored) {}
+        }
+        return sectionKey;
     }
     private boolean contentLoaded;
     private String selectedKey;
@@ -297,14 +343,14 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         if (root == null) return false;
         setPosterRowsShown(true);
         selectedDiscover = null;
-        selectedRow = 1;
+        selectedRow = -1;
         selectedKey = null;
         lastContentFocus = null;
         if (contentScroll != null) {
             contentScroll.smoothScrollTo(0, 0);
             contentScroll.post(() -> { if (contentScroll != null) contentScroll.scrollTo(0, 0); });
         }
-        return focusContent();
+        return focusFirstVisibleSection();
     }
 
     private static boolean isDescendant(View child, ViewGroup parent) {
@@ -328,17 +374,19 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             return true;
         }
         Context c = requireContext();
-        int firstRowId = -1;
-        for (int id : rowOrder()) {
-            RecyclerView l = lists.get(id);
-            if (l != null && l.getAdapter() != null && l.getAdapter().getItemCount() > 0) {
-                firstRowId = id;
-                break;
+        String firstKey = firstVisibleSectionKey();
+        boolean inFirstSection = false;
+        if (firstKey != null) {
+            if (HomePreferences.isTrailerKey(firstKey)) {
+                int sIdx = HomePreferences.trailerIndex(firstKey);
+                inFirstSection = selectedRow == 5 && selectedDiscover != null && selectedDiscover.strip() == sIdx;
+            } else {
+                Integer rId = sectionKeyToRowId.get(firstKey);
+                inFirstSection = rId != null && selectedRow == rId;
             }
         }
         boolean scrolledDown = contentScroll != null && contentScroll.getScrollY() > dp(c, 48);
-        boolean inSubRow = selectedRow == 5
-                || (firstRowId > 0 && selectedRow != firstRowId)
+        boolean inSubRow = (firstKey != null && !inFirstSection)
                 || (focused != null && otherVideos != null && isDescendant(focused, otherVideos));
         if (scrolledDown || inSubRow) {
             return returnToHomeTop();
@@ -379,14 +427,94 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         List<Integer> order=new ArrayList<>(rowOrder());
         if(order.remove((Integer)selectedRow))order.add(0,selectedRow);
         if(selectedKey!=null)for(int id:order){RecyclerView list=lists.get(id);if(list!=null&&list.getAdapter() instanceof Posters p){int position=p.find(selectedKey);if(position>=0)return focusPoster(list,position);}}
-        order=new ArrayList<>(rowOrder());
-        if(order.remove((Integer)1))order.add(0,1);
-        for(int id:order){
-            RecyclerView list=lists.get(id);
-            if(list==null||list.getAdapter()==null||list.getAdapter().getItemCount()==0)continue;
-            return focusPoster(list,0);
+        return focusFirstVisibleSection();
+    }
+
+    private boolean isSectionPopulated(String key) {
+        if (key == null) return false;
+        if (HomePreferences.isTrailerKey(key)) {
+            int s = HomePreferences.trailerIndex(key);
+            return s >= 0 && s < discoverStrips.size() && s < discoverGroups.size()
+                    && HomePreferences.isSectionVisible(prefs, key)
+                    && discoverGroups.get(s).getVisibility() != View.GONE
+                    && discoverStrips.get(s).getChildCount() > 0;
         }
-        return focusStrip(0,1,0)||otherFirst!=null&&otherFirst.requestFocus();
+        Integer rowId = sectionKeyToRowId.get(key);
+        if (rowId == null) return false;
+        RecyclerView list = lists.get(rowId);
+        return list != null && list.getAdapter() != null && list.getAdapter().getItemCount() > 0
+                && list.getParent() instanceof View pv && pv.getVisibility() != View.GONE;
+    }
+
+    private String firstVisibleSectionKey() {
+        for (String key : renderedSectionKeys) {
+            if (isSectionPopulated(key)) return key;
+        }
+        return null;
+    }
+
+    private boolean focusSection(String key, int preferredIndex) {
+        if (!isSectionPopulated(key)) return false;
+        setPosterRowsShown(true);
+        if (HomePreferences.isTrailerKey(key)) {
+            int s = HomePreferences.trailerIndex(key);
+            LinearLayout strip = discoverStrips.get(s);
+            int target = Math.min(Math.max(0, preferredIndex), strip.getChildCount() - 1);
+            return ((ViewGroup) strip.getChildAt(target)).getChildAt(0).requestFocus();
+        }
+        Integer rowId = sectionKeyToRowId.get(key);
+        if (rowId == null) return false;
+        RecyclerView list = lists.get(rowId);
+        if (list == null || list.getAdapter() == null || list.getAdapter().getItemCount() == 0) return false;
+        return focusPoster(list, Math.min(Math.max(0, preferredIndex), list.getAdapter().getItemCount() - 1));
+    }
+
+    private boolean focusFirstVisibleSection() {
+        for (String key : renderedSectionKeys) {
+            if (focusSection(key, 0)) return true;
+        }
+        for (int id : rowOrder()) {
+            RecyclerView list = lists.get(id);
+            if (list != null && list.getAdapter() != null && list.getAdapter().getItemCount() > 0) {
+                return focusPoster(list, 0);
+            }
+        }
+        return focusStrip(0, 1, 0) || (otherFirst != null && otherFirst.requestFocus());
+    }
+
+    private boolean focusLastVisibleSection(int preferredIndex) {
+        setPosterRowsShown(true);
+        for (int i = renderedSectionKeys.size() - 1; i >= 0; i--) {
+            if (focusSection(renderedSectionKeys.get(i), preferredIndex)) return true;
+        }
+        return focusLastPosterRow(preferredIndex);
+    }
+
+    private boolean focusAdjacentSection(String currentKey, int step, int preferredIndex) {
+        int from = renderedSectionKeys.indexOf(currentKey);
+        if (from >= 0) {
+            for (int i = from + step; i >= 0 && i < renderedSectionKeys.size(); i += step) {
+                if (focusSection(renderedSectionKeys.get(i), preferredIndex)) return true;
+            }
+        }
+        if (step > 0 && otherFirst != null) return otherFirst.requestFocus();
+        return true;
+    }
+
+    private void captureContinueFocusPosition(int rowId, Item item) {
+        if (rowId != 1) return;
+        RecyclerView list = lists.get(1);
+        int pos = -1;
+        if (list != null && list.getAdapter() instanceof Posters posters) {
+            if (item != null) pos = posters.find(itemKey(item));
+            if (pos < 0 && root != null) {
+                View focused = root.findFocus();
+                if (focused != null && focused.getParent() == list) {
+                    pos = list.getChildAdapterPosition(focused);
+                }
+            }
+        }
+        pendingContinueFocusPos = Math.max(0, pos);
     }
     /** Moves focus inside one horizontal row without ever falling back to the default (downward) focus search. */
     private boolean focusNeighbour(RecyclerView list,int position){
@@ -819,13 +947,29 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             if (id == 0) id = nextLibraryRow++;
             updated.put(id, row);
         }
-        if(updated.equals(libraryRows))return;
+        if(updated.equals(libraryRows)){
+            List<String> knownNames = new ArrayList<>();
+            boolean hasNonMobile = false;
+            for (LibraryRow r : libraryRows.values()) {
+                knownNames.add(r.name());
+                if (!r.mobile()) hasNonMobile = true;
+            }
+            HomePreferences.saveKnownLibrarySections(prefs, knownNames, hasNonMobile);
+            return;
+        }
         java.util.Set<Integer> removed=new java.util.HashSet<>(libraryRows.keySet());
         removed.removeAll(updated.keySet());
         java.util.Set<Integer> added=new java.util.HashSet<>(updated.keySet());
         added.removeAll(libraryRows.keySet());
         libraryRows.clear();
         libraryRows.putAll(updated);
+        List<String> knownNames = new ArrayList<>();
+        boolean hasNonMobile = false;
+        for (LibraryRow r : libraryRows.values()) {
+            knownNames.add(r.name());
+            if (!r.mobile()) hasNonMobile = true;
+        }
+        HomePreferences.saveKnownLibrarySections(prefs, knownNames, hasNonMobile);
         for(int id:removed){
             LoaderManager.getInstance(this).destroyLoader(id);
             data.remove(id);
@@ -1014,8 +1158,7 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         refreshTileStatusDots();
         handler.removeCallbacks(tileLedTick);
         handler.postDelayed(tileLedTick, 3000L);
-        String signature=getResources().getConfiguration().locale.toString()+":"+MetadataLanguage.resolve(requireContext())+":"+HomePreferences.order(prefs)+":"+prefs.getInt(HomePreferences.COUNT,6)+":"+prefs.getString(HomePreferences.SIZE,"medium");
-        for(int i:new int[]{1,2,3,4,6})signature+=":"+prefs.getBoolean("cinema_row_"+i,true);
+        String signature=getResources().getConfiguration().locale.toString()+":"+MetadataLanguage.resolve(requireContext())+":"+HomePreferences.layoutSignature(prefs);
         if(!signature.equals(layoutSignature)){layoutSignature=signature;heroArt.clear();renderRows();}
         String refresh = prefs.getString(CinemaPosters.REFRESH, "");
         boolean force = "all".equals(refresh);
@@ -1047,6 +1190,7 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         loadLibraries();
         loadDiscover();
         CinemaMetadataPrefetcher.maybeRunOnStartup(requireContext());
+        CinemaCacheMaintenance.maybeRunSmartMaintenanceAsync(requireContext());
         handler.postDelayed(() -> {
             if (isAdded() && getActivity() != null && !getActivity().isFinishing()) {
                 TvPermissionsWizardDialog.maybeShowFirstLaunch(requireActivity());
@@ -1402,7 +1546,23 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         List<Item> previousItems = data.put(loader.getId(),items);
         RecyclerView list=lists.get(loader.getId());
         if(list!=null&&list.getAdapter() instanceof Posters){((Posters)list.getAdapter()).replace(items);updateVisibility();}
-        if(contentLoaded&&selectedRow==loader.getId()){
+        if (loader.getId() == 1 && pendingContinueFocusPos >= 0) {
+            final int targetPos = pendingContinueFocusPos;
+            pendingContinueFocusPos = -1;
+            rows.post(() -> {
+                if (!isAdded() || root == null) return;
+                RecyclerView cwList = lists.get(1);
+                if (cwList != null && cwList.getAdapter() != null && cwList.getAdapter().getItemCount() > 0
+                        && cwList.getParent() instanceof View pv && pv.getVisibility() == View.VISIBLE) {
+                    int clamped = Math.min(targetPos, cwList.getAdapter().getItemCount() - 1);
+                    focusPoster(cwList, clamped);
+                } else {
+                    if (!focusAdjacentSection(HomePreferences.KEY_CONTINUE, 1, 0)) {
+                        focusFirstVisibleSection();
+                    }
+                }
+            });
+        } else if(contentLoaded&&selectedRow==loader.getId()){
             View current=root.findFocus();
             if(current==null||current==root)rows.post(()->{
                 if(root!=null&&(root.findFocus()==null||root.findFocus()==root))focusContent();
@@ -1486,13 +1646,31 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     private void renderRows() {
         if(rows==null)return;
         boolean restoreFocus=root!=null&&root.findFocus()!=null&&root.findFocus()==lastContentFocus;
-        rows.removeAllViews();lists.clear();
+        rows.removeAllViews();lists.clear();renderedSectionKeys.clear();
         Context c=requireContext();
         boolean rtl=root!=null&&root.getLayoutDirection()==View.LAYOUT_DIRECTION_RTL;
         int rowEdgePad=dp(c,40);
         rows.setPadding(0,0,0,Math.max(dp(c,24),getResources().getDisplayMetrics().heightPixels-dp(c,250)-posterHeight()-dp(c,48)));
-        for(int id:rowOrder()) {
-            if(!prefs.getBoolean("cinema_row_"+id,true))continue;
+
+        // Prepare the 3 discover/trailer groups cleanly (indexed 0..2) before placing them in unified order.
+        prepareDiscoverGroups(c, rtl, rowEdgePad);
+
+        List<String> sectionOrder = activeSectionOrder();
+        for (String sectionKey : sectionOrder) {
+            if (!HomePreferences.isSectionVisible(prefs, sectionKey)) continue;
+            if (HomePreferences.isTrailerKey(sectionKey)) {
+                int sIdx = HomePreferences.trailerIndex(sectionKey);
+                if (sIdx >= 0 && sIdx < discoverGroups.size()) {
+                    View group = discoverGroups.get(sIdx);
+                    if (group.getParent() instanceof ViewGroup vg) vg.removeView(group);
+                    rows.addView(group);
+                    renderedSectionKeys.add(sectionKey);
+                }
+                continue;
+            }
+            Integer rowIdObj = sectionKeyToRowId.get(sectionKey);
+            if (rowIdObj == null) continue;
+            int id = rowIdObj;
             LinearLayout group=new LinearLayout(c);group.setOrientation(LinearLayout.VERTICAL);group.setClipChildren(false);
             LibraryRow source=libraryRows.get(id);
             String titleStr = source == null ? rowTitle(c, id) : source.name();
@@ -1516,9 +1694,10 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             list.setAdapter(new Posters(id, sortRowItemsForBind(id, data.getOrDefault(id, List.of()))));
             group.addView(list,new LinearLayout.LayoutParams(-1,posterHeight()+dp(c,27)));
             rows.addView(group);lists.put(id,list);
+            renderedSectionKeys.add(sectionKey);
         }
         if (empty.getParent() instanceof ViewGroup) ((ViewGroup)empty.getParent()).removeView(empty);
-        rows.addView(empty);appendDiscover();appendOtherVideos();updateVisibility();
+        rows.addView(empty);bindDiscoverData();appendOtherVideos();updateVisibility();
         if(restoreFocus)rows.post(this::focusContent);
         if(returningDiscover!=null&&isResumed()&&focusDiscover(returningDiscover))returningDiscover=null;
     }
@@ -1535,10 +1714,8 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     private final Runnable refreshDiscover=this::loadDiscover;
     private final List<LinearLayout> discoverStrips=new ArrayList<>();
     private final List<View> discoverGroups=new ArrayList<>();
-    private void appendDiscover(){
-        Context c=requireContext();discoverStrips.clear();discoverGroups.clear();
-        boolean rtl=root!=null&&root.getLayoutDirection()==View.LAYOUT_DIRECTION_RTL;
-        int rowEdgePad=dp(c,40);
+    private void prepareDiscoverGroups(Context c, boolean rtl, int rowEdgePad){
+        discoverStrips.clear();discoverGroups.clear();
         String[] heads={
             label(c,"الإعلانات الرائجة","Trending Trailers"),
             c.getString(com.archos.mediacenter.video.R.string.cinema_new_trailers),
@@ -1568,9 +1745,12 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                     }
                 }
             });
-            scroller.addView(strip);group.addView(scroller);rows.addView(group);
+            scroller.addView(strip);group.addView(scroller);
             discoverStrips.add(strip);discoverGroups.add(group);
         }
+    }
+    private void bindDiscoverData(){
+        Context c=requireContext();
         Context app=c.getApplicationContext();
         String language=MetadataLanguage.resolve(c);
         boolean arabic=language.startsWith("ar");
@@ -1624,8 +1804,10 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     }
     private void fillStrip(int s,List<com.meedx.providers.OpenTrailersProvider.TrailerItem> entries,boolean wide){
         LinearLayout strip=discoverStrips.get(s);strip.removeAllViews();
-        discoverGroups.get(s).setVisibility(entries==null||entries.isEmpty()?View.GONE:View.VISIBLE);
-        if(entries!=null&&!entries.isEmpty()){
+        boolean sectionEnabled = HomePreferences.isSectionVisible(prefs, HomePreferences.trailerSectionKey(s));
+        boolean show = sectionEnabled && entries != null && !entries.isEmpty();
+        discoverGroups.get(s).setVisibility(show ? View.VISIBLE : View.GONE);
+        if(show){
             appendDiscoverCards(s,entries,wide);
             if(strip.getParent() instanceof android.widget.HorizontalScrollView hsv){
                 boolean rtlStrip=root!=null&&root.getLayoutDirection()==View.LAYOUT_DIRECTION_RTL;
@@ -1691,11 +1873,9 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                     case KeyEvent.KEYCODE_DPAD_LEFT:if(index==0){if(rail.getChildCount()>0)rail.getChildAt(0).requestFocus();}else ((ViewGroup)strip.getChildAt(index-1)).getChildAt(0).requestFocus();return true;
                     case KeyEvent.KEYCODE_DPAD_RIGHT:if(index<strip.getChildCount()-1)((ViewGroup)strip.getChildAt(index+1)).getChildAt(0).requestFocus();return true;
                     case KeyEvent.KEYCODE_DPAD_UP:
-                        if(focusStrip(s-1,-1,index))return true;
-                        return focusLastPosterRow(index);
+                        return focusAdjacentSection(HomePreferences.trailerSectionKey(s), -1, index);
                     case KeyEvent.KEYCODE_DPAD_DOWN:
-                        if(focusStrip(s+1,1,index))return true;
-                        if(otherFirst!=null)otherFirst.requestFocus();return true;
+                        return focusAdjacentSection(HomePreferences.trailerSectionKey(s), 1, index);
                     default:return false;
                 }
             });
@@ -1728,6 +1908,8 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     }
     private boolean focusStrip(int from,int step,int index){
         for(int n=from;n>=0&&n<discoverStrips.size();n+=step){
+            if (!HomePreferences.isSectionVisible(prefs, HomePreferences.trailerSectionKey(n))) continue;
+            if (n < discoverGroups.size() && discoverGroups.get(n).getVisibility() == View.GONE) continue;
             LinearLayout strip=discoverStrips.get(n);
             if(strip.getChildCount()>0){((ViewGroup)strip.getChildAt(Math.min(index,strip.getChildCount()-1))).getChildAt(0).requestFocus();return true;}
         }
@@ -1970,8 +2152,7 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                 if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
                 if (key == KeyEvent.KEYCODE_DPAD_UP) {
                     setPosterRowsShown(true);
-                    if (focusStrip(discoverStrips.size() - 1, -1, 0)) return true;
-                    return focusLastPosterRow(item);
+                    return focusLastVisibleSection(item);
                 }
                 if (key == KeyEvent.KEYCODE_DPAD_LEFT && item == 0) {
                     rail.getChildAt(0).requestFocus();
@@ -2270,27 +2451,33 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         labels.add(isWatchedRow
                 ? label(c, "إزالة من تمت المشاهدة في Trakt", "Mark as Unwatched on Trakt")
                 : label(c, "تحديد كمُشاهَد في Trakt", "Mark as Watched on Trakt"));
-        actions.add(() -> io.execute(() -> {
-            com.meedx.providers.TraktSyncClient.syncHistoryItem(app, isSeries, ti.imdbId(), ti.tmdbId(),
-                    Math.max(1, ti.season()), Math.max(1, ti.episode()), !isWatchedRow);
-            if (!isWatchedRow) {
-                com.meedx.providers.TraktSyncClient.removePlaybackProgress(app, ti.imdbId(), ti.tmdbId(), ti.season(), ti.episode());
-            }
-            try { CinemaWatchStore.syncWithTrakt(app); } catch (Exception ignored) {}
-            handler.post(() -> {
-                if (!isAdded() || root == null) return;
-                for (int i : new int[]{1, 6}) LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(i, null, CinemaHomeFragment.this);
-            });
-        }));
-        if (!isWatchedRow) {
-            labels.add(c.getString(com.archos.mediacenter.video.R.string.cinema_remove_from_continue_watching));
-            actions.add(() -> io.execute(() -> {
-                CinemaWatchStore.removeTraktContinue(app, ti);
+        actions.add(() -> {
+            if (rowId == 1 && !isWatchedRow) captureContinueFocusPosition(rowId, null);
+            io.execute(() -> {
+                com.meedx.providers.TraktSyncClient.syncHistoryItem(app, isSeries, ti.imdbId(), ti.tmdbId(),
+                        Math.max(1, ti.season()), Math.max(1, ti.episode()), !isWatchedRow);
+                if (!isWatchedRow) {
+                    com.meedx.providers.TraktSyncClient.removePlaybackProgress(app, ti.imdbId(), ti.tmdbId(), ti.season(), ti.episode());
+                }
+                try { CinemaWatchStore.syncWithTrakt(app); } catch (Exception ignored) {}
                 handler.post(() -> {
                     if (!isAdded() || root == null) return;
                     for (int i : new int[]{1, 6}) LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(i, null, CinemaHomeFragment.this);
                 });
-            }));
+            });
+        });
+        if (!isWatchedRow) {
+            labels.add(c.getString(com.archos.mediacenter.video.R.string.cinema_remove_from_continue_watching));
+            actions.add(() -> {
+                captureContinueFocusPosition(rowId, null);
+                io.execute(() -> {
+                    CinemaWatchStore.removeTraktContinue(app, ti);
+                    handler.post(() -> {
+                        if (!isAdded() || root == null) return;
+                        for (int i : new int[]{1, 6}) LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(i, null, CinemaHomeFragment.this);
+                    });
+                });
+            });
         }
         showContextActionDialog(c, ti.title(), labels, actions);
     }
@@ -2547,30 +2734,36 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             labels.add(c.getString(w?com.archos.mediacenter.video.R.string.cinema_mark_as_unwatched:com.archos.mediacenter.video.R.string.cinema_mark_as_watched_cinemadetailsactivity));
             if(rowId==1||!w)labels.add(c.getString(com.archos.mediacenter.video.R.string.cinema_remove_from_continue_watching));
             showContextActionDialog(c, s.title(), labels, java.util.List.of(
-                    () -> io.execute(() -> {
-                        Context app = c.getApplicationContext();
-                        CinemaWatchStore.markStreamWatched(app, s.streamKey(), !w);
-                        CinemaLinkServer.broadcastWatchSync(CinemaWatchStore.buildSyncRecordForStream(
-                                CinemaWatchStore.getStream(app, s.streamKey())));
-                        CinemaWatchStore.syncWithTraktAsync(app);
-                        handler.post(() -> {
-                            if (!isAdded() || root == null) return;
-                            for (int i : new int[]{1, 6}) LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(i, null, CinemaHomeFragment.this);
+                    () -> {
+                        if (rowId == 1 && !w) captureContinueFocusPosition(rowId, item);
+                        io.execute(() -> {
+                            Context app = c.getApplicationContext();
+                            CinemaWatchStore.markStreamWatched(app, s.streamKey(), !w);
+                            CinemaLinkServer.broadcastWatchSync(CinemaWatchStore.buildSyncRecordForStream(
+                                    CinemaWatchStore.getStream(app, s.streamKey())));
+                            CinemaWatchStore.syncWithTraktAsync(app);
+                            handler.post(() -> {
+                                if (!isAdded() || root == null) return;
+                                for (int i : new int[]{1, 6}) LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(i, null, CinemaHomeFragment.this);
+                            });
                         });
-                    }),
-                    () -> io.execute(() -> {
-                        Context app = c.getApplicationContext();
-                        CinemaWatchStore.removeStreamFromContinue(app, s.streamKey());
-                        CinemaWatchStore.clearMatchingContinue(app, s.imdbId(), s.tmdbId(), s.season(), s.episode());
-                        CinemaLinkServer.broadcastWatchSync(CinemaWatchStore.buildSyncRecordForStream(
-                                CinemaWatchStore.getStream(app, s.streamKey())));
-                        CinemaWatchStore.removePlaybackProgressFromTraktAsync(
-                                app, 0L, s.streamUri(), s.title(), s.imdbId(), s.tmdbId(), s.season(), s.episode());
-                        handler.post(() -> {
-                            if (!isAdded() || root == null) return;
-                            for (int i : new int[]{1, 6}) LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(i, null, CinemaHomeFragment.this);
+                    },
+                    () -> {
+                        captureContinueFocusPosition(rowId, item);
+                        io.execute(() -> {
+                            Context app = c.getApplicationContext();
+                            CinemaWatchStore.removeStreamFromContinue(app, s.streamKey());
+                            CinemaWatchStore.clearMatchingContinue(app, s.imdbId(), s.tmdbId(), s.season(), s.episode());
+                            CinemaLinkServer.broadcastWatchSync(CinemaWatchStore.buildSyncRecordForStream(
+                                    CinemaWatchStore.getStream(app, s.streamKey())));
+                            CinemaWatchStore.removePlaybackProgressFromTraktAsync(
+                                    app, 0L, s.streamUri(), s.title(), s.imdbId(), s.tmdbId(), s.season(), s.episode());
+                            handler.post(() -> {
+                                if (!isAdded() || root == null) return;
+                                for (int i : new int[]{1, 6}) LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(i, null, CinemaHomeFragment.this);
+                            });
                         });
-                    })
+                    }
             ));
             return;
         }
@@ -2599,6 +2792,7 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         java.util.List<Runnable> actions=new java.util.ArrayList<>();
         labels.add(c.getString(currentlyWatched?com.archos.mediacenter.video.R.string.cinema_mark_as_unwatched:com.archos.mediacenter.video.R.string.cinema_mark_as_watched_cinemadetailsactivity));
         actions.add(()->{
+            if (rowId == 1 && !currentlyWatched) captureContinueFocusPosition(rowId, item);
             Context app=c.getApplicationContext();
             io.execute(()->{
                 try{
@@ -2618,6 +2812,7 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         if(canRemoveContinue){
             labels.add(c.getString(com.archos.mediacenter.video.R.string.cinema_remove_from_continue_watching));
             actions.add(()->{
+                captureContinueFocusPosition(rowId, item);
                 Context app=c.getApplicationContext();
                 io.execute(()->{
                     try{
@@ -3185,7 +3380,12 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                 }
                 if(e.getAction()==KeyEvent.ACTION_DOWN&&(k==KeyEvent.KEYCODE_DPAD_DOWN||k==KeyEvent.KEYCODE_DPAD_UP)){
                     int pos = h.getBindingAdapterPosition();
-                    List<Integer> order=rowOrder();int from=order.indexOf(rowId),step=k==KeyEvent.KEYCODE_DPAD_DOWN?1:-1;
+                    int step = k == KeyEvent.KEYCODE_DPAD_DOWN ? 1 : -1;
+                    String curKey = rowIdToSectionKey.get(rowId);
+                    if (curKey != null) {
+                        return focusAdjacentSection(curKey, step, Math.max(0, pos));
+                    }
+                    List<Integer> order=rowOrder();int from=order.indexOf(rowId);
                     for(int n=from+step;n>=0&&n<order.size();n+=step){RecyclerView next=lists.get(order.get(n));if(next!=null&&next.getAdapter()!=null&&next.getAdapter().getItemCount()>0)return focusPoster(next,Math.min(Math.max(0,pos),next.getAdapter().getItemCount()-1));}if(step>0&&focusStrip(0,1,0))return true;if(step>0&&otherFirst!=null)return otherFirst.requestFocus();return true;
                 }
                 if((k==KeyEvent.KEYCODE_DPAD_LEFT||k==KeyEvent.KEYCODE_DPAD_RIGHT)&&e.getAction()==KeyEvent.ACTION_DOWN&&v.getParent() instanceof RecyclerView strip){

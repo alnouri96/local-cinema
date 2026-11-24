@@ -71,6 +71,8 @@ final class TvHubSubtitlesController {
     private void toggleDual() {
         boolean enable = !dualEnabled(host);
         setDualEnabled(host, enable);
+        com.meedx.providers.UnifiedSubtitleConfig.setDualSubtitlesEnabled(host, enable);
+        if (host.connection != null) host.connection.sendSubtitleConfigToTv();
         if (enable) {
             if (deduplicateStreamSubtitles(activeStreamSubtitles).size() >= 2) {
                 enableAutoDualStreamSubtitles();
@@ -226,13 +228,15 @@ final class TvHubSubtitlesController {
     }
 
     void buildSubtitles(LinearLayout page) {
-        // 1. Active & Stream Subtitles card (Browser cache, HLS, YouTube, TV embedded tracks + Cast Subtitle Settings)
+        // 1. PROTECTED TOP CARD: Active & Stream Subtitles (Cinemana/Web Video Sniffer, Magnet, HLS, YouTube, TV embedded tracks + Cast Subtitle Settings)
         var streamCard = host.card(page, host.l("ترجمات البث المتاحة", "Active & Stream Subtitles"));
         activeStreamSubCard = streamCard;
         renderActiveStreamSubtitlesCard(streamCard);
 
-        var source = host.card(page, host.l("البحث عن الترجمة", "Subtitle Search"));
+        // 2. UNIFIED SMART MULTI-SOURCE SUBTITLE SEARCH (directly beneath Active & Stream Subtitles)
+        var source = host.card(page, host.l("البحث الذكي عن الترجمة", "Smart Multi-Source Subtitle Search"));
         var preferences = host.getSharedPreferences("cinema_subtitles", Context.MODE_PRIVATE);
+        boolean ar = isArabicUi();
 
         String rawCandidate = TvHubActivity.cleanCastTitle(!subtitleTitle.isBlank() ? subtitleTitle
                 : (host.activeWatchTitle != null && !host.activeWatchTitle.isBlank() ? host.activeWatchTitle
@@ -246,73 +250,77 @@ final class TvHubSubtitlesController {
         int episodeNumber = episode ? Integer.parseInt(identity.group(2)) : -1;
 
         var query = new EditText(host);
-        query.setHint(host.l("اسم الفيلم أو المسلسل", "Movie or series title"));
+        query.setHint(host.l("اسم الفيلم أو المسلسل (بالعربية أو الإنجليزية)", "Movie or series title (Arabic or English)"));
         query.setSingleLine(true);
         query.setTextColor(0xfffafafa);
         query.setHintTextColor(0xff8e8e93);
         if (!cleanTitle.isEmpty()) query.setText(cleanTitle);
         source.addView(query);
 
-        source.addView(host.label(host.l("محرك بحث الترجمة", "Subtitle search engine"), 13));
-        var engineSpinner = new android.widget.Spinner(host);
-        var engines = new android.widget.ArrayAdapter<>(host, android.R.layout.simple_spinner_item,
-                new String[]{
-                        host.l("OpenSubtitles (مجاني / مدمج)", "OpenSubtitles (Free / Built-in)"),
-                        host.l("Subsource API (يستخدم مفتاح تبويب الاتصال)", "Subsource API (Saved Connection Key)"),
-                        host.l("SubDL / YIFY Subtitles (فتح في المتصفح)", "SubDL / YIFY Subtitles (In-App Browser)")
-                });
-        engines.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        engineSpinner.setAdapter(engines);
-        boolean hasSubsourceKey = !com.meedx.providers.ProviderKeys.get(host, com.meedx.providers.ProviderKeys.SUBSOURCE).isBlank();
-        int defaultEngine = preferences.contains("engine") ? preferences.getInt("engine", 0) : (hasSubsourceKey ? 1 : 0);
-        engineSpinner.setSelection(Math.max(0, Math.min(2, defaultEngine)));
-        source.addView(engineSpinner, new LinearLayout.LayoutParams(-1, host.dp(46)));
+        var resolvedHint = host.label("", 11);
+        resolvedHint.setTextColor(TvHubActivity.GOLD);
+        resolvedHint.setVisibility(View.GONE);
+        source.addView(resolvedHint);
 
-        boolean hasOsKey = !com.meedx.providers.ProviderKeys.get(host, com.meedx.providers.ProviderKeys.OPEN_SUBTITLES).isBlank();
-        var keyHint = host.label(hasSubsourceKey || hasOsKey
-                ? host.l("✓ مفاتيح الترجمة محفوظة تلقائياً من تبويب الاتصال", "✓ Saved API keys synced from Connection tab")
-                : host.l("OpenSubtitles يعمل مجاناً · يمكنك إضافة مفاتيح إضافية من تبويب الاتصال",
-                        "OpenSubtitles works free · Optional keys live in Connection tab"), 11);
-        keyHint.setTextColor(hasSubsourceKey || hasOsKey ? 0xff4ade80 : 0xffa1a1aa);
-        keyHint.setPadding(0, host.dp(2), 0, host.dp(6));
-        source.addView(keyHint);
+        // If title contains Arabic/non-Latin characters, resolve English title proactively in background!
+        if (!cleanTitle.isEmpty() && com.meedx.providers.UnifiedSubtitleEngine.containsNonLatin(cleanTitle)) {
+            resolvedHint.setText(host.l("جارٍ جلب الاسم الإنجليزي الأصلي تلقائياً…", "Resolving original English title…"));
+            resolvedHint.setVisibility(View.VISIBLE);
+            final String origInput = cleanTitle;
+            subtitleTask(() -> {
+                var rq = com.meedx.providers.UnifiedSubtitleEngine.resolveQuery(
+                        host.getApplicationContext(), origInput, "", -1, episode, season, episodeNumber);
+                host.runOnUiThread(() -> {
+                    if (host.isDestroyed()) return;
+                    if (rq.resolvedFromNonEnglish && !rq.englishTitle.isBlank()) {
+                        if (query.getText().toString().trim().equals(origInput)) {
+                            query.setText(rq.englishTitle);
+                        }
+                        String metaLine = host.l("تم جلب الاسم الإنجليزي: ", "Resolved English: ") + rq.englishTitle
+                                + (rq.year > 0 ? " (" + rq.year + ")" : "")
+                                + (!rq.imdbId.isEmpty() ? " · " + rq.imdbId : "");
+                        resolvedHint.setText(metaLine);
+                        resolvedHint.setVisibility(View.VISIBLE);
+                    } else {
+                        resolvedHint.setVisibility(View.GONE);
+                    }
+                });
+            });
+        }
+
+        // Source Selection button (All Enabled / Single Source / Multi-Select — synced with TV!)
+        source.addView(host.label(host.l("مصادر البحث (مصدر واحد أو عدة مصادر)", "Search sources (single or multi-select)"), 13));
+        final MaterialButton[] srcPickerBtn = new MaterialButton[1];
+        srcPickerBtn[0] = host.button(
+                com.meedx.providers.UnifiedSubtitleConfig.searchSelectionSummary(host, ar),
+                () -> showPhoneSourceMultiSelectDialog(() -> {
+                    if (srcPickerBtn[0] != null) {
+                        srcPickerBtn[0].setText(com.meedx.providers.UnifiedSubtitleConfig.searchSelectionSummary(host, ar));
+                    }
+                }), false);
+        source.addView(srcPickerBtn[0], new LinearLayout.LayoutParams(-1, -2));
 
         var language = new android.widget.Spinner(host);
         language.setContentDescription(language.getContext().getString(org.proninyaroslav.libretorrent.R.string.cinema_subtitle_language_accessibility));
         var languages = new android.widget.ArrayAdapter<>(host, android.R.layout.simple_spinner_item,
-                new String[]{"العربية", "English", "العربية + English"});
+                new String[]{"العربية", "English", "العربية + English", host.l("حسب أولوية اللغات", "By Language Priority")});
         languages.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         language.setAdapter(languages);
-        language.setSelection(Math.max(0, Math.min(2, preferences.getInt("language", 0))));
+        language.setSelection(Math.max(0, Math.min(3, preferences.getInt("language", 0))));
         source.addView(host.label(host.l("لغة الترجمة", "Subtitle language"), 13));
         source.addView(language, new LinearLayout.LayoutParams(-1, host.dp(46)));
 
         var actions = host.row(source);
-        host.add(actions, host.l("بحث", "Search"), () -> {
-            int eng = engineSpinner.getSelectedItemPosition();
+        host.add(actions, host.l("بحث ذكي", "Smart Search"), () -> {
             int choice = language.getSelectedItemPosition();
-            preferences.edit().putInt("engine", eng).putInt("language", choice).apply();
+            preferences.edit().putInt("language", choice).apply();
             String q = query.getText().toString().trim();
-            if (eng == 0) {
-                searchOpenSubtitles(q, season, episodeNumber, choice);
-            } else if (eng == 1) {
-                searchSubtitles(q, season, episodeNumber, videoRelease, choice);
-            } else {
-                String targetUrl = q.isEmpty() ? "https://subdl.com/" : "https://subdl.com/search?query=" + android.net.Uri.encode(q);
-                host.openInAppBrowser(targetUrl);
-            }
+            runUnifiedPhoneSearch(q, season, episodeNumber, videoRelease, choice, query, resolvedHint);
         });
-        host.add(actions, host.l("فتح الموقع", "Open website"), () -> {
-            int eng = engineSpinner.getSelectedItemPosition();
-            preferences.edit().putInt("engine", eng).apply();
-            String siteUrl = switch (eng) {
-                case 1 -> "https://subsource.net/";
-                case 2 -> "https://subdl.com/";
-                default -> "https://www.opensubtitles.org/";
-            };
-            host.openInAppBrowser(siteUrl);
-        });
+        host.add(actions, host.l("إعدادات ومصادر", "Sources & Settings"), this::showUnifiedSubtitleSettingsSheet);
         source.addView(host.button(host.l("اختيار ملف ترجمة من الجهاز", "Choose subtitle file"), host::launchSubtitlePicker, false));
+
+        // 3. Appearance & Sync Card (unchanged ergonomics, synced with TV!)
         var style = host.card(page, host.l("مظهر وتزامن الترجمة", "Subtitle appearance & sync"));
         styleControl(host.row(style), host.l("إظهار / إخفاء", "Show / Hide"), "visible", 0);
         var size = host.row(style);
@@ -333,6 +341,241 @@ final class TvHubSubtitlesController {
         var resetRow = host.row(style);
         styleControl(resetRow, host.l("تصفير التزامن والمظهر", "Reset"), "reset", 0);
         styleControl(resetRow, host.l("خلفية معتمة", "Opaque background"), "background", 0);
+    }
+
+    private boolean isArabicUi() {
+        var loc = androidx.core.os.ConfigurationCompat.getLocales(host.getResources().getConfiguration()).get(0);
+        return loc != null && "ar".equals(loc.getLanguage());
+    }
+
+    void showPhoneSourceMultiSelectDialog(Runnable onUpdated) {
+        boolean ar = isArabicUi();
+        var providers = com.meedx.providers.UnifiedSubtitleConfig.allProviders();
+        boolean allMode = com.meedx.providers.UnifiedSubtitleConfig.MODE_ALL
+                .equals(com.meedx.providers.UnifiedSubtitleConfig.searchSelectionMode(host));
+        var selected = new java.util.LinkedHashSet<>(
+                com.meedx.providers.UnifiedSubtitleConfig.selectedSearchSources(host));
+
+        String[] labels = new String[providers.size() + 1];
+        boolean[] checked = new boolean[providers.size() + 1];
+        labels[0] = host.l("الكل (جميع المصادر المفعّلة معاً)", "All Enabled Sources Together");
+        checked[0] = allMode;
+        for (int i = 0; i < providers.size(); i++) {
+            var p = providers.get(i);
+            boolean ready = p.keyless || com.meedx.providers.UnifiedSubtitleConfig.hasKey(host, p);
+            labels[i + 1] = p.name + (ready ? "" : host.l(" (يحتاج مفتاح)", " (API key needed)"));
+            checked[i + 1] = !allMode && selected.contains(p.id);
+        }
+
+        var dlg = new com.google.android.material.dialog.MaterialAlertDialogBuilder(host)
+                .setTitle(host.l("اختر مصدر واحد أو عدة مصادر للبحث", "Choose One or Multiple Sources"))
+                .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) -> {
+                    var lv = ((androidx.appcompat.app.AlertDialog) dialog).getListView();
+                    if (which == 0 && isChecked) {
+                        for (int i = 1; i < checked.length; i++) {
+                            checked[i] = false;
+                            if (lv != null) lv.setItemChecked(i, false);
+                        }
+                    } else if (which > 0 && isChecked) {
+                        checked[0] = false;
+                        if (lv != null) lv.setItemChecked(0, false);
+                    }
+                })
+                .setPositiveButton(host.l("تطبيق ومزامنة", "Apply & Sync"), (d, w) -> {
+                    if (checked[0]) {
+                        com.meedx.providers.UnifiedSubtitleConfig.setSearchSelectionAll(host);
+                    } else {
+                        var picked = new java.util.LinkedHashSet<String>();
+                        for (int i = 0; i < providers.size(); i++) {
+                            if (checked[i + 1]) picked.add(providers.get(i).id);
+                        }
+                        if (picked.isEmpty()) com.meedx.providers.UnifiedSubtitleConfig.setSearchSelectionAll(host);
+                        else com.meedx.providers.UnifiedSubtitleConfig.setSearchSelectionCustom(host, picked);
+                    }
+                    if (host.connection != null) host.connection.sendSubtitleConfigToTv();
+                    if (onUpdated != null) onUpdated.run();
+                })
+                .setNegativeButton(android.R.string.cancel, null);
+        dlg.show();
+    }
+
+    void runUnifiedPhoneSearch(String rawTitle, int season, int episode, String videoRelease,
+                               int languageChoice, EditText queryView, TextView resolvedView) {
+        if (rawTitle == null || rawTitle.isBlank()) {
+            host.notifyStatus(host.l("أدخل اسم الفيلم أو المسلسل", "Enter a movie or series title"));
+            return;
+        }
+        boolean ar = isArabicUi();
+        host.notifyStatus(host.l("جارٍ البحث في المصادر المحددة…", "Searching selected subtitle sources…"));
+        subtitleTask(() -> {
+            var rq = com.meedx.providers.UnifiedSubtitleEngine.resolveQuery(
+                    host.getApplicationContext(), rawTitle, "", -1, season > 0 || episode > 0, season, episode);
+            var langs = switch (languageChoice) {
+                case 1 -> java.util.List.of("english");
+                case 2 -> java.util.List.of("arabic", "english");
+                case 3 -> com.meedx.providers.UnifiedSubtitleConfig.languagePriorities(host);
+                default -> java.util.List.of("arabic");
+            };
+            var selectedSources = com.meedx.providers.UnifiedSubtitleConfig.selectedSearchSources(host);
+            var found = com.meedx.providers.UnifiedSubtitleEngine.search(
+                    host.getApplicationContext(), rq, langs, selectedSources, videoRelease);
+
+            host.runOnUiThread(() -> {
+                if (host.isDestroyed()) return;
+                if (rq.resolvedFromNonEnglish && !rq.englishTitle.isBlank()) {
+                    if (queryView != null) queryView.setText(rq.englishTitle);
+                    if (resolvedView != null) {
+                        resolvedView.setText(host.l("تم جلب الاسم الإنجليزي: ", "Resolved English: ") + rq.englishTitle
+                                + (rq.year > 0 ? " (" + rq.year + ")" : "")
+                                + (!rq.imdbId.isEmpty() ? " · " + rq.imdbId : ""));
+                        resolvedView.setVisibility(View.VISIBLE);
+                    }
+                }
+                if (found.isEmpty()) {
+                    host.notifyStatus(host.l("لم تُعثر ترجمات مطابقة في المصادر المختارة", "No matching subtitles in selected sources"));
+                    return;
+                }
+                showUnifiedPhoneSearchResults(found, rq.season, rq.episode, ar);
+            });
+        });
+    }
+
+    private void showUnifiedPhoneSearchResults(
+            java.util.List<com.meedx.providers.UnifiedSubtitleEngine.Candidate> items,
+            int season, int episode, boolean ar) {
+        var resultsPanel = host.column();
+        for (var cand : items) {
+            String langLbl = com.meedx.providers.UnifiedSubtitleConfig.languageDisplay(cand.languageCanon, ar);
+            String heading = "[" + cand.sourceBadge + "] · " + langLbl + " (" + cand.format + ")";
+            var card = host.card(resultsPanel, heading);
+            var relTv = host.label(cand.releaseName, 13);
+            relTv.setTextColor(0xffd4d4d8);
+            relTv.setSingleLine(false);
+            relTv.setMaxLines(3);
+            card.addView(relTv);
+
+            card.setFocusable(true);
+            card.setClickable(true);
+            card.setOnClickListener(v -> {
+                host.notifyStatus(host.l("جارٍ تنزيل وإرسال الترجمة من ", "Downloading & sending from ") + cand.sourceBadge + "…");
+                subtitleTask(() -> {
+                    var files = com.meedx.providers.UnifiedSubtitleEngine.download(
+                            host.getApplicationContext(), cand, season, episode);
+                    host.runOnUiThread(() -> {
+                        if (host.isDestroyed() || files.isEmpty()) return;
+                        if (files.size() == 1) {
+                            sendSubtitle(files.get(0).utf8Bytes, files.get(0).name);
+                        } else {
+                            var names = new java.util.ArrayList<String>();
+                            var bytesList = new java.util.ArrayList<byte[]>();
+                            for (var f : files) {
+                                names.add(f.name);
+                                bytesList.add(f.utf8Bytes);
+                            }
+                            showChooseSubtitleFileSheet(names, bytesList);
+                        }
+                    });
+                });
+            });
+        }
+        showPanel(host.l("نتائج الترجمة (", "Subtitle Results (") + items.size() + ")", resultsPanel);
+    }
+
+    /** Phone Unified Subtitle Settings sheet (100% synced bidirectionally with TV). */
+    void showUnifiedSubtitleSettingsSheet() {
+        boolean ar = isArabicUi();
+        var panel = host.column();
+        panel.setPadding(host.dp(12), 0, host.dp(12), host.dp(18));
+
+        // 1. Transparent list of ALL built-in open-source & optional-key subtitle providers
+        var srcCard = host.card(panel, host.l("1. مصادر وإضافات الترجمة (مفتوحة ومدمجة)", "1. Built-in & Open-Source Subtitle Sources"));
+        for (var info : com.meedx.providers.UnifiedSubtitleConfig.allProviders()) {
+            boolean enabled = com.meedx.providers.UnifiedSubtitleConfig.isSourceEnabled(host, info.id);
+            boolean hasKey = com.meedx.providers.UnifiedSubtitleConfig.hasKey(host, info);
+            String statusTxt = (enabled && hasKey) ? host.l("✓ مفعّل", "✓ ON")
+                    : (!hasKey ? host.l("مفتاح API", "Need Key") : host.l("✕ متوقف", "✕ OFF"));
+            var rowBtn = host.button(info.name + "  ·  " + statusTxt, () -> {
+                var opts = new java.util.ArrayList<String>();
+                var acts = new java.util.ArrayList<Runnable>();
+                opts.add(enabled ? host.l("إيقاف المصدر", "Disable Source") : host.l("تفعيل المصدر", "Enable Source"));
+                acts.add(() -> {
+                    com.meedx.providers.UnifiedSubtitleConfig.setSourceEnabled(host, info.id, !enabled);
+                    if (host.connection != null) host.connection.sendSubtitleConfigToTv();
+                    host.notifyStatus(info.name + ": " + (!enabled ? host.l("مفعّل ✓", "Enabled ✓") : host.l("متوقف", "Disabled")));
+                });
+                opts.add(host.l("اختبار حي للمصدر الآن", "Test Live Connection Now"));
+                acts.add(() -> {
+                    host.notifyStatus(host.l("جارٍ اختبار ", "Testing ") + info.name + "…");
+                    subtitleTask(() -> {
+                        var res = com.meedx.providers.UnifiedSubtitleEngine.testProvider(host.getApplicationContext(), info.id);
+                        host.runOnUiThread(() -> {
+                            if (!host.isDestroyed()) {
+                                host.notifyStatus(info.name + ": " + (ar ? res.arMessage : res.enMessage));
+                            }
+                        });
+                    });
+                });
+                if (!info.keyless && info.apiKeyName != null && host.connection != null) {
+                    opts.add(host.l("إضافة / تعديل مفتاح API", "Set / Edit API Key"));
+                    acts.add(() -> host.connection.promptSingleApiKey(
+                            info.name + " API Key",
+                            host.l("ألصق مفتاح API هنا", "Paste API Key"),
+                            info.apiKeyName,
+                            info.keyUrl));
+                }
+                new com.google.android.material.dialog.MaterialAlertDialogBuilder(host)
+                        .setTitle(info.name + "\n" + (ar ? info.arType : info.enType))
+                        .setItems(opts.toArray(new String[0]), (d, which) -> {
+                            if (which >= 0 && which < acts.size()) acts.get(which).run();
+                        })
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show();
+            }, enabled && hasKey);
+            var lp = new LinearLayout.LayoutParams(-1, -2);
+            lp.topMargin = host.dp(6);
+            srcCard.addView(rowBtn, lp);
+        }
+
+        // 2. Language Priority & Dual Subtitles
+        var langCard = host.card(panel, host.l("2. أولوية اللغات والترجمة المزدوجة", "2. Language Priority & Dual Subtitles"));
+        var prioList = com.meedx.providers.UnifiedSubtitleConfig.languagePriorities(host);
+        var prioSb = new StringBuilder();
+        for (int i = 0; i < prioList.size(); i++) {
+            if (i > 0) prioSb.append(" ← ");
+            prioSb.append((i + 1)).append(". ")
+                    .append(com.meedx.providers.UnifiedSubtitleConfig.languageDisplay(prioList.get(i), ar));
+        }
+        var prioLbl = host.label(prioSb.toString(), 13);
+        prioLbl.setTextColor(TvHubActivity.GOLD);
+        langCard.addView(prioLbl);
+        langCard.addView(host.button(host.l("تغيير اللغة الأساسية", "Change Primary Language"), () -> {
+            var langs = com.meedx.providers.UnifiedSubtitleConfig.SUPPORTED_LANGUAGES;
+            String[] names = new String[langs.size()];
+            for (int i = 0; i < langs.size(); i++) {
+                names[i] = com.meedx.providers.UnifiedSubtitleConfig.languageDisplay(langs.get(i), ar);
+            }
+            new com.google.android.material.dialog.MaterialAlertDialogBuilder(host)
+                    .setTitle(host.l("اللغة الأساسية للترجمة", "Primary Subtitle Language"))
+                    .setItems(names, (d, w) -> {
+                        com.meedx.providers.UnifiedSubtitleConfig.setPrimaryLanguage(host, langs.get(w));
+                        if (host.connection != null) host.connection.sendSubtitleConfigToTv();
+                        host.notifyStatus(host.l("تم تحديث أولوية اللغة ومزامنتها للشاشة ✓", "Language priority synced to TV ✓"));
+                    })
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+        }, false));
+
+        // 3. Sync Now
+        var syncCard = host.card(panel, host.l("3. المزامنة الثنائية (الهاتف ↔ الشاشة)", "3. Bidirectional Sync (Phone ↔ TV)"));
+        syncCard.addView(host.button(host.l("مزامنة إعدادات ومصادر الترجمة مع الشاشة الآن",
+                "Sync Subtitle Settings & Sources with TV Now"), () -> {
+            if (host.connection != null) {
+                host.connection.sendSubtitleConfigToTv();
+                host.connection.sendFullSyncStateToTv(true);
+            }
+        }, true));
+
+        showPanel(host.l("إعدادات الترجمة الموحّدة", "Unified Subtitle Settings"), panel);
     }
 
     static String normalizeSubLanguage(String lang, String label) {
@@ -878,6 +1121,8 @@ final class TvHubSubtitlesController {
             java.util.function.IntConsumer applyPos = nextMode -> {
                 int clamped = Math.max(0, Math.min(2, nextMode));
                 subPrefs.edit().putInt("dual_sub_position", clamped).apply();
+                com.meedx.providers.UnifiedSubtitleConfig.setDualSubPosition(host, clamped);
+                if (host.connection != null) host.connection.sendSubtitleConfigToTv();
                 if (host.connected && host.socket != null && host.socket.isOpen()) {
                     sendSubtitleStyle("dual_position", clamped);
                 } else {
@@ -995,6 +1240,23 @@ final class TvHubSubtitlesController {
     }
 
     void sendSubtitleStyle(String action, int value) {
+        if ("color".equals(action) || "size".equals(action) || "position".equals(action)
+                || "background".equals(action) || "reset".equals(action)) {
+            int sz = com.meedx.providers.UnifiedSubtitleConfig.textSize(host);
+            int vp = com.meedx.providers.UnifiedSubtitleConfig.vpos(host);
+            int col = com.meedx.providers.UnifiedSubtitleConfig.textColor(host);
+            boolean bg = com.meedx.providers.UnifiedSubtitleConfig.opaqueBg(host);
+            long del = com.meedx.providers.UnifiedSubtitleConfig.defaultDelayMs(host);
+            switch (action) {
+                case "color" -> col = value;
+                case "size" -> sz = Math.max(18, Math.min(80, sz + value));
+                case "position" -> vp = Math.max(16, Math.min(200, vp + value));
+                case "background" -> bg = !bg;
+                case "reset" -> { sz = 36; vp = 64; col = android.graphics.Color.WHITE; bg = false; del = 0L; }
+            }
+            com.meedx.providers.UnifiedSubtitleConfig.saveAppearance(host, sz, vp, col, bg, del);
+            if (host.connection != null) host.connection.sendSubtitleConfigToTv();
+        }
         if (!host.connected || host.socket == null || !host.socket.isOpen()) {
             host.notifyStatus("Connect to the TV first");
             return;

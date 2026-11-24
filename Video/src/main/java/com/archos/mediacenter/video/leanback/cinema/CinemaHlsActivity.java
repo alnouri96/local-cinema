@@ -91,6 +91,8 @@ public final class CinemaHlsActivity extends Activity {
     private TextView externalSubtitleView;
     private TextView secondarySubtitleView;
     private LinearLayout osdBar;
+    private FrameLayout rootContainer;
+    private CinemaSubtitleTimingOverlay subtitleTimingOverlay;
     private CinemaPlaybackFilters playbackFilters;
     private int subtitleTrack = -1;
     private MediaSessionCompat mediaSession;
@@ -116,13 +118,16 @@ public final class CinemaHlsActivity extends Activity {
         Intent i = getIntent();
         if (i != null) {
             String mt = i.getStringExtra("media_type");
-            if ("tv".equalsIgnoreCase(mt) || "live".equalsIgnoreCase(mt)
-                    || "channel".equalsIgnoreCase(mt) || "sport".equalsIgnoreCase(mt)) {
-                return true;
+            if (mt != null) {
+                String m = mt.trim().toLowerCase(java.util.Locale.ROOT);
+                if ("tv".equals(m) || "live".equals(m) || "channel".equals(m) || "channels".equals(m)
+                        || "sport".equals(m) || "sports".equals(m) || "iptv".equals(m) || "radio".equals(m)) {
+                    return true;
+                }
             }
             if (i.getBooleanExtra("is_live_cast", false)) return true;
         }
-        return live();
+        return false;
     }
     private Runnable pendingRetryRunnable;
     private String currentFormat;
@@ -446,6 +451,7 @@ public final class CinemaHlsActivity extends Activity {
             currentSpeedPercent = savedSpeedPct;
         }
         var root = new FrameLayout(this);
+        rootContainer = root;
         root.setBackgroundColor(android.graphics.Color.BLACK);
         currentFormat = getIntent().getStringExtra("format");
         currentAudioUrl = getIntent().getStringExtra("audio_url");
@@ -586,7 +592,7 @@ public final class CinemaHlsActivity extends Activity {
         osdLiveBadge.setVisibility(View.GONE);
         osdBar.addView(osdLiveBadge, liveBadgeLp);
 
-        osdPlayPauseButton = osdButton(ar ? "⏯ تشغيل/إيقاف" : "⏯ Play/Pause", this::toggle);
+        osdPlayPauseButton = osdButton(osdPlayPauseLabel(), this::toggle);
         osdBar.addView(osdPlayPauseButton);
         osdLiveSourceButton = osdButton(osdLiveSourceLabel(ar), this::openLiveSourceMenuFromOsd);
         osdLiveSourceButton.setVisibility(liveCandidates.size() > 1 ? View.VISIBLE : View.GONE);
@@ -597,7 +603,7 @@ public final class CinemaHlsActivity extends Activity {
         osdBar.addView(osdRotateButton);
         osdSpeedButton = osdButton(osdSpeedLabel(ar), this::openSpeedMenuFromOsd);
         osdBar.addView(osdSpeedButton);
-        if (!isLiveChannelPlayback() && !isLiveCast() && !"audio".equals(getIntent().getStringExtra("media_type"))) {
+        if (!isLiveChannelPlayback() && !"audio".equals(getIntent().getStringExtra("media_type"))) {
             for (CinemaPlaybackOption option : CinemaPlaybackOption.values()) {
                 TextView button = osdButton(getString(option.title), () -> option.toggle(this));
                 button.setEnabled(option.available());
@@ -623,12 +629,23 @@ public final class CinemaHlsActivity extends Activity {
             osdSpeedButton.setFocusable(!isLive);
             osdSpeedButton.setEnabled(!isLive);
         }
+        if (osdSubtitleButton != null) {
+            osdSubtitleButton.setVisibility(seekVis);
+            osdSubtitleButton.setFocusable(!isLive);
+            osdSubtitleButton.setEnabled(!isLive);
+        }
         if (osdLiveBadge != null) {
             osdLiveBadge.setVisibility(isLive ? View.VISIBLE : View.GONE);
         }
-        if (isLive && seekHud != null) {
-            progressHandler.removeCallbacks(updateSeekHud);
-            seekHud.setVisibility(View.GONE);
+        if (isLive) {
+            if (seekHud != null) {
+                progressHandler.removeCallbacks(updateSeekHud);
+                seekHud.setVisibility(View.GONE);
+            }
+            if (externalSubtitleView != null) externalSubtitleView.setVisibility(View.GONE);
+            if (secondarySubtitleView != null) secondarySubtitleView.setVisibility(View.GONE);
+            if (exoSubtitles != null) exoSubtitles.setVisibility(View.GONE);
+            if (videoViewSubtitles != null) videoViewSubtitles.setVisibility(View.GONE);
         }
     }
 
@@ -663,7 +680,7 @@ public final class CinemaHlsActivity extends Activity {
     }
 
     private boolean seekFromRemote(KeyEvent event) {
-        if (seekHud == null || isLiveChannelPlayback() || isLiveCast() || live()) return false;
+        if (seekHud == null || isLiveChannelPlayback()) return false;
         if (osdBar != null && osdBar.getVisibility() == View.VISIBLE && osdBar.hasFocus()) return false;
         int duration = duration();
         if (duration <= 0 || (adaptivePlayer != null && !adaptivePlayer.isCurrentMediaItemSeekable())) return false;
@@ -722,8 +739,23 @@ public final class CinemaHlsActivity extends Activity {
                 : String.format(java.util.Locale.US, "%.2f×", currentSpeedPercent / 100f));
     }
 
+    private boolean isEffectivelyPlaying() {
+        if (adaptivePlayer != null) {
+            return adaptivePlayer.getPlayWhenReady()
+                    && adaptivePlayer.getPlaybackState() != androidx.media3.common.Player.STATE_ENDED;
+        }
+        return video != null && video.isPlaying();
+    }
+
+    private String osdPlayPauseLabel() {
+        return getString(isEffectivelyPlaying() ? R.string.cinema_osd_pause : R.string.cinema_osd_play);
+    }
+
     void refreshOsdLabels() {
         boolean ar = CinemaUi.arabic(this);
+        if (osdPlayPauseButton != null) {
+            osdPlayPauseButton.setText(osdPlayPauseLabel());
+        }
         if (osdLiveSourceButton != null) {
             osdLiveSourceButton.setText(osdLiveSourceLabel(ar));
             osdLiveSourceButton.setVisibility(liveCandidates.size() > 1 ? View.VISIBLE : View.GONE);
@@ -866,6 +898,9 @@ public final class CinemaHlsActivity extends Activity {
     private boolean consumedOverlayBack;
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (subtitleTimingOverlay != null && subtitleTimingOverlay.handleKeyEvent(event)) {
+            return true;
+        }
         if (event.getKeyCode() == KeyEvent.KEYCODE_BACK && !isLiveChannelPlayback()) {
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
                 consumedOverlayBack = dismissPlaybackOverlay();
@@ -899,6 +934,7 @@ public final class CinemaHlsActivity extends Activity {
             return true;
         }
         if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_CAPTIONS) {
+            if (isLiveChannelPlayback()) return true;
             openSubtitleMenuFromRemote();
             return true;
         }
@@ -918,55 +954,97 @@ public final class CinemaHlsActivity extends Activity {
     }
 
     public void openSubtitleMenuFromRemote() {
-        if (isFinishing() || isDestroyed()) return;
+        if (isFinishing() || isDestroyed() || isLiveChannelPlayback()) return;
         runOnUiThread(this::showSubtitleMenuDialog);
     }
 
+    private void showLiveSubtitleTimingOverlay() {
+        if (isFinishing() || isDestroyed() || isLiveChannelPlayback() || rootContainer == null) return;
+        dismissPlaybackOverlay();
+        if (subtitleTimingOverlay == null) {
+            subtitleTimingOverlay = new CinemaSubtitleTimingOverlay(this, rootContainer);
+        }
+        subtitleTimingOverlay.show(subtitleDelayMs, new CinemaSubtitleTimingOverlay.Listener() {
+            @Override
+            public void onDelayChanged(long newDelayMs) {
+                subtitleDelayMs = newDelayMs;
+                if (externalSubtitlesEnabled || secondarySubtitlesEnabled) {
+                    updateExternalSubtitleNow();
+                } else {
+                    String intentSub = getIntent() != null ? getIntent().getStringExtra("subtitle_url") : null;
+                    if (intentSub != null && (intentSub.startsWith("http://") || intentSub.startsWith("https://"))) {
+                        loadRemoteSubtitleAsync(intentSub, false);
+                    }
+                }
+            }
+
+            @Override
+            public void onDismissed(long finalDelayMs) {
+                subtitleDelayMs = finalDelayMs;
+            }
+        });
+    }
+
     private void showSubtitleMenuDialog() {
+        if (isLiveChannelPlayback()) return;
         boolean ar = CinemaUi.arabic(this);
         String streamTitle = getIntent() != null ? getIntent().getStringExtra("title") : null;
         if (streamTitle == null || streamTitle.isBlank()) streamTitle = "Video";
         final String titleFinal = streamTitle;
 
         boolean hasSecondary = !secondaryCues.isEmpty();
-        var itemList = new java.util.ArrayList<String>();
-        var actionList = new java.util.ArrayList<Runnable>();
         Uri data = getIntent() != null ? getIntent().getData() : null;
-
-        if (hasSecondary) {
-            String primMark = subDisplayMode == SUB_MODE_PRIMARY && subtitleVisible ? " ✓" : "";
-            String secMark = subDisplayMode == SUB_MODE_SECONDARY && subtitleVisible ? " ✓" : "";
-            itemList.add(CinemaUi.label(this, "الترجمة الأساسية فقط" + primMark, "Primary Subtitle Only" + primMark));
-            actionList.add(() -> setDualSubtitleMode(SUB_MODE_PRIMARY));
-
-            itemList.add(CinemaUi.label(this, "الترجمة الثانوية فقط" + secMark, "Secondary Subtitle Only" + secMark));
-            actionList.add(() -> setDualSubtitleMode(SUB_MODE_SECONDARY));
-
-            String dualPosLabel = switch (dualSubtitlePosition) {
-                case DUAL_POS_STACKED_BOTTOM -> CinemaUi.label(this, "موضع الترجمة المزدوجة: كلاهما بالأسفل ⬇ (تبديل)", "Dual position: Both at Bottom (Switch)");
-                case DUAL_POS_SPLIT_PRIMARY_TOP -> CinemaUi.label(this, "موضع الترجمة المزدوجة: الأساسية أعلى · الثانوية أسفل ⇅ (تبديل)", "Dual position: Primary Top / Secondary Bottom (Switch)");
-                default -> CinemaUi.label(this, "موضع الترجمة المزدوجة: الأساسية أسفل · الثانوية أعلى ⇅ (تبديل)", "Dual position: Primary Bottom / Secondary Top (Switch)");
-            };
-            itemList.add(dualPosLabel);
-            actionList.add(() -> {
-                dualSubtitlePosition = (dualSubtitlePosition + 1) % 3;
-                androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
-                        .edit().putInt("pref_dual_sub_position", dualSubtitlePosition).apply();
-                applyDualSubtitleLayout();
-                applyAllSubtitleStyles();
-                updateExternalSubtitleNow();
-            });
-        }
-
         String headingExtra = getIntent() != null ? getIntent().getStringExtra("addon_heading") : null;
         String imdbExtra = getIntent() != null ? getIntent().getStringExtra("imdb_id") : null;
+        String englishTitleExtra = getIntent() != null ? getIntent().getStringExtra("english_title") : null;
+        int releaseYearExtra = getIntent() != null ? getIntent().getIntExtra("release_year", -1) : -1;
         int seasonExtra = getIntent() != null ? getIntent().getIntExtra("season", -1) : -1;
         int episodeExtra = getIntent() != null ? getIntent().getIntExtra("episode", -1) : -1;
 
-        itemList.add(CinemaUi.label(this, "بحث عن الترجمة · OpenSubtitles v3 و Subsource", "Search Subtitles · OpenSubtitles v3 & Subsource"));
-        actionList.add(() -> {
+        var hub = CinemaSubtitleHubDialog.create(this)
+                .title(getString(com.archos.mediacenter.video.R.string.cinema_sub_hub_short))
+                .liveTimingShortcut(subtitleDelayMs, this::showLiveSubtitleTimingOverlay);
+
+        boolean anyTrackActive = false;
+        // External / Stream active tracks remain directly visible at top level with crisp compact labels
+        if (!externalCues.isEmpty()) {
+            boolean primActive = subtitleVisible && externalSubtitlesEnabled && subDisplayMode != SUB_MODE_SECONDARY;
+            if (primActive) anyTrackActive = true;
+            hub.addTrack(
+                    CinemaSubtitleLabels.formatStreamSubtitleLabel(this, titleFinal,
+                            getString(com.archos.mediacenter.video.R.string.cinema_sub_active_primary),
+                            com.meedx.providers.UnifiedSubtitleConfig.primaryLanguage(this), "SRT"),
+                    primActive,
+                    () -> setDualSubtitleMode(SUB_MODE_PRIMARY));
+        }
+        if (hasSecondary) {
+            String secName = CinemaSubtitleLabels.formatStreamSubtitleLabel(this, titleFinal,
+                    getString(com.archos.mediacenter.video.R.string.cinema_sub_active_secondary),
+                    com.meedx.providers.UnifiedSubtitleConfig.secondaryLanguage(this), "SRT");
+            hub.activeSecondaryTrack(secName, () -> applyPhoneSubtitleStyle("sub_clear_secondary", 0));
+        }
+        // Embedded stream tracks grouped cleanly into the Embedded Video Subtitles dropdown
+        if (adaptivePlayer != null) {
+            var exoTracks = getSubtitleTracksJson();
+            for (int i = 0; i < exoTracks.length(); i++) {
+                var obj = exoTracks.optJSONObject(i);
+                if (obj == null) continue;
+                int idx = obj.optInt("index", i);
+                String lbl = obj.optString("label", "");
+                String lng = obj.optString("language", "");
+                boolean sel = obj.optBoolean("selected", false) && externalCues.isEmpty();
+                if (sel) anyTrackActive = true;
+                String cleanLabel = CinemaSubtitleLabels.formatEmbeddedLabel(this, lng, lbl);
+                String langCanon = CinemaSubtitleLabels.resolveEmbeddedLanguageCanonical(lng, lbl);
+                hub.addEmbeddedTrack(cleanLabel, langCanon, sel, () -> selectEmbeddedSubtitleTrack(idx));
+            }
+        }
+
+        Runnable launchSmartSearch = () -> {
             Intent search = new Intent(this, SubsourceSearchActivity.class);
             search.putExtra("title", titleFinal);
+            if (englishTitleExtra != null && !englishTitleExtra.isBlank()) search.putExtra("english_title", englishTitleExtra);
+            if (releaseYearExtra > 0) search.putExtra("release_year", releaseYearExtra);
             if (headingExtra != null && !headingExtra.isBlank()) search.putExtra("addon_heading", headingExtra);
             if (imdbExtra != null && !imdbExtra.isBlank()) search.putExtra("imdb_id", imdbExtra);
             if (seasonExtra > 0) search.putExtra("season", seasonExtra);
@@ -975,53 +1053,82 @@ public final class CinemaHlsActivity extends Activity {
             search.putExtra("video_id", -1L);
             if (data != null) search.setData(data);
             startActivityForResult(search, REQ_SUBSOURCE);
-        });
+        };
 
-        itemList.add(getString(com.archos.mediacenter.video.R.string.cinema_pref_languages_title));
-        actionList.add(() -> CinemaLanguagePreferences.showDialog(this, () -> {
-            subtitleRevision++;
-            findArabicAddonSubtitles();
-        }));
+        Runnable launchMovieSourcePicker = () -> startActivityForResult(
+                CinemaFileBrowserActivity.subtitlePickerIntent(this, data, false), REQ_LOCAL_SUB);
 
-        itemList.add(CinemaUi.label(this, "اختيار ترجمة من الهاتف 📱", "Select subtitles from Phone 📱"));
-        actionList.add(() -> {
-            boolean sent = CinemaLinkServer.requestPhoneSubtitle(titleFinal);
-            Toast.makeText(this, sent
-                    ? (ar ? "افتح هاتفك لاختيار ملف الترجمة (.srt/.vtt/.ass)" : "Check your Phone to select a subtitle file")
-                    : (ar ? "الهاتف غير متصل الآن" : "Phone controller not connected"),
-                    Toast.LENGTH_LONG).show();
-        });
+        Runnable fetchOnlineNow = () -> CinemaAutoSubtitleFetcher.fetchNow(
+                this, data, titleFinal, englishTitleExtra, imdbExtra, releaseYearExtra,
+                seasonExtra > 0 || episodeExtra > 0, seasonExtra, episodeExtra,
+                savedUri -> {
+                    if (savedUri != null) {
+                        onActivityResult(REQ_SUBSOURCE, Activity.RESULT_OK, new Intent().setData(savedUri));
+                    }
+                },
+                launchSmartSearch);
 
-        itemList.add(CinemaUi.label(this, "اختيار ترجمة من تخزين الشاشة 📂", "Select subtitles on TV storage 📂"));
-        actionList.add(() -> {
-            Intent browser = new Intent(this, CinemaFileBrowserActivity.class);
-            browser.putExtra(CinemaFileBrowserActivity.EXTRA_FILTER_MODE, CinemaFileBrowserActivity.FILTER_SUBTITLES_ONLY);
-            startActivityForResult(browser, REQ_LOCAL_SUB);
-        });
+        int activeMode = CinemaSubtitleHubDialog.hubModeFromCentral(this);
+        boolean noMatchYet = !anyTrackActive && activeMode != CinemaSubtitleHubDialog.MODE_OFF;
+        int currentSizeVal = Math.max(18, Math.min(80, Math.round((subtitleSizeSp - 14f) / 0.35f)));
 
-        itemList.add(CinemaUi.label(this, "إيقاف الترجمة", "Disable subtitles"));
-        actionList.add(this::clearSubtitles);
-
-        var prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this);
-        boolean dual = prefs.getBoolean(CinemaUi.DUAL_SUBS_ENABLED, hasSecondary && subDisplayMode == SUB_MODE_DUAL);
-        var dialog = CinemaUi.dialog(this)
-                .setTitle(CinemaUi.label(this, "خيارات الترجمة", "Subtitle options"))
-                .setAdapter(CinemaUi.subtitleRows(this, itemList.toArray(new String[0])),
-                        (d, which) -> actionList.get(which).run())
-                .setNeutralButton(dual ? CinemaUi.label(this, "مزدوجة: مفعّلة ✓", "Dual Subs: ON ✓")
-                                : CinemaUi.label(this, "تفعيل الترجمة المزدوجة", "Enable Dual Subs"),
-                        (d, which) -> {
-                            prefs.edit().putBoolean(CinemaUi.DUAL_SUBS_ENABLED, !dual).apply();
-                            setDualSubtitleMode(dual ? SUB_MODE_PRIMARY : SUB_MODE_DUAL);
+        hub.subtitleMode(activeMode, noMatchYet,
+                        () -> {
+                            CinemaSubtitleHubDialog.saveCentralMode(this,
+                                    com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_AUTO);
+                            subtitleRevision++;
+                            findArabicAddonSubtitles();
+                        },
+                        () -> {
+                            CinemaSubtitleHubDialog.saveCentralMode(this,
+                                    com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_MOVIE_SOURCE);
+                            launchMovieSourcePicker.run();
+                        },
+                        fetchOnlineNow,
+                        () -> {
+                            CinemaSubtitleHubDialog.saveCentralMode(this,
+                                    com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_OFF);
+                            clearSubtitles();
                         })
-                .setNegativeButton(android.R.string.cancel, null)
+                .onSearchOnline(launchSmartSearch)
+                .onPickMovieSource(launchMovieSourcePicker)
+                .onPickFromPhone(() -> {
+                    boolean sent = CinemaLinkServer.requestPhoneSubtitle(titleFinal);
+                    Toast.makeText(this, sent
+                            ? (ar ? "افتح هاتفك لاختيار ملف الترجمة (.srt/.vtt/.ass)" : "Check your Phone to select a subtitle file")
+                            : (ar ? "الهاتف غير متصل الآن" : "Phone controller not connected"),
+                            Toast.LENGTH_LONG).show();
+                })
+                .dualControls(true, hasSecondary,
+                        () -> {
+                            boolean nowOn = com.meedx.providers.UnifiedSubtitleConfig.dualSubtitlesEnabled(this);
+                            setDualSubtitleMode(nowOn ? SUB_MODE_DUAL : SUB_MODE_PRIMARY);
+                        },
+                        () -> {
+                            dualSubtitlePosition = com.meedx.providers.UnifiedSubtitleConfig.dualSubPosition(this);
+                            applyDualSubtitleLayout();
+                            applyAllSubtitleStyles();
+                            updateExternalSubtitleNow();
+                        },
+                        null,
+                        () -> applyPhoneSubtitleStyle("sub_clear_secondary", 0))
+                .liveAppearance(subtitleDelayMs, currentSizeVal, subtitleColor, subtitleOpaqueBg, subtitleVisible,
+                        (action, value) -> {
+                            applyPhoneSubtitleStyle(action, value);
+                            persistLiveStyleToUnified();
+                        })
                 .show();
-        CinemaUi.widenSubtitleDialog(dialog.getWindow());
+    }
+
+    private void persistLiveStyleToUnified() {
+        int sizeVal = Math.max(18, Math.min(80, Math.round((subtitleSizeSp - 14f) / 0.35f)));
+        com.meedx.providers.UnifiedSubtitleConfig.saveAppearance(
+                this, sizeVal, subtitleBottomMarginDp, subtitleColor, subtitleOpaqueBg, subtitleDelayMs);
+        CinemaSubtitleSyncBridge.onTvSubtitleConfigChanged(this);
     }
 
     private boolean dualSubtitlesAllowed() {
-        return androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
-                .getBoolean(CinemaUi.DUAL_SUBS_ENABLED, true);
+        return com.meedx.providers.UnifiedSubtitleConfig.dualSubtitlesEnabled(this);
     }
 
     private void setDualSubtitleMode(int mode) {
@@ -1073,19 +1180,66 @@ public final class CinemaHlsActivity extends Activity {
         var intent = getIntent();
         if (!intent.getBooleanExtra("addon_subtitles", false)
                 || !android.text.TextUtils.isEmpty(intent.getStringExtra("subtitle_url"))) return;
-        String imdb = intent.getStringExtra("imdb_id");
-        if (imdb == null || imdb.isBlank()) return;
+        if (com.meedx.providers.UnifiedSubtitleConfig.preferredSubtitleMode(this)
+                == com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_OFF) return;
+        if (!com.meedx.providers.UnifiedSubtitleConfig.autoSubtitlesEnabled(this)) return;
+        final String initialImdb = intent.getStringExtra("imdb_id");
+        final String title = intent.getStringExtra("title");
+        final String englishTitle = intent.getStringExtra("english_title");
+        final int releaseYear = intent.getIntExtra("release_year", -1);
+        final String addonItemId = intent.getStringExtra("addon_item_id");
+        final String addonBaseUrl = intent.getStringExtra("addon_base_url");
+        final String mediaType = intent.getStringExtra("media_type");
+        final java.util.ArrayList<String> inlineSubUrls = intent.getStringArrayListExtra("stream_subtitle_urls");
+        final java.util.ArrayList<String> inlineSubLangs = intent.getStringArrayListExtra("stream_subtitle_langs");
         int season = intent.getIntExtra("season", 0);
         int episode = intent.getIntExtra("episode", 0);
         int revision = subtitleRevision;
-        String primaryIso = CinemaLanguagePreferences.toIso2(CinemaLanguagePreferences.primarySubtitleLanguage(this));
+        String primaryCanon = com.meedx.providers.UnifiedSubtitleConfig.primaryLanguage(this);
+        String primaryIso = CinemaLanguagePreferences.toIso2(primaryCanon);
         if (primaryIso.isEmpty()) primaryIso = "ar";
         String secondaryIso = CinemaLanguagePreferences.toIso2(CinemaLanguagePreferences.secondarySubtitleLanguage(this));
         boolean wantDual = dualSubtitlesAllowed() && !secondaryIso.isEmpty() && !secondaryIso.equalsIgnoreCase(primaryIso);
         final String pIso = primaryIso;
+        final String pCanon = primaryCanon;
         final String sIso = secondaryIso;
         new Thread(() -> {
-            var primaryUrls = com.meedx.providers.StremioAddons.subtitleUrls(getApplicationContext(), imdb, season, episode, pIso);
+            java.util.LinkedHashSet<String> primaryUrls = new java.util.LinkedHashSet<>();
+
+            // 1. Check inline stream subtitles attached directly to the Stremio stream object
+            if (inlineSubUrls != null && !inlineSubUrls.isEmpty()) {
+                for (int i = 0; i < inlineSubUrls.size(); i++) {
+                    String u = inlineSubUrls.get(i);
+                    String l = (inlineSubLangs != null && i < inlineSubLangs.size()) ? inlineSubLangs.get(i) : "";
+                    if (u != null && !u.isBlank() && pCanon.equals(com.meedx.providers.UnifiedSubtitleConfig.canonicalLangName(l))) {
+                        primaryUrls.add(u);
+                    }
+                }
+            }
+
+            // 2. Check the originating add-on's /subtitles/{type}/{itemId}.json directly (supports Persian Stremio "ip..." IDs)
+            if (primaryUrls.isEmpty() && addonBaseUrl != null && !addonBaseUrl.isBlank()
+                    && addonItemId != null && !addonItemId.isBlank()) {
+                for (var sub : com.meedx.providers.StremioAddons.fetchAddonSubtitles(addonBaseUrl, mediaType, addonItemId)) {
+                    if (pCanon.equals(com.meedx.providers.UnifiedSubtitleConfig.canonicalLangName(sub.lang()))) {
+                        primaryUrls.add(sub.url());
+                    }
+                }
+            }
+
+            // 3. Resolve IMDb ID from English hint (e.g. Persian Stremio meta.title_en) if missing, then query Stremio/OpenSubtitles
+            String imdb = (initialImdb != null && initialImdb.matches("tt[0-9]+")) ? initialImdb : "";
+            if (imdb.isEmpty() && ((englishTitle != null && !englishTitle.isBlank()) || (title != null && !title.isBlank()))) {
+                var rq = com.meedx.providers.UnifiedSubtitleEngine.resolveQuery(
+                        getApplicationContext(), title, englishTitle, "", releaseYear,
+                        season > 0 || episode > 0, season, episode);
+                if (rq.imdbId != null && rq.imdbId.matches("tt[0-9]+")) imdb = rq.imdbId;
+            }
+            if (!imdb.isEmpty()) {
+                primaryUrls.addAll(com.meedx.providers.StremioAddons.subtitleUrls(
+                        getApplicationContext(), imdb, season, episode, pIso));
+            }
+
             for (String url : primaryUrls) {
                 if (isDestroyed() || isFinishing()) return;
                 try {
@@ -1099,7 +1253,7 @@ public final class CinemaHlsActivity extends Activity {
                     break;
                 } catch (Exception ignored) {}
             }
-            if (wantDual && !isDestroyed() && !isFinishing()) {
+            if (wantDual && !imdb.isEmpty() && !isDestroyed() && !isFinishing()) {
                 var secondaryUrls = com.meedx.providers.StremioAddons.subtitleUrls(getApplicationContext(), imdb, season, episode, sIso);
                 for (String url : secondaryUrls) {
                     if (isDestroyed() || isFinishing()) return;
@@ -1613,10 +1767,12 @@ public final class CinemaHlsActivity extends Activity {
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setLoadControl(loadControl.build());
         adaptivePlayer = builder.build();
-        boolean checkAddonAudio = localTorrent != null || getIntent().getBooleanExtra("addon_subtitles", false);
-        String[] preferredAudio = checkAddonAudio ? CinemaPreferredAudio.languages(this) : new String[0];
-        if (checkAddonAudio) adaptivePlayer.setTrackSelectionParameters(adaptivePlayer.getTrackSelectionParameters()
-                .buildUpon().setPreferredAudioLanguages(preferredAudio).build());
+        boolean applyPreferredAudio = localTorrent != null || getIntent().getBooleanExtra("addon_subtitles", false);
+        String[] preferredAudio = applyPreferredAudio ? CinemaPreferredAudio.languages(this) : new String[0];
+        if (preferredAudio.length > 0) {
+            adaptivePlayer.setTrackSelectionParameters(adaptivePlayer.getTrackSelectionParameters()
+                    .buildUpon().setPreferredAudioLanguages(preferredAudio).build());
+        }
         adaptivePlayer.setAudioAttributes(new androidx.media3.common.AudioAttributes.Builder()
                 .setUsage(androidx.media3.common.C.USAGE_MEDIA)
                 .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
@@ -1735,7 +1891,12 @@ public final class CinemaHlsActivity extends Activity {
                 updatePlaybackScreen(player);
             }
 
+            @Override public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
+                refreshOsdLabels();
+            }
+
             @Override public void onIsPlayingChanged(boolean isPlaying) {
+                refreshOsdLabels();
                 if (isPlaying) {
                     playbackStarted = true;
                     if (torrentLoading != null && adaptivePlayer.getVideoFormat() == null) {
@@ -1763,8 +1924,6 @@ public final class CinemaHlsActivity extends Activity {
                 }
             }
 
-            private boolean audioChecked;
-
             @Override public void onPlaybackStateChanged(int playbackState) {
                 CinemaLinkServer.playbackChanged();
                 if (liveChannelStatus != null && playbackState == androidx.media3.common.Player.STATE_BUFFERING) {
@@ -1779,28 +1938,12 @@ public final class CinemaHlsActivity extends Activity {
                         progressHandler.removeCallbacks(channelWatchdog);
                         liveChannelStatus.setVisibility(View.GONE);
                     }
-                    if (checkAddonAudio && !audioChecked) {
-                        audioChecked = true;
-                        if (CinemaPreferredAudio.knownUnavailable(adaptivePlayer.getCurrentTracks(), preferredAudio)) {
-                            var warning = CinemaUi.dialog(CinemaHlsActivity.this)
-                                    .setTitle(R.string.addon_preferred_audio)
-                                    .setMessage(getString(R.string.addon_preferred_audio_missing,
-                                            CinemaPreferredAudio.label(CinemaHlsActivity.this)))
-                                    .setPositiveButton(R.string.addon_continue_playback, (dialog, which) -> {
-                                        if (adaptivePlayer != null) adaptivePlayer.play();
-                                    }).setNegativeButton(R.string.addon_back, (dialog, which) -> finish())
-                                    .setOnCancelListener(dialog -> finish());
-                            CinemaUi.showDialogWithButtonFocus(warning, android.content.DialogInterface.BUTTON_POSITIVE);
-                        } else {
-                            adaptivePlayer.play();
-                        }
-                    }
                     if (liveChannelStatus == null || addonFrameRendered) adaptiveRetryCount = 0;
                     if (pendingRetryRunnable != null) {
                         progressHandler.removeCallbacks(pendingRetryRunnable);
                         pendingRetryRunnable = null;
                     }
-                    if (!initialLiveSeekApplied && (isLiveCast() || adaptivePlayer.isCurrentMediaItemLive())) {
+                    if (!initialLiveSeekApplied && (isLiveChannelPlayback() || adaptivePlayer.isCurrentMediaItemLive())) {
                         initialLiveSeekApplied = true;
                         if (adaptivePlayer.isCurrentMediaItemLive()) {
                             adaptivePlayer.seekToDefaultPosition();
@@ -1833,7 +1976,7 @@ public final class CinemaHlsActivity extends Activity {
         if (currentSpeedPercent != 100) {
             adaptivePlayer.setPlaybackSpeed(currentSpeedPercent / 100f);
         }
-        if (!checkAddonAudio) adaptivePlayer.play();
+        adaptivePlayer.play();
     }
 
     private static boolean isBehindLiveWindow(androidx.media3.common.PlaybackException error) {
@@ -1883,7 +2026,7 @@ public final class CinemaHlsActivity extends Activity {
             pendingRetryRunnable = () -> {
                 pendingRetryRunnable = null;
                 if (adaptivePlayer == null || isDestroyed() || isFinishing()) return;
-                if (adaptivePlayer.isCurrentMediaItemLive() || isLiveCast()) adaptivePlayer.seekToDefaultPosition();
+                if (adaptivePlayer.isCurrentMediaItemLive() || isLiveChannelPlayback()) adaptivePlayer.seekToDefaultPosition();
                 if (liveChannelStatus != null) {
                     adaptivePlayer.stop();
                     addonFrameRendered = false;
@@ -1963,6 +2106,7 @@ public final class CinemaHlsActivity extends Activity {
     void toggle() {
         if (adaptivePlayer != null) {
             adaptivePlayer.setPlayWhenReady(!adaptivePlayer.getPlayWhenReady());
+            refreshOsdLabels();
             return;
         }
         if (video == null) return;
@@ -1979,6 +2123,7 @@ public final class CinemaHlsActivity extends Activity {
             keepScreenOn(true);
             updateMediaSessionState(PlaybackStateCompat.STATE_PLAYING);
         }
+        refreshOsdLabels();
     }
 
     void speed(float speed) {
@@ -2455,7 +2600,7 @@ public final class CinemaHlsActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
-        if (isFinishing() || isLiveCast()) return;
+        if (isFinishing() || isLiveChannelPlayback()) return;
         if (playbackFilters == null) {
             playbackFilters = new CinemaPlaybackFilters(this, this::position, this::duration,
                     () -> playing() && !live(), target -> seekInternal(target, false));

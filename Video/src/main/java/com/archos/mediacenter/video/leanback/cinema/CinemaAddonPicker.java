@@ -140,9 +140,20 @@ final class CinemaAddonPicker {
             String imdb = validImdb(chosen.id()) ? chosen.id() : "";
             boolean isLiveAddonChannel = StremioAddons.isLiveChannelType(chosen.type())
                     || StremioAddons.isLiveChannelAddon(chosen.only());
+            StremioAddons.AddonMetaHint metaHint = (!isLiveAddonChannel && chosen.only() != null
+                    && (imdb.isEmpty() || com.meedx.providers.UnifiedSubtitleEngine.containsNonLatin(chosen.title())))
+                    ? StremioAddons.fetchAddonMetaHint(chosen.only(), chosen.type(), chosen.id())
+                    : null;
+            if (imdb.isEmpty() && metaHint != null && validImdb(metaHint.imdbId())) {
+                imdb = metaHint.imdbId();
+            }
+            final String resolvedImdb = imdb;
+            final String resolvedEnglishTitle = metaHint != null ? metaHint.titleEn() : "";
+            final int resolvedYear = metaHint != null ? metaHint.year() : -1;
+            final String addonBaseUrl = chosen.only() != null && chosen.only().baseUrl != null ? chosen.only().baseUrl : "";
             String streamKey = "addon:" + chosen.id() + (chosen.episode() > 0 ? ":s" + chosen.season() + "e" + chosen.episode() : "");
             String mediaType = isLiveAddonChannel ? chosen.type() : (chosen.episode() > 0 ? "episode" : "movie");
-            long resume = isLiveAddonChannel ? 0L : CinemaWatchStore.findBestStreamResumeMs(app, streamKey, mediaType, imdb, chosen.tmdb(),
+            long resume = isLiveAddonChannel ? 0L : CinemaWatchStore.findBestStreamResumeMs(app, streamKey, mediaType, resolvedImdb, chosen.tmdb(),
                     chosen.season(), chosen.episode(), chosen.title());
             if (isLiveAddonChannel) {
                 var resolved = StremioAddons.resolveStreams(app, chosen.type(), chosen.id(), 0, 0, chosen.only());
@@ -188,10 +199,24 @@ final class CinemaAddonPicker {
                                         .putExtra("subtitle_language", CinemaLanguagePreferences.toIso2(CinemaLanguagePreferences.primarySubtitleLanguage(activity)))
                                         .putExtra("addon_subtitles", true)
                                         .putExtra("title", chosen.title()).putExtra("stream_key", streamKey)
-                                        .putExtra("media_type", mediaType).putExtra("imdb_id", imdb)
+                                        .putExtra("media_type", mediaType).putExtra("imdb_id", resolvedImdb)
+                                        .putExtra("english_title", resolvedEnglishTitle)
+                                        .putExtra("release_year", resolvedYear)
+                                        .putExtra("addon_item_id", chosen.id())
+                                        .putExtra("addon_base_url", addonBaseUrl)
                                         .putExtra("tmdb_id", chosen.tmdb()).putExtra("season", chosen.season())
                                         .putExtra("episode", chosen.episode()).putExtra("resume_ms", resume)
                                         .putExtra("addon_poster", chosen.poster()).putExtra("addon_heading", chosen.heading());
+                                    if (source.subtitles != null && !source.subtitles.isEmpty()) {
+                                        var subUrls = new java.util.ArrayList<String>(source.subtitles.size());
+                                        var subLangs = new java.util.ArrayList<String>(source.subtitles.size());
+                                        for (var sub : source.subtitles) {
+                                            subUrls.add(sub.url());
+                                            subLangs.add(sub.lang());
+                                        }
+                                        play.putStringArrayListExtra("stream_subtitle_urls", subUrls);
+                                        play.putStringArrayListExtra("stream_subtitle_langs", subLangs);
+                                    }
                                     attachStreamHeaders(play, source);
                                     if (ready != null) play.putExtra(CinemaTorrentStream.PREPARED_TOKEN, ready.offerToPlayer());
                                     closeSources.run();
@@ -629,8 +654,7 @@ final class CinemaAddonPicker {
 
     private static String language(Activity activity, String code) {
         if ("multi".equals(code)) return activity.getString(R.string.addon_language_multi);
-        var locale = activity.getResources().getConfiguration().getLocales().get(0);
-        return java.util.Locale.forLanguageTag(code).getDisplayLanguage(locale);
+        return com.meedx.providers.UnifiedSubtitleConfig.languageDisplay(code, CinemaUi.arabic(activity));
     }
 
     private static String resolveImdbId(Context app, Base item, OpenMetadata.Item publicMetadata, boolean isSeries) {

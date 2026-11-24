@@ -13,13 +13,11 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.google.android.material.button.MaterialButton;
-import com.google.android.material.materialswitch.MaterialSwitch;
 import com.google.zxing.integration.android.IntentIntegrator;
 
 final class TvHubConnectionController {
     final TvHubActivity host;
 
-    TextView addonsSummaryView;
     TextView addonsLiveStatusView;
     TextView traktStatusView;
     TextView traktLiveStatusView;
@@ -29,15 +27,12 @@ final class TvHubConnectionController {
     TextView tvConnectionSummaryView;
     TextView lastSyncAckView;
     MaterialButton syncAllToTvBtn;
-    LinearLayout addonsInlineContainer;
     MaterialButton traktConnectBtn;
     MaterialButton traktCodeConnectBtn;
     MaterialButton traktSyncBtn;
     MaterialButton traktDisconnectBtn;
 
-    private static final String ADDONS_EXPANDED = "connection_addons_expanded";
     private TextView favoriteChannelsSummaryView;
-    String lastRenderedAddonsSignature;
     String lastRenderedGooglePhotoUrl = "__UNSET__";
     String lastOpenedTraktDeviceCode = "";
     long lastFullSyncAckAt = 0L;
@@ -128,6 +123,12 @@ final class TvHubConnectionController {
 
     void onFullSyncAck(org.json.JSONObject response) {
         onFavoriteChannels(response.optJSONObject(LiveChannelFavorites.FIELD));
+        var subCfg = response.optJSONObject("subtitle_config");
+        if (subCfg != null) {
+            if (com.meedx.providers.UnifiedSubtitleConfig.importSyncJson(host, subCfg, false)) {
+                mirrorUnifiedSubtitleToPhonePrefs();
+            }
+        }
         lastFullSyncAckAt = response.optLong("synced_at", System.currentTimeMillis());
         boolean traktConnected = response.optBoolean("trakt_connected") || !response.optString("trakt_username").isBlank();
         int ackAddons = response.optInt("addons_count", 0);
@@ -210,12 +211,12 @@ final class TvHubConnectionController {
         clipboardBannerUrlView.setTextColor(TvHubActivity.GOLD);
         clipboardBannerCard.addView(clipboardBannerUrlView);
         clipboardBannerCard.addView(host.label(host.l(
-                "تم اكتشاف رابط إضافة في الحافظة — اضغط لتثبيته الآن ومزامنته مع الشاشة.",
-                "An addon manifest URL was detected in your clipboard — tap to install and sync with TV."), 13));
+                "تم اكتشاف رابط إضافة في الحافظة — اضغط لإرساله وتثبيته مباشرةً على الشاشة.",
+                "An addon manifest URL was detected in your clipboard — tap to install it directly on TV."), 13));
         var clipBtns = host.row(clipboardBannerCard);
-        var installClipBtn = host.button(host.l("تثبيت الآن", "Install Now"), () -> {
+        var installClipBtn = host.button(host.l("تثبيت على الشاشة", "Install on TV"), () -> {
             String u = detectedClipboardUrl;
-            if (u != null && !u.isEmpty()) installAddonUrl(u);
+            if (u != null && !u.isEmpty()) confirmAndInstallAddonOnTv(u, null);
         }, true);
         clipBtns.addView(installClipBtn, new LinearLayout.LayoutParams(0, -2, 1));
         var dismissClipBtn = host.button(host.l("تجاهل", "Dismiss"), () -> {
@@ -318,6 +319,21 @@ final class TvHubConnectionController {
                         com.meedx.providers.ProviderKeys.OPEN_SUBTITLES,
                         "https://www.opensubtitles.com/en/consumers"), false), osBtnLp);
 
+        var subdlBtnLp = new LinearLayout.LayoutParams(-1, -2);
+        subdlBtnLp.topMargin = host.dp(6);
+        apiKeysCard.addView(host.button(host.l("مفتاح SubDL API (اختياري)", "SubDL API Key (Optional)"),
+                () -> promptSingleApiKey(
+                        host.l("مفتاح SubDL API", "SubDL API Key"),
+                        host.l("ألصق مفتاح SubDL هنا", "Paste SubDL API Key"),
+                        com.meedx.providers.ProviderKeys.SUBDL,
+                        "https://subdl.com/panel/api"), false), subdlBtnLp);
+
+        var unifiedSubBtnLp = new LinearLayout.LayoutParams(-1, -2);
+        unifiedSubBtnLp.topMargin = host.dp(8);
+        apiKeysCard.addView(host.button(host.l("إعدادات ومصادر الترجمة الموحّدة (TV ↔ الهاتف)",
+                "Unified Subtitle Settings & Sources (TV ↔ Phone)"),
+                () -> host.subtitles.showUnifiedSubtitleSettingsSheet(), true), unifiedSubBtnLp);
+
         tmdbStatusView = host.label("", 13);
         var tmStLp = new LinearLayout.LayoutParams(-1, -2);
         tmStLp.topMargin = host.dp(8);
@@ -331,54 +347,31 @@ final class TvHubConnectionController {
                         com.meedx.providers.ProviderKeys.TMDB,
                         "https://www.themoviedb.org/settings/api"), false), tmBtnLp);
 
-        // Card 4: External Addons (Stremio / Nuvio)
-        var addonsCard = host.card(page, host.l("4. الإضافات الخارجية (Stremio / Nuvio)", "4. External Addons (Stremio / Nuvio)"),
+        // Card 4: External Addons (Install directly on Android TV — lightweight on Phone)
+        var addonsCard = host.card(page, host.l("4. الإضافات الخارجية (تثبيت على الشاشة)", "4. External Addons (Install on TV)"),
                 null, CinemaGlassUi.Accent.ADDONS);
-        var addonsHeading = host.row(addonsCard);
-        addonsHeading.setGravity(Gravity.CENTER_VERTICAL);
-        addonsSummaryView = host.label("", 14);
-        addonsHeading.addView(addonsSummaryView, new LinearLayout.LayoutParams(0, -2, 1));
-        var toggle = new android.widget.ImageButton(host);
-        toggle.setImageResource(org.proninyaroslav.libretorrent.R.drawable.ic_addon_disclosure);
-        toggle.setScaleType(android.widget.ImageView.ScaleType.CENTER);
-        toggle.setBackground(CinemaGlassUi.glassPill(host, CinemaGlassUi.Accent.SUBTLE, 11));
-        var toggleSize = new LinearLayout.LayoutParams(host.dp(48), host.dp(48));
-        toggleSize.setMarginStart(host.dp(4));
-        addonsHeading.addView(toggle, toggleSize);
+        var addonsHint = host.label(host.l(
+                "تعمل إضافات البث والكتالوج على الشاشة مباشرةً. اختر من القائمة المنسّقة أو تصفّح الدليل لتثبيتها على Android TV فوراً.",
+                "Streaming addons run directly on your Android TV. Pick from curated addons or browse the directory to install straight to TV."), 13);
+        addonsHint.setTextColor(0xffcfc8bc);
+        addonsCard.addView(addonsHint);
+
         addonsLiveStatusView = createLiveStatusBanner();
         var aLiveLp = new LinearLayout.LayoutParams(-1, -2);
         aLiveLp.topMargin = host.dp(8);
         addonsCard.addView(addonsLiveStatusView, aLiveLp);
-        addonsInlineContainer = host.column();
-        var inlLp = new LinearLayout.LayoutParams(-1, -2);
-        inlLp.topMargin = host.dp(8);
-        addonsCard.addView(addonsInlineContainer, inlLp);
-        lastRenderedAddonsSignature = null;
-        var disclosurePrefs = PreferenceManager.getDefaultSharedPreferences(host);
-        boolean expanded = disclosurePrefs.getBoolean(ADDONS_EXPANDED, false);
-        showInstalledAddons(toggle, expanded);
-        toggle.setOnClickListener(v -> {
-            boolean show = addonsInlineContainer.getVisibility() != View.VISIBLE;
-            disclosurePrefs.edit().putBoolean(ADDONS_EXPANDED, show).apply();
-            android.transition.TransitionManager.beginDelayedTransition(addonsCard,
-                    new android.transition.AutoTransition().setDuration(180));
-            showInstalledAddons(toggle, show);
-            if (show) refreshAddonsAndTraktCard();
-        });
-        var a1Lp = new LinearLayout.LayoutParams(-1, -2);
-        a1Lp.topMargin = host.dp(8);
-        addonsCard.addView(host.button(host.getString(org.proninyaroslav.libretorrent.R.string.addon_curated),
-                this::promptCuratedAddons, true), a1Lp);
-        var addonToolsRow = host.row(addonsCard);
-        addonToolsRow.addView(host.button(host.getString(org.proninyaroslav.libretorrent.R.string.addon_search_stream), this::promptAddonStreamSearch, false),
-                new LinearLayout.LayoutParams(0, -2, 1));
-        var pasteLp = new LinearLayout.LayoutParams(0, -2, 1);
-        pasteLp.setMarginStart(host.dp(8));
-        addonToolsRow.addView(host.button(host.getString(org.proninyaroslav.libretorrent.R.string.addon_paste_url), this::promptAddAddon, false), pasteLp);
+
+        var curatedBtn = createCuratedAddonsButton();
+        var a1Lp = new LinearLayout.LayoutParams(-1, host.dp(50));
+        a1Lp.topMargin = host.dp(10);
+        addonsCard.addView(curatedBtn, a1Lp);
+
         var addonDirRow = host.row(addonsCard);
-        addonDirRow.addView(host.button(host.l("دليل Stremio Addons", "Stremio Directory"),
-                () -> host.openBrowser("https://stremio-addons.net/"), false),
-                new LinearLayout.LayoutParams(0, -2, 1));
+        var dirBtn = host.button(host.l("دليل إضافات Stremio", "Stremio Directory"),
+                () -> host.openBrowser("https://stremio-addons.net/"), false);
+        dirBtn.setSingleLine(true);
+        dirBtn.setMaxLines(1);
+        addonDirRow.addView(dirBtn, new LinearLayout.LayoutParams(0, -2, 1));
 
         // Card 5: Phone Permissions Wizard
         var permCard = host.card(page, host.l("5. معالج صلاحيات الهاتف", "5. Phone Permissions Wizard"));
@@ -490,91 +483,30 @@ final class TvHubConnectionController {
         }
     }
 
-    private void showInstalledAddons(android.widget.ImageButton toggle, boolean expanded) {
-        int label = expanded ? org.proninyaroslav.libretorrent.R.string.addon_collapse_installed
-                : org.proninyaroslav.libretorrent.R.string.addon_expand_installed;
-        toggle.setContentDescription(host.getString(label));
-        toggle.animate().rotation(expanded ? 180f : 0f).setDuration(150).start();
-        addonsInlineContainer.setVisibility(expanded ? View.VISIBLE : View.GONE);
+    /** Sleek obsidian-gold glass CTA for 1-Click Curated Addons (replaces flat yellow button). */
+    private MaterialButton createCuratedAddonsButton() {
+        var btn = new MaterialButton(host, null, com.google.android.material.R.attr.materialButtonOutlinedStyle);
+        btn.setText("✦  " + host.getString(org.proninyaroslav.libretorrent.R.string.addon_curated));
+        btn.setAllCaps(false);
+        btn.setSingleLine(true);
+        btn.setMaxLines(1);
+        btn.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        btn.setTextSize(14.5f);
+        btn.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        btn.setTextColor(0xfff8e5b0);
+        btn.setInsetTop(0);
+        btn.setInsetBottom(0);
+        btn.setCornerRadius(host.dp(14));
+        btn.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xff231e14));
+        btn.setStrokeColor(android.content.res.ColorStateList.valueOf(0xffe5a93b));
+        btn.setStrokeWidth(Math.max(2, host.dp(1)));
+        btn.setRippleColor(android.content.res.ColorStateList.valueOf(0x33e5a93b));
+        btn.setOnClickListener(v -> promptCuratedAddons());
+        return btn;
     }
 
     void refreshAddonsAndTraktCard() {
         refreshConnectionSummaryUi();
-        if (addonsSummaryView != null) {
-            var list = com.meedx.providers.StremioAddons.list(host);
-            long enabled = list.stream().filter(a -> a.enabled).count();
-            addonsSummaryView.setText(list.isEmpty()
-                    ? host.l("لا توجد إضافات مضافة بعد. أضف رابط manifest.json.", "No addons installed yet. Add a Stremio / Nuvio manifest.json URL.")
-                    : host.l(enabled + " / " + list.size() + " مفعّلة (تُزامن مع الشاشة)", enabled + " / " + list.size() + " enabled (synced with TV)"));
-            if (addonsInlineContainer != null && addonsInlineContainer.getVisibility() == View.VISIBLE) {
-                StringBuilder sigBuilder = new StringBuilder();
-                for (var a : list) {
-                    sigBuilder.append(a.manifestUrl).append('|').append(a.enabled).append('|').append(a.name).append('|').append(a.resources).append(';');
-                }
-                String sig = sigBuilder.toString();
-                if (!sig.equals(lastRenderedAddonsSignature)) {
-                    lastRenderedAddonsSignature = sig;
-                    addonsInlineContainer.removeAllViews();
-                    var ordered = new java.util.ArrayList<>(list);
-                    ordered.sort(java.util.Comparator.comparing(
-                            com.meedx.providers.StremioAddons::subtitleOnly));
-                    Boolean subtitleGroup = null;
-                    for (var addon : ordered) {
-                        boolean subtitle = com.meedx.providers.StremioAddons.subtitleOnly(addon);
-                        if (subtitleGroup == null || subtitleGroup != subtitle) {
-                            subtitleGroup = subtitle;
-                            var group = host.label(host.getString(subtitle
-                                    ? org.proninyaroslav.libretorrent.R.string.addon_group_subtitles
-                                    : org.proninyaroslav.libretorrent.R.string.addon_group_streaming), 13);
-                            group.setTextColor(0xffe5a93b);
-                            group.setPadding(0, host.dp(10), 0, 0);
-                            addonsInlineContainer.addView(group);
-                        }
-                        var r = new LinearLayout(host);
-                        r.setOrientation(LinearLayout.HORIZONTAL);
-                        r.setGravity(Gravity.CENTER_VERTICAL);
-                        r.setPadding(host.dp(10), host.dp(8), host.dp(8), host.dp(8));
-                        r.setBackground(CinemaGlassUi.glassPill(host,
-                                addon.enabled ? CinemaGlassUi.Accent.ADDONS : CinemaGlassUi.Accent.SUBTLE, 12));
-                        var rLp = new LinearLayout.LayoutParams(-1, -2);
-                        rLp.topMargin = host.dp(6);
-                        addonsInlineContainer.addView(r, rLp);
-
-                        var col = host.column();
-                        String name = (addon.name == null || addon.name.isBlank()) ? addon.id : addon.name;
-                        var nameTv = host.label((addon.enabled ? "● " : "○ ") + name, 13);
-                        nameTv.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-                        nameTv.setTextColor(addon.enabled ? 0xffefe7d6 : 0xff9a958d);
-                        col.addView(nameTv);
-                        var urlTv = host.label(com.meedx.providers.StremioAddons.localizedDescription(addon.description, host), 11);
-                        urlTv.setSingleLine(true);
-                        urlTv.setEllipsize(android.text.TextUtils.TruncateAt.END);
-                        urlTv.setTextColor(0xff8e8981);
-                        col.addView(urlTv);
-                        r.addView(col, new LinearLayout.LayoutParams(0, -2, 1));
-
-                        var sw = new MaterialSwitch(host);
-                        sw.setChecked(addon.enabled);
-                        sw.setOnCheckedChangeListener((b, isChecked) -> {
-                            com.meedx.providers.StremioAddons.setEnabled(host, addon.manifestUrl, isChecked);
-                            sendAddonsSyncSnapshot();
-                            refreshAddonsAndTraktCard();
-                        });
-                        r.addView(sw);
-
-                        var delBtn = host.button("✕", () -> {
-                            com.meedx.providers.StremioAddons.remove(host, addon.manifestUrl);
-                            sendAddonsSyncSnapshot();
-                            setAddonsLiveStatus(host.getString(org.proninyaroslav.libretorrent.R.string.addon_removed), false);
-                            refreshAddonsAndTraktCard();
-                        }, false);
-                        var delLp = new LinearLayout.LayoutParams(host.dp(44), host.dp(40));
-                        delLp.setMarginStart(host.dp(6));
-                        r.addView(delBtn, delLp);
-                    }
-                }
-            }
-        }
         if (traktStatusView != null) {
             boolean linked = com.meedx.providers.TraktSyncClient.isConnected(host);
             traktStatusView.setText(linked
@@ -797,6 +729,48 @@ final class TvHubConnectionController {
         dialog.show();
     }
 
+    void sendSubtitleConfigToTv() {
+        host.watchSyncIo.execute(() -> {
+            var ws = host.socket;
+            if (ws == null || !ws.isOpen()) {
+                markFullSyncDirty(true);
+                return;
+            }
+            try {
+                ws.send(new org.json.JSONObject()
+                        .put("type", "SUBTITLE_CONFIG_SYNC")
+                        .put("subtitle_config", com.meedx.providers.UnifiedSubtitleConfig.exportSyncJson(host))
+                        .toString());
+            } catch (Exception ignored) {
+                markFullSyncDirty(true);
+            }
+        });
+    }
+
+    void handleSubtitleConfigSyncFromTv(org.json.JSONObject msg) {
+        if (msg == null) return;
+        var cfg = msg.optJSONObject("subtitle_config");
+        if (cfg == null) return;
+        host.watchSyncIo.execute(() -> {
+            if (com.meedx.providers.UnifiedSubtitleConfig.importSyncJson(host, cfg, true)) {
+                mirrorUnifiedSubtitleToPhonePrefs();
+                host.main.post(() -> {
+                    if (!host.isDestroyed() && host.subtitles != null) {
+                        host.subtitles.refreshActiveStreamSubCard();
+                    }
+                });
+            }
+        });
+    }
+
+    void mirrorUnifiedSubtitleToPhonePrefs() {
+        var sp = host.getSharedPreferences("cinema_subtitles", Context.MODE_PRIVATE);
+        sp.edit()
+                .putBoolean("dual_subs_enabled", com.meedx.providers.UnifiedSubtitleConfig.dualSubtitlesEnabled(host))
+                .putInt("dual_sub_position", com.meedx.providers.UnifiedSubtitleConfig.dualSubPosition(host))
+                .apply();
+    }
+
     void sendApiKeysSyncSnapshot(boolean traktSignout) {
         sendFullSyncStateToTv(false);
     }
@@ -885,6 +859,16 @@ final class TvHubConnectionController {
             String tvOs = msg.optString("opensubtitles_key", "").trim();
             if (!tvOs.isEmpty() && com.meedx.providers.ProviderKeys.get(host, com.meedx.providers.ProviderKeys.OPEN_SUBTITLES).isBlank()) {
                 com.meedx.providers.ProviderKeys.save(host, com.meedx.providers.ProviderKeys.OPEN_SUBTITLES, tvOs);
+                changed = true;
+            }
+            String tvSubdl = msg.optString("subdl_key", "").trim();
+            if (!tvSubdl.isEmpty() && com.meedx.providers.ProviderKeys.get(host, com.meedx.providers.ProviderKeys.SUBDL).isBlank()) {
+                com.meedx.providers.ProviderKeys.save(host, com.meedx.providers.ProviderKeys.SUBDL, tvSubdl);
+                changed = true;
+            }
+            var tvSubCfg = msg.optJSONObject("subtitle_config");
+            if (tvSubCfg != null && com.meedx.providers.UnifiedSubtitleConfig.importSyncJson(host, tvSubCfg, false)) {
+                mirrorUnifiedSubtitleToPhonePrefs();
                 changed = true;
             }
             String tvTmdb = msg.optString("tmdb_key", "").trim();
@@ -1335,43 +1319,70 @@ final class TvHubConnectionController {
                 || intent.getData() == null || !"stremio".equalsIgnoreCase(intent.getData().getScheme())) return false;
         String raw = intent.getDataString();
         intent.setData(null);
+        confirmAndInstallAddonOnTv(raw, null);
+        return true;
+    }
+
+    /** Shows "Install on TV" confirmation and sends the addon directly to Android TV (never installs on Phone). */
+    void confirmAndInstallAddonOnTv(String raw, String displayName) {
+        if (raw == null || raw.isBlank()) return;
         try {
             String url = com.meedx.providers.StremioAddons.normalizeManifestUrl(raw);
-            String domain = android.net.Uri.parse(url).getHost();
+            String hostName = android.net.Uri.parse(url).getHost();
+            String label = (displayName != null && !displayName.isBlank()) ? displayName : (hostName != null ? hostName : url);
             new androidx.appcompat.app.AlertDialog.Builder(host)
-                    .setTitle(org.proninyaroslav.libretorrent.R.string.addon_install_link)
-                    .setMessage(host.getString(org.proninyaroslav.libretorrent.R.string.addon_install_link_host, domain))
+                    .setTitle(host.l("تثبيت على الشاشة", "Install on TV"))
+                    .setMessage(host.l(
+                            "إرسال وتثبيت الإضافة التالية مباشرةً على تطبيق الشاشة (Android TV)؟\n\n" + label,
+                            "Send and install this addon directly onto Android TV?\n\n" + label))
                     .setNegativeButton(android.R.string.cancel, null)
-                    .setPositiveButton(android.R.string.ok, (dialog, which) -> installAddonUrl(url)).show();
+                    .setPositiveButton(host.l("تثبيت على الشاشة", "Install on TV"),
+                            (dialog, which) -> sendAddonInstallToTv(url, label))
+                    .show();
         } catch (java.io.IOException invalid) {
             android.widget.Toast.makeText(host, org.proninyaroslav.libretorrent.R.string.addon_install_failed,
                     android.widget.Toast.LENGTH_SHORT).show();
         }
-        return true;
     }
 
-    void installAddonUrl(String raw) {
-        if (raw == null || raw.isBlank()) return;
-        setAddonsLiveStatus(host.getString(org.proninyaroslav.libretorrent.R.string.addon_installing), false);
-        host.watchSyncIo.execute(() -> {
-            try {
-                var installed = com.meedx.providers.StremioAddons.list(host).stream().filter(
-                        addon -> addon.manifestUrl.equals(raw)).findFirst().orElse(null);
-                var added = installed == null ? com.meedx.providers.StremioAddons.fetchAndAdd(host, raw) : installed;
-                if (!added.enabled) com.meedx.providers.StremioAddons.setEnabled(host, added.manifestUrl, true);
-                host.main.post(() -> {
-                    if (host.isDestroyed()) return;
-                    sendAddonsSyncSnapshot();
-                    if (clipboardBannerCard != null && raw.equals(detectedClipboardUrl)) clipboardBannerCard.setVisibility(View.GONE);
-                    setAddonsLiveStatus(host.getString(org.proninyaroslav.libretorrent.R.string.addon_installed, added.name), false);
-                    refreshAddonsAndTraktCard();
-                });
-            } catch (Exception ignored) {
-                host.main.post(() -> {
-                    if (!host.isDestroyed()) setAddonsLiveStatus(host.getString(org.proninyaroslav.libretorrent.R.string.addon_install_failed), true);
-                });
+    void sendAddonInstallToTv(String manifestUrl, String displayName) {
+        var ws = (host.socket != null && host.socket.isOpen()) ? host.socket : CinemaRemoteBridge.getConnectedSocket();
+        if (ws == null || !ws.isOpen()) {
+            String msg = host.l("يرجى الاتصال بالشاشة أولاً لتثبيت الإضافة عليها.",
+                    "Connect to your Android TV first to install this addon on TV.");
+            setAddonsLiveStatus(msg, true);
+            CinemaSnackBanner.show(host, msg);
+            return;
+        }
+        String label = (displayName != null && !displayName.isBlank()) ? displayName : manifestUrl;
+        setAddonsLiveStatus(host.l("جارٍ إرسال وتثبيت " + label + " على الشاشة…",
+                "Sending & installing " + label + " on TV…"), false);
+        try {
+            ws.send(new org.json.JSONObject()
+                    .put("type", "INSTALL_ADDON_ON_TV")
+                    .put("manifest_url", manifestUrl)
+                    .toString());
+            if (clipboardBannerCard != null && manifestUrl.equals(detectedClipboardUrl)) {
+                clipboardBannerCard.setVisibility(View.GONE);
             }
-        });
+        } catch (Exception e) {
+            setAddonsLiveStatus(host.getString(org.proninyaroslav.libretorrent.R.string.addon_install_failed), true);
+        }
+    }
+
+    void onAddonTvInstalled(org.json.JSONObject response) {
+        if (response == null) return;
+        if (response.optBoolean("ok", false)) {
+            String name = response.optString("name", "Addon");
+            String msg = host.l("تم تثبيت «" + name + "» على الشاشة بنجاح ✓",
+                    "Installed \"" + name + "\" on TV ✓");
+            setAddonsLiveStatus(msg, false);
+            CinemaSnackBanner.show(host, msg);
+        } else {
+            String msg = host.l("تعذّر تثبيت الإضافة على الشاشة.", "Could not install addon on TV.");
+            setAddonsLiveStatus(msg, true);
+            CinemaSnackBanner.show(host, msg);
+        }
     }
 
     void promptCuratedAddons() {
@@ -1381,192 +1392,14 @@ final class TvHubConnectionController {
                 if (host.isDestroyed() || host.isFinishing() || curated.isEmpty()) return;
                 var choices = curated.stream().map(item -> new CinemaGlassUi.Choice(
                         item.name + (item.description.isBlank() ? "" : "\n" + item.description),
-                        com.meedx.providers.StremioAddons.isInstalled(host, item.manifestUrl)
-                                ? org.proninyaroslav.libretorrent.R.drawable.ic_download_done_24px
-                                : org.proninyaroslav.libretorrent.R.drawable.ic_download_24px)).toList();
+                        org.proninyaroslav.libretorrent.R.drawable.ic_download_24px)).toList();
                 CinemaGlassUi.showChoices(host, org.proninyaroslav.libretorrent.R.string.addon_curated, choices, -1,
-                        index -> installAddonUrl(curated.get(index).manifestUrl));
+                        index -> {
+                            var picked = curated.get(index);
+                            confirmAndInstallAddonOnTv(picked.manifestUrl, picked.name);
+                        });
             });
         });
-    }
-
-    void promptAddAddon() {
-        var input = new EditText(host);
-        input.setHint(org.proninyaroslav.libretorrent.R.string.addon_url_hint);
-        input.setSingleLine(true);
-        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
-        if (detectedClipboardUrl != null) input.setText(detectedClipboardUrl);
-        showAddonForm(org.proninyaroslav.libretorrent.R.string.addon_paste_url, org.proninyaroslav.libretorrent.R.string.addon_save, java.util.List.of(input),
-                () -> installAddonUrl(input.getText().toString().trim()));
-    }
-
-    private void showAddonForm(int title, int action, java.util.List<View> fields, Runnable submit) {
-        var dialog = new com.google.android.material.bottomsheet.BottomSheetDialog(host);
-        var box = host.column();
-        box.setPadding(host.dp(18), host.dp(18), host.dp(18), host.dp(20));
-        box.setBackground(CinemaGlassUi.glassDock(host, CinemaGlassUi.Accent.ADDONS));
-        var heading = host.label(host.getString(title), 20);
-        heading.setTextColor(0xffe5a93b);
-        box.addView(heading);
-        for (View field : fields) box.addView(field, new LinearLayout.LayoutParams(-1, -2));
-        box.addView(host.button(host.getString(action), () -> {
-            dialog.dismiss();
-            submit.run();
-        }, true), new LinearLayout.LayoutParams(-1, host.dp(52)));
-        dialog.setContentView(box);
-        dialog.getBehavior().setState(com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_EXPANDED);
-        dialog.show();
-    }
-
-    void manageAddonsDialog() {
-        var list = com.meedx.providers.StremioAddons.list(host);
-        if (list.isEmpty()) {
-            host.notifyStatus(host.l("لا توجد إضافات مضافة بعد", "No addons installed yet"));
-            return;
-        }
-        String[] labels = new String[list.size()];
-        for (int i = 0; i < list.size(); i++) {
-            var a = list.get(i);
-            labels[i] = (a.enabled ? "✓ " : "○ ") + a.name
-                    + (a.version != null && !a.version.isEmpty() ? " v" + a.version : "");
-        }
-        new androidx.appcompat.app.AlertDialog.Builder(host)
-                .setTitle(host.l("إدارة الإضافات", "Manage Addons"))
-                .setItems(labels, (d, which) -> {
-                    var a = list.get(which);
-                    String[] opts = {a.enabled ? host.l("تعطيل", "Disable") : host.l("تفعيل", "Enable"), host.l("حذف", "Remove")};
-                    new androidx.appcompat.app.AlertDialog.Builder(host)
-                            .setTitle(a.name)
-                            .setItems(opts, (d2, act) -> {
-                                if (act == 0) {
-                                    com.meedx.providers.StremioAddons.setEnabled(host, a.manifestUrl, !a.enabled);
-                                } else {
-                                    com.meedx.providers.StremioAddons.remove(host, a.manifestUrl);
-                                }
-                                sendAddonsSyncSnapshot();
-                                refreshAddonsAndTraktCard();
-                            }).setNegativeButton(android.R.string.cancel, null).show();
-                }).setNegativeButton(android.R.string.cancel, null).show();
-    }
-
-    void promptAddonStreamSearch() {
-        var query = new EditText(host);
-        query.setSingleLine(true);
-        query.setHint(org.proninyaroslav.libretorrent.R.string.addon_query_hint);
-        var season = new EditText(host);
-        season.setHint(org.proninyaroslav.libretorrent.R.string.addon_season_hint);
-        season.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        var episode = new EditText(host);
-        episode.setHint(org.proninyaroslav.libretorrent.R.string.addon_episode_hint);
-        episode.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        showAddonForm(org.proninyaroslav.libretorrent.R.string.addon_search_stream, org.proninyaroslav.libretorrent.R.string.addon_find_streams, java.util.List.of(query, season, episode), () -> {
-            String text = query.getText().toString().trim();
-            if (text.isEmpty()) return;
-            int s = android.text.TextUtils.isEmpty(season.getText()) ? -1 : parseEpisodeInput(season);
-            int e = android.text.TextUtils.isEmpty(episode.getText()) ? 0 : parseEpisodeInput(episode);
-            if (e < 0 || s < -1) return;
-            resolveAndPickAddonStream(text, s, e);
-        });
-    }
-
-    private static int parseEpisodeInput(EditText field) {
-        try { return Integer.parseInt(field.getText().toString()); }
-        catch (NumberFormatException ignored) { return -2; }
-    }
-
-    void resolveAndPickAddonStream(String query, int season, int episode) {
-        setAddonsLiveStatus(host.getString(org.proninyaroslav.libretorrent.R.string.addon_searching), false);
-        host.watchSyncIo.execute(() -> {
-            if (query.matches("tt[0-9]+")) {
-                findAddonStreams(query, query, season, episode);
-                return;
-            }
-            var titles = com.meedx.providers.StremioAddons.browse(host, null, null, query).stream()
-                    .filter(item -> (season <= 0 && episode == 0) || "series".equals(item.type())).limit(20).toList();
-            host.main.post(() -> {
-                if (host.isDestroyed() || host.isFinishing()) return;
-                if (titles.isEmpty()) {
-                    setAddonsLiveStatus(host.getString(org.proninyaroslav.libretorrent.R.string.addon_no_results), true);
-                    return;
-                }
-                var choices = titles.stream().map(item -> new CinemaGlassUi.Choice(item.title() + " · "
-                        + host.getString("series".equals(item.type()) ? org.proninyaroslav.libretorrent.R.string.addon_series : org.proninyaroslav.libretorrent.R.string.addon_movie),
-                        org.proninyaroslav.libretorrent.R.drawable.ic_cinema_cast_play)).toList();
-                CinemaGlassUi.showChoices(host, org.proninyaroslav.libretorrent.R.string.addon_find_streams, choices, -1, index -> {
-                    var item = titles.get(index);
-                    boolean series = "series".equals(item.type());
-                    host.watchSyncIo.execute(() -> findAddonStreams(item.title(),
-                            com.meedx.providers.StremioAddons.streamId(host, item),
-                            series ? (season < 0 ? 1 : season) : -1, series ? Math.max(1, episode) : 0));
-                });
-            });
-        });
-    }
-
-    private void findAddonStreams(String title, String imdb, int season, int episode) {
-        boolean series = season > 0 || episode > 0;
-        int s = season < 0 ? (series ? 1 : 0) : season;
-        int e = series ? Math.max(1, episode) : 0;
-        var streams = com.meedx.providers.StremioAddons.resolveStreams(host, series ? "series" : "movie", imdb, s, e);
-        host.main.post(() -> {
-            if (host.isDestroyed() || host.isFinishing()) return;
-            if (streams.isEmpty()) {
-                setAddonsLiveStatus(host.getString(org.proninyaroslav.libretorrent.R.string.addon_no_streams), true);
-                return;
-            }
-            var choices = streams.stream().map(stream -> new CinemaGlassUi.Choice(stream.displayLabel(host),
-                    org.proninyaroslav.libretorrent.R.drawable.ic_cinema_cast_play)).toList();
-            CinemaGlassUi.showChoices(host, title, choices, -1, index -> castAddonStreamToTv(
-                    streams.get(index), title, series ? "episode" : "movie", imdb, s, e));
-        });
-    }
-
-    void castAddonStreamToTv(com.meedx.providers.StremioAddons.Stream stream,
-                             String title, String mediaType, String imdbId, int season, int episode) {
-        if (!host.connected || host.socket == null || !host.socket.isOpen()) {
-            setAddonsLiveStatus(host.l("يرجى الاتصال بالشاشة أولاً ثم إعادة المحاولة.",
-                    "Connect to the TV first before casting."), true);
-            return;
-        }
-        if (stream.torrent()) {
-            host.playAddonTorrent(stream.url, stream.fileIndex, title, imdbId, season, episode);
-            return;
-        }
-        host.music.stopMusicForVideo(true);
-        host.cleanupPreviousTemporaryTorrent("");
-        String streamKey = "episode".equals(mediaType)
-                ? ("addon:" + imdbId + ":s" + season + "e" + episode)
-                : ("addon:" + imdbId);
-        var saved = PhoneWatchStore.findBestEntry(host, streamKey, mediaType, imdbId, 0L, season, episode, title);
-        long resumeMs = saved != null && !saved.watched ? saved.positionMs : 0L;
-        host.activeWatchKind = "web";
-        host.activeWatchKey = streamKey;
-        host.activeWatchTitle = title;
-        host.activeWatchUri = stream.url;
-        host.activeWatchTorrentId = "";
-        host.activeWatchFileIndex = 0;
-        host.activeWatchFormat = "addon";
-        host.activeWatchImdbId = imdbId;
-        host.activeWatchTmdbId = 0L;
-        host.activeWatchSeason = season;
-        host.activeWatchEpisode = episode;
-        host.browserCastTitle = title;
-        try {
-            host.socket.send(new org.json.JSONObject().put("type", "CAST_WEB")
-                    .put("url", stream.url).put("audio_url", "")
-                    .put("format", stream.format).put("subtitle_language", "ar").put("addon_subtitles", true)
-                    .put("title", title)
-                    .put("stream_key", streamKey)
-                    .put("media_type", mediaType)
-                    .put("imdb_id", imdbId)
-                    .put("tmdb_id", 0L)
-                    .put("season", season)
-                    .put("episode", episode)
-                    .put("resume_ms", resumeMs).toString());
-            host.showPlayback(true);
-        } catch (Exception e) {
-            host.notifyStatus("Could not cast addon stream");
-        }
     }
 
     void startTraktDeviceConnect() {

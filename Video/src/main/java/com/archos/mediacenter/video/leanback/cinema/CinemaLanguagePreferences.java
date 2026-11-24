@@ -4,45 +4,64 @@ import android.content.Context;
 import android.graphics.Color;
 import android.view.Gravity;
 import android.view.View;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.TextView;
 
 import androidx.preference.PreferenceManager;
 
 import com.archos.mediacenter.video.R;
+import com.meedx.providers.UnifiedSubtitleConfig;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Consumer;
 
 /**
- * Modular Audio & Dual-Subtitle language priority preferences manager.
- * Manages preferred audio track language, primary subtitle language, and secondary subtitle language.
+ * Clean, single-choice Preferred & Secondary Subtitle Language manager.
+ *
+ * Audio language priority lives exclusively in {@link CinemaPreferredAudio}.
+ * Secondary subtitle language lives exclusively inside Dual Subtitles controls.
+ * Preferred subtitle language uses native Endonyms and syncs via {@link UnifiedSubtitleConfig}.
  */
 public final class CinemaLanguagePreferences {
     public static final String KEY_PRIMARY_SUB = "subsource_language";
     public static final String KEY_SECONDARY_SUB = "subsource_secondary_language";
 
+    private static final List<String> LANGUAGE_VALUES = List.of(
+            "arabic", "english", "french", "spanish", "german",
+            "turkish", "persian", "kurdish", "russian", "ukrainian",
+            "indonesian", "italian", "portuguese", "chinese", "japanese", "korean"
+    );
+
     private CinemaLanguagePreferences() {}
 
     public static String primarySubtitleLanguage(Context context) {
-        return PreferenceManager.getDefaultSharedPreferences(context)
-                .getString(KEY_PRIMARY_SUB, "arabic");
+        CinemaSubtitleSyncBridge.ensureBootstrapped(context);
+        return UnifiedSubtitleConfig.primaryLanguage(context);
     }
 
     public static String secondarySubtitleLanguage(Context context) {
-        return PreferenceManager.getDefaultSharedPreferences(context)
-                .getString(KEY_SECONDARY_SUB, "english");
+        CinemaSubtitleSyncBridge.ensureBootstrapped(context);
+        return UnifiedSubtitleConfig.secondaryLanguage(context);
     }
 
     public static void setPrimarySubtitleLanguage(Context context, String lang) {
+        String safe = (lang == null || lang.isBlank()) ? "arabic" : lang.trim();
         PreferenceManager.getDefaultSharedPreferences(context)
-                .edit().putString(KEY_PRIMARY_SUB, lang == null ? "arabic" : lang).apply();
+                .edit().putString(KEY_PRIMARY_SUB, safe).apply();
+        UnifiedSubtitleConfig.setPrimaryLanguage(context, safe);
+        CinemaSubtitleSyncBridge.onTvSubtitleConfigChanged(context);
     }
 
     public static void setSecondarySubtitleLanguage(Context context, String lang) {
+        String safe = lang == null ? "" : lang.trim();
         PreferenceManager.getDefaultSharedPreferences(context)
-                .edit().putString(KEY_SECONDARY_SUB, lang == null ? "" : lang).apply();
+                .edit().putString(KEY_SECONDARY_SUB, safe).apply();
+        UnifiedSubtitleConfig.setSecondaryLanguage(context, safe);
+        CinemaSubtitleSyncBridge.onTvSubtitleConfigChanged(context);
     }
 
     public static String toIso2(String lang) {
@@ -61,19 +80,70 @@ public final class CinemaLanguagePreferences {
             case "ko", "kor", "korean" -> "ko";
             case "hi", "hin", "hindi" -> "hi";
             case "ru", "rus", "russian" -> "ru";
+            case "uk", "ukr", "ukrainian" -> "uk";
+            case "id", "ind", "indonesian" -> "id";
             case "it", "ita", "italian" -> "it";
             case "pt", "por", "portuguese" -> "pt";
             default -> lang.length() >= 2 ? lang.substring(0, 2).toLowerCase(Locale.ROOT) : lang.toLowerCase(Locale.ROOT);
         };
     }
 
+    /** Returns the native Endonym for a subtitle language, or localized "Off" if blank. */
     public static String localizedSubtitleLabel(Context context, String value) {
         if (value == null || value.isBlank()) {
             return context.getString(R.string.cinema_lang_none);
         }
-        return CinemaAutoSubtitles.languageLabel(value);
+        return UnifiedSubtitleConfig.languageDisplay(value, CinemaUi.arabic(context));
     }
 
+    /**
+     * Opens a clean single-choice picker for Preferred Subtitle Language (Endonyms).
+     * Picking a language or pressing Back returns directly to the calling screen.
+     */
+    public static void choosePreferredSubtitleLanguage(Context context, Runnable onChanged) {
+        String current = primarySubtitleLanguage(context);
+        showLanguageRadioPicker(context, R.string.cinema_pref_subtitle_lang_title, false, current, chosen -> {
+            setPrimarySubtitleLanguage(context, chosen);
+            if (onChanged != null) onChanged.run();
+        });
+    }
+
+    /**
+     * Public picker for Secondary Subtitle Language (lives inside Dual Subtitles controls).
+     * Displays every language in its own native Endonym plus "Off".
+     */
+    public static void chooseSecondaryLanguage(Context context, Consumer<String> onPick) {
+        String current = secondarySubtitleLanguage(context);
+        showLanguageRadioPicker(context, R.string.cinema_pref_secondary_sub_lang, true, current, onPick);
+    }
+
+    /** Opens a clean single-choice picker for the central Default Subtitle Mode (Auto / Movie Source / Off). */
+    public static void choosePreferredSubtitleMode(Context context, Runnable onChanged) {
+        boolean ar = CinemaUi.arabic(context);
+        int cur = UnifiedSubtitleConfig.preferredSubtitleMode(context);
+        String[] choices = {
+                (cur == UnifiedSubtitleConfig.SUB_MODE_AUTO ? "✓ " : "  ")
+                        + UnifiedSubtitleConfig.preferredSubtitleModeLabel(UnifiedSubtitleConfig.SUB_MODE_AUTO, ar),
+                (cur == UnifiedSubtitleConfig.SUB_MODE_MOVIE_SOURCE ? "✓ " : "  ")
+                        + UnifiedSubtitleConfig.preferredSubtitleModeLabel(UnifiedSubtitleConfig.SUB_MODE_MOVIE_SOURCE, ar),
+                (cur == UnifiedSubtitleConfig.SUB_MODE_OFF ? "✓ " : "  ")
+                        + UnifiedSubtitleConfig.preferredSubtitleModeLabel(UnifiedSubtitleConfig.SUB_MODE_OFF, ar)
+        };
+        CinemaUi.dialog(context)
+                .setTitle(R.string.cinema_sub_default_mode_title)
+                .setItems(choices, (d, which) -> {
+                    UnifiedSubtitleConfig.setPreferredSubtitleMode(context, which);
+                    CinemaSubtitleSyncBridge.onTvSubtitleConfigChanged(context);
+                    if (onChanged != null) onChanged.run();
+                })
+                .setNegativeButton(R.string.addon_back, null)
+                .show();
+    }
+
+    /**
+     * General app-wide language shortcut dialog (used by Stremio add-ons browser):
+     * cleanly separates Preferred Audio Language and Preferred Subtitle Language.
+     */
     public static void showDialog(Context context, Runnable onChanged) {
         var panel = new LinearLayout(context);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -90,12 +160,13 @@ public final class CinemaLanguagePreferences {
                         + CinemaPreferredAudio.label(context));
             }
             if (labels[1] != null) {
-                labels[1].setText(context.getString(R.string.cinema_pref_primary_sub_lang) + "  ·  "
+                labels[1].setText(context.getString(R.string.cinema_pref_subtitle_lang_title) + "  ·  "
                         + localizedSubtitleLabel(context, primarySubtitleLanguage(context)));
             }
             if (labels[2] != null) {
-                labels[2].setText(context.getString(R.string.cinema_pref_secondary_sub_lang) + "  ·  "
-                        + localizedSubtitleLabel(context, secondarySubtitleLanguage(context)));
+                labels[2].setText(context.getString(R.string.cinema_sub_mode_title) + "  ·  "
+                        + UnifiedSubtitleConfig.preferredSubtitleModeLabel(
+                                UnifiedSubtitleConfig.preferredSubtitleMode(context), CinemaUi.arabic(context)));
             }
         };
 
@@ -103,14 +174,11 @@ public final class CinemaLanguagePreferences {
             refresh.run();
             if (onChanged != null) onChanged.run();
         }));
-        labels[1] = addRow(panel, () -> CinemaAutoSubtitles.chooseLanguage(context,
-                primarySubtitleLanguage(context), false, chosen -> {
-                    setPrimarySubtitleLanguage(context, chosen);
-                    refresh.run();
-                    if (onChanged != null) onChanged.run();
-                }));
-        labels[2] = addRow(panel, () -> chooseSecondaryLanguage(context, chosen -> {
-            setSecondarySubtitleLanguage(context, chosen);
+        labels[1] = addRow(panel, () -> choosePreferredSubtitleLanguage(context, () -> {
+            refresh.run();
+            if (onChanged != null) onChanged.run();
+        }));
+        labels[2] = addRow(panel, () -> choosePreferredSubtitleMode(context, () -> {
             refresh.run();
             if (onChanged != null) onChanged.run();
         }));
@@ -125,34 +193,42 @@ public final class CinemaLanguagePreferences {
         CinemaUi.focusDialogControl(dialog, labels[0]);
     }
 
-    private static void chooseSecondaryLanguage(Context context, java.util.function.Consumer<String> onPick) {
-        List<String> values = new ArrayList<>(List.of(
-                "", "english", "arabic", "french", "spanish", "german",
-                "turkish", "persian", "kurdish", "chinese", "japanese", "korean"));
-        String current = secondarySubtitleLanguage(context);
-        if (!values.contains(current)) values.add(current);
+    private static void showLanguageRadioPicker(
+            Context context,
+            int titleRes,
+            boolean allowOff,
+            String current,
+            Consumer<String> onPick) {
+        List<String> values = new ArrayList<>();
+        if (allowOff) values.add("");
+        values.addAll(LANGUAGE_VALUES);
+        String safeCurrent = current == null ? "" : current;
+        if (!values.contains(safeCurrent)) values.add(safeCurrent);
+
         String[] names = new String[values.size()];
         for (int i = 0; i < values.size(); i++) {
             names[i] = localizedSubtitleLabel(context, values.get(i));
         }
-        int checked = Math.max(0, values.indexOf(current));
-        var list = new android.widget.ListView(context);
+        int checked = Math.max(0, values.indexOf(safeCurrent));
+
+        ListView list = new ListView(context);
         list.setDivider(null);
         list.setDividerHeight(CinemaUi.dp(context, 4));
         list.setPadding(CinemaUi.dp(context, 14), CinemaUi.dp(context, 8),
                 CinemaUi.dp(context, 14), CinemaUi.dp(context, 8));
         list.setSelector(CinemaUi.rounded(0xff35281b, CinemaUi.dp(context, 12), CinemaTokens.GOLD));
+
         var adapter = new android.widget.BaseAdapter() {
             @Override public int getCount() { return names.length; }
             @Override public String getItem(int pos) { return names[pos]; }
             @Override public long getItemId(int pos) { return pos; }
             @Override public View getView(int pos, View recycled, android.view.ViewGroup parent) {
                 LinearLayout row;
-                android.widget.ImageView radio;
+                ImageView radio;
                 TextView tv;
                 if (recycled instanceof LinearLayout existing && existing.getChildCount() >= 2) {
                     row = existing;
-                    radio = (android.widget.ImageView) row.getChildAt(0);
+                    radio = (ImageView) row.getChildAt(0);
                     tv = (TextView) row.getChildAt(1);
                 } else {
                     row = new LinearLayout(context);
@@ -162,7 +238,7 @@ public final class CinemaLanguagePreferences {
                     row.setMinimumHeight(CinemaUi.dp(context, 48));
                     row.setPaddingRelative(CinemaUi.dp(context, 16), CinemaUi.dp(context, 8),
                             CinemaUi.dp(context, 16), CinemaUi.dp(context, 8));
-                    radio = new android.widget.ImageView(context);
+                    radio = new ImageView(context);
                     int sz = CinemaUi.dp(context, 22);
                     var rlp = new LinearLayout.LayoutParams(sz, sz);
                     rlp.setMarginEnd(CinemaUi.dp(context, 14));
@@ -179,13 +255,13 @@ public final class CinemaLanguagePreferences {
         };
         list.setAdapter(adapter);
         var dialog = CinemaUi.dialog(context)
-                .setTitle(R.string.cinema_pref_secondary_sub_lang)
+                .setTitle(titleRes)
                 .setView(list)
                 .setNegativeButton(R.string.addon_back, null)
                 .create();
         list.setOnItemClickListener((p, v, which, id) -> {
             dialog.dismiss();
-            onPick.accept(values.get(which));
+            if (onPick != null) onPick.accept(values.get(which));
         });
         dialog.show();
         list.requestFocus();

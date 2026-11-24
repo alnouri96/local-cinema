@@ -14,6 +14,8 @@
         android:background="@null"
         android:buttonTint="#ffedffff"
         android:ellipsize="marquee"
+        android:marqueeRepeatLimit="marquee_forever"
+        android:scrollHorizontally="true"
         android:paddingStart="12dp"
         android:paddingEnd="12dp"
         android:singleLine="true"

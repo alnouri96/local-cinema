@@ -714,6 +714,11 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         langLp.setMarginStart(dp(8));
         topHeader.addView(langPill, langLp);
 
+        var subsPill = dialogActionPill(CinemaUi.label(this, "الترجمة", "Subtitles"), R.drawable.cinema_subtitles);
+        var subsLp = new LinearLayout.LayoutParams(-2, dp(40));
+        subsLp.setMarginStart(dp(8));
+        topHeader.addView(subsPill, subsLp);
+
         var list = new ListView(this);
         list.setId(View.generateViewId());
         list.setDivider(null);
@@ -742,6 +747,24 @@ public final class CinemaAddonsActivity extends FragmentActivity {
             openTrailer(poster);
         });
         langPill.setOnClickListener(v -> CinemaLanguagePreferences.showDialog(this, null));
+        subsPill.setOnClickListener(v -> {
+            int firstSeason = seasons.firstKey();
+            var epList = seasons.get(firstSeason);
+            int firstEp = (epList != null && !epList.isEmpty()) ? epList.get(0).episode() : 1;
+            CinemaSubtitleHubDialog.create(this)
+                    .title(poster.title())
+                    .onSearchOnline(() -> {
+                        Intent search = new Intent(this, SubsourceSearchActivity.class);
+                        search.putExtra("title", poster.title());
+                        search.putExtra("addon_heading", poster.title());
+                        if (id != null && id.matches("tt[0-9]+")) search.putExtra("imdb_id", id);
+                        search.putExtra("season", firstSeason);
+                        search.putExtra("episode", firstEp);
+                        search.putExtra("both_providers", true);
+                        startActivity(search);
+                    })
+                    .show();
+        });
         int openingSeason = seasons.firstKey();
         var tabs = new TreeMap<Integer, TextView>();
         java.util.function.IntConsumer selectSeason = season -> {

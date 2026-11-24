@@ -29,6 +29,7 @@ public final class ProviderKeys {
     public static final String TRAKT_PKCE_STATE = "trakt_pkce_state";
     public static final String OPEN_SUBTITLES = "opensubtitles";
     public static final String SUBSOURCE = "subsource_api_key";
+    public static final String SUBDL = "subdl_api_key";
     public static final String GOOGLE_CLIENT_ID = "google_client_id";
 
     private static final String STORE = "meedx_provider_keys";

@@ -431,6 +431,7 @@ public final class CinemaLinkServer extends WebSocketServer {
                 } catch (Exception ignored) {}
             }
             String os = com.meedx.providers.ProviderKeys.get(context, com.meedx.providers.ProviderKeys.OPEN_SUBTITLES);
+            String subdl = com.meedx.providers.ProviderKeys.get(context, com.meedx.providers.ProviderKeys.SUBDL);
             String tmdb = com.meedx.providers.ProviderKeys.get(context, com.meedx.providers.ProviderKeys.TMDB);
 
             if (!tid.isBlank()) obj.put("trakt_id", tid);
@@ -442,7 +443,10 @@ public final class CinemaLinkServer extends WebSocketServer {
             if (!tslug.isBlank()) obj.put("trakt_slug", tslug);
             if (!sub.isBlank()) obj.put("subsource_key", sub);
             if (!os.isBlank()) obj.put("opensubtitles_key", os);
+            if (!subdl.isBlank()) obj.put("subdl_key", subdl);
             if (!tmdb.isBlank()) obj.put("tmdb_key", tmdb);
+            CinemaSubtitleSyncBridge.ensureBootstrapped(context);
+            obj.put("subtitle_config", com.meedx.providers.UnifiedSubtitleConfig.exportSyncJson(context));
             return obj.length() > 1 ? obj : null;
         } catch (Exception ignored) {
             return null;
@@ -456,6 +460,38 @@ public final class CinemaLinkServer extends WebSocketServer {
                 JSONObject obj = buildApiKeysSyncPayload(libraryContext);
                 if (obj != null && socket.isOpen()) {
                     socket.send(obj.toString());
+                }
+            } catch (Exception ignored) {}
+        });
+    }
+
+    public static boolean hasConnectedPhone() {
+        CinemaLinkServer server = instance;
+        if (server == null) return false;
+        for (WebSocket ws : server.phones.values()) {
+            if (ws != null && ws.isOpen()) return true;
+        }
+        return false;
+    }
+
+    public static void broadcastApiKeys(android.content.Context context) {
+        broadcastApiKeysSync(context);
+    }
+
+    public static void broadcastSubtitleConfig(android.content.Context context) {
+        CinemaLinkServer server = instance;
+        if (server == null || context == null) return;
+        android.content.Context app = context.getApplicationContext();
+        server.syncIo.execute(() -> {
+            try {
+                JSONObject payload = new JSONObject()
+                        .put("type", "SUBTITLE_CONFIG_SYNC")
+                        .put("subtitle_config", com.meedx.providers.UnifiedSubtitleConfig.exportSyncJson(app));
+                String text = payload.toString();
+                for (WebSocket ws : server.phones.values()) {
+                    if (ws != null && ws.isOpen()) {
+                        try { ws.send(text); } catch (Exception ignored) {}
+                    }
                 }
             } catch (Exception ignored) {}
         });
@@ -688,6 +724,56 @@ public final class CinemaLinkServer extends WebSocketServer {
         });
     }
 
+    private void handleInstallAddonOnTv(WebSocket socket, JSONObject command) {
+        if (libraryContext == null || command == null) return;
+        String rawUrl = command.optString("manifest_url", "").trim();
+        if (rawUrl.isEmpty()) return;
+        syncIo.execute(() -> {
+            try {
+                String normalized = com.meedx.providers.StremioAddons.normalizeManifestUrl(rawUrl);
+                var installed = com.meedx.providers.StremioAddons.list(libraryContext).stream()
+                        .filter(a -> normalized.equals(a.manifestUrl)).findFirst().orElse(null);
+                var added = installed == null
+                        ? com.meedx.providers.StremioAddons.fetchAndAdd(libraryContext, normalized)
+                        : installed;
+                if (!added.enabled) {
+                    com.meedx.providers.StremioAddons.setEnabled(libraryContext, added.manifestUrl, true);
+                }
+                notifyAddonsChanged(true);
+                String name = (added.name != null && !added.name.isBlank()) ? added.name : added.id;
+                int total = com.meedx.providers.StremioAddons.list(libraryContext).size();
+                main.post(() -> {
+                    try {
+                        boolean ar = CinemaUi.arabic(libraryContext);
+                        android.widget.Toast.makeText(libraryContext,
+                                ar ? ("تم تثبيت الإضافة على الشاشة: " + name) : ("Addon installed on TV: " + name),
+                                android.widget.Toast.LENGTH_LONG).show();
+                    } catch (Exception ignored) {}
+                });
+                if (socket != null && socket.isOpen()) {
+                    socket.send(new JSONObject()
+                            .put("type", "ADDON_TV_INSTALLED")
+                            .put("ok", true)
+                            .put("name", name)
+                            .put("manifest_url", added.manifestUrl)
+                            .put("count", total)
+                            .toString());
+                }
+            } catch (Exception e) {
+                android.util.Log.w("CinemaLink", "INSTALL_ADDON_ON_TV failed", e);
+                if (socket != null && socket.isOpen()) {
+                    try {
+                        socket.send(new JSONObject()
+                                .put("type", "ADDON_TV_INSTALLED")
+                                .put("ok", false)
+                                .put("error", String.valueOf(e.getMessage()))
+                                .toString());
+                    } catch (Exception ignored) {}
+                }
+            }
+        });
+    }
+
     private void handleFullSyncState(WebSocket socket, JSONObject command) {
         if (libraryContext == null || command == null) return;
         syncIo.execute(() -> {
@@ -730,6 +816,7 @@ public final class CinemaLinkServer extends WebSocketServer {
             if (command.has("dual_sub_position")) {
                 int dualPos = Math.max(0, Math.min(2, command.optInt("dual_sub_position", 1)));
                 saveDualSubtitlePosition(libraryContext, dualPos);
+                com.meedx.providers.UnifiedSubtitleConfig.setDualSubPosition(libraryContext, dualPos);
                 main.post(() -> {
                     if (foreground instanceof com.archos.mediacenter.video.player.PlayerActivity activity) {
                         activity.applyPhoneSubtitleStyle("dual_position", dualPos);
@@ -737,6 +824,12 @@ public final class CinemaLinkServer extends WebSocketServer {
                         hls.applyPhoneSubtitleStyle("dual_position", dualPos);
                     }
                 });
+            }
+            JSONObject incomingSubCfg = command.optJSONObject("subtitle_config");
+            if (incomingSubCfg != null) {
+                if (com.meedx.providers.UnifiedSubtitleConfig.importSyncJson(libraryContext, incomingSubCfg, false)) {
+                    CinemaSubtitleSyncBridge.applyUnifiedToTvPrefs(libraryContext);
+                }
             }
             long now = System.currentTimeMillis();
             String phoneName = command.optString("phone_name", "");
@@ -758,12 +851,34 @@ public final class CinemaLinkServer extends WebSocketServer {
                             .put("trakt_connected", com.meedx.providers.TraktSyncClient.isConnected(libraryContext))
                             .put("trakt_username", com.meedx.providers.TraktSyncClient.getConnectedUsername(libraryContext))
                             .put("addons_count", com.meedx.providers.StremioAddons.list(libraryContext).size())
+                            .put("subtitle_config", com.meedx.providers.UnifiedSubtitleConfig.exportSyncJson(libraryContext))
                             .put("synced_at", now);
                     if (liveCountryApplied) ack.put(countryField, country);
                     if (incomingFavorites != null) ack.put(LiveChannelFavorites.FIELD, LiveChannelFavorites.snapshot(libraryContext));
                     socket.send(ack.toString());
                 } catch (Exception ignored) {}
             }
+        });
+    }
+
+    private void handleSubtitleConfigSync(JSONObject command) {
+        if (libraryContext == null || command == null) return;
+        JSONObject cfg = command.optJSONObject("subtitle_config");
+        if (cfg == null) return;
+        syncIo.execute(() -> {
+            com.meedx.providers.UnifiedSubtitleConfig.importSyncJson(libraryContext, cfg, true);
+            CinemaSubtitleSyncBridge.applyUnifiedToTvPrefs(libraryContext);
+            int dualPos = com.meedx.providers.UnifiedSubtitleConfig.dualSubPosition(libraryContext);
+            saveDualSubtitlePosition(libraryContext, dualPos);
+            libraryContext.sendBroadcast(new android.content.Intent(ACTION_API_SYNC_UPDATED)
+                    .setPackage(libraryContext.getPackageName()));
+            main.post(() -> {
+                if (foreground instanceof com.archos.mediacenter.video.player.PlayerActivity activity) {
+                    activity.applyPhoneSubtitleStyle("dual_position", dualPos);
+                } else if (foreground instanceof CinemaHlsActivity hls) {
+                    hls.applyPhoneSubtitleStyle("dual_position", dualPos);
+                }
+            });
         });
     }
 
@@ -822,6 +937,10 @@ public final class CinemaLinkServer extends WebSocketServer {
             String osKey = command.optString("opensubtitles_key", "").trim();
             com.meedx.providers.ProviderKeys.save(libraryContext, com.meedx.providers.ProviderKeys.OPEN_SUBTITLES, osKey);
         }
+        if (command.has("subdl_key")) {
+            String subdlKey = command.optString("subdl_key", "").trim();
+            com.meedx.providers.ProviderKeys.save(libraryContext, com.meedx.providers.ProviderKeys.SUBDL, subdlKey);
+        }
         if (command.has("tmdb_key")) {
             String tmdbKey = command.optString("tmdb_key", "").trim();
             com.meedx.providers.ProviderKeys.save(libraryContext, com.meedx.providers.ProviderKeys.TMDB, tmdbKey);
@@ -874,6 +993,7 @@ public final class CinemaLinkServer extends WebSocketServer {
                         .put(com.meedx.providers.LiveTvPreferences.FAVORITE_COUNTRIES_FIELD,
                                 com.meedx.providers.LiveTvPreferences.exportFavoriteCountriesJson(libraryContext))
                         .put("addons", com.meedx.providers.StremioAddons.exportJson(libraryContext))
+                        .put("subtitle_config", com.meedx.providers.UnifiedSubtitleConfig.exportSyncJson(libraryContext))
                         .put("watch_records", CinemaWatchStore.exportRecentSyncRecords(libraryContext, 500));
                 JSONObject apiKeys = buildApiKeysSyncPayload(libraryContext);
                 if (apiKeys != null) {
@@ -926,6 +1046,12 @@ public final class CinemaLinkServer extends WebSocketServer {
 
                 org.json.JSONArray addons = command.optJSONArray("addons");
                 if (addons != null) com.meedx.providers.StremioAddons.mergeRemoteJson(libraryContext, addons);
+
+                JSONObject restoredSubCfg = command.optJSONObject("subtitle_config");
+                if (restoredSubCfg != null) {
+                    com.meedx.providers.UnifiedSubtitleConfig.importSyncJson(libraryContext, restoredSubCfg, true);
+                    CinemaSubtitleSyncBridge.applyUnifiedToTvPrefs(libraryContext);
+                }
 
                 org.json.JSONArray watchRecords = command.optJSONArray("watch_records");
                 if (watchRecords != null) {
@@ -1103,8 +1229,16 @@ public final class CinemaLinkServer extends WebSocketServer {
                 handleAddonsSync(socket, command);
                 return;
             }
+            if ("INSTALL_ADDON_ON_TV".equals(type)) {
+                handleInstallAddonOnTv(socket, command);
+                return;
+            }
             if ("API_KEYS_SYNC".equals(type)) {
                 handleApiKeysSync(command);
+                return;
+            }
+            if ("SUBTITLE_CONFIG_SYNC".equals(type)) {
+                handleSubtitleConfigSync(command);
                 return;
             }
             if ("EXPORT_TV_BACKUP".equals(type)) {

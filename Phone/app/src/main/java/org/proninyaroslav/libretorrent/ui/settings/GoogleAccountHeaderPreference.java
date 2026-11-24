@@ -98,9 +98,12 @@ public final class GoogleAccountHeaderPreference extends Preference {
         rootGroup.addView(card, new ViewGroup.LayoutParams(-1, -2));
 
         TextView heading = new TextView(c);
-        heading.setText(ar ? "حساب Google والنسخ الاحتياطي السحابي" : "Google Account & Cloud Backup");
+        heading.setText(ar ? "النسخ السحابي" : "Cloud Backup");
         heading.setTextColor(GOLD);
-        heading.setTextSize(16);
+        heading.setTextSize(15);
+        heading.setSingleLine(true);
+        heading.setMaxLines(1);
+        heading.setEllipsize(android.text.TextUtils.TruncateAt.END);
         heading.setTypeface(Typeface.DEFAULT_BOLD);
         heading.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
         card.addView(heading);
@@ -156,19 +159,21 @@ public final class GoogleAccountHeaderPreference extends Preference {
         if (account != null) {
             String displayName = account.getDisplayName();
             if (displayName == null || displayName.isBlank()) {
-                displayName = ar ? "حساب Google المرتبط" : "Connected Google Account";
+                displayName = ar ? "حساب Google" : "Google Account";
             }
             nameTv.setText(displayName);
+            nameTv.setSingleLine(true);
+            nameTv.setEllipsize(android.text.TextUtils.TruncateAt.END);
             String mail = account.getEmail();
-            emailTv.setText((mail != null ? mail + "\n" : "")
-                    + (ar ? "المزامنة السحابية جاهزة (الهاتف + الشاشة) ✓"
-                          : "Cloud sync ready (Phone + TV) ✓"));
+            emailTv.setText(mail != null && !mail.isBlank() ? mail : (ar ? "جاهز للمزامنة ✓" : "Sync ready ✓"));
+            emailTv.setSingleLine(true);
+            emailTv.setEllipsize(android.text.TextUtils.TruncateAt.END);
             emailTv.setTextColor(0xff9de0b8);
         } else {
             nameTv.setText(ar ? "غير مسجل الدخول" : "Not Signed In");
-            emailTv.setText(ar
-                    ? "سجّل الدخول لحفظ واسترجاع إعدادات الهاتف والشاشة عبر Google Drive بضغطة واحدة."
-                    : "Sign in with Google to upload or restore unified Phone + TV backups cleanly.");
+            emailTv.setText(ar ? "حفظ واسترجاع إعدادات الهاتف والشاشة" : "Sync & restore Phone + TV settings");
+            emailTv.setSingleLine(true);
+            emailTv.setEllipsize(android.text.TextUtils.TruncateAt.END);
             emailTv.setTextColor(0xffb8b2a8);
         }
         userInfo.addView(nameTv);
@@ -192,44 +197,68 @@ public final class GoogleAccountHeaderPreference extends Preference {
             card.addView(statusBanner, sbLp);
         }
 
-        // Action Buttons
+        // Compact horizontal action row + "More options" menu so Settings stays clean & uncluttered
+        LinearLayout btnRow = new LinearLayout(c);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        var rowLp = new LinearLayout.LayoutParams(-1, -2);
+        rowLp.topMargin = dp(c, 10);
+        card.addView(btnRow, rowLp);
+
         if (account == null) {
-            var signBtn = makeBtn(c, ar ? "تسجيل الدخول بحساب Google" : "Sign In with Google", true, onSignIn);
-            var lp = new LinearLayout.LayoutParams(-1, -2);
-            lp.topMargin = dp(c, 10);
-            card.addView(signBtn, lp);
+            var signBtn = makeBtn(c, ar ? "تسجيل الدخول" : "Sign In", true, onSignIn);
+            var lp1 = new LinearLayout.LayoutParams(0, -2, 1f);
+            lp1.setMarginEnd(dp(c, 8));
+            btnRow.addView(signBtn, lp1);
 
-            var restBtn = makeBtn(c, ar ? "استرجاع من Google وإطلاقها للشاشة" : "Restore from Google & Push to TV", false, onRestore);
-            var rLp = new LinearLayout.LayoutParams(-1, -2);
-            rLp.topMargin = dp(c, 6);
-            card.addView(restBtn, rLp);
+            var localBtn = makeBtn(c, ar ? "نسخ محلي" : "Local Backup", false,
+                    () -> showBackupActionsSheet(c, ar, false));
+            btnRow.addView(localBtn, new LinearLayout.LayoutParams(0, -2, 1f));
         } else {
-            var upBtn = makeBtn(c, ar ? "رفع النسخة الاحتياطية الآن (الهاتف + الشاشة)" : "Upload Backup Now (Phone + TV)", true, onUpload);
-            var uLp = new LinearLayout.LayoutParams(-1, -2);
-            uLp.topMargin = dp(c, 10);
-            card.addView(upBtn, uLp);
+            var upBtn = makeBtn(c, ar ? "رفع" : "Upload", true, onUpload);
+            var lp1 = new LinearLayout.LayoutParams(0, -2, 1f);
+            lp1.setMarginEnd(dp(c, 6));
+            btnRow.addView(upBtn, lp1);
 
-            var restBtn = makeBtn(c, ar ? "استرجاع من Google وإطلاقها للشاشة" : "Restore from Google & Push to TV", false, onRestore);
-            var rLp = new LinearLayout.LayoutParams(-1, -2);
-            rLp.topMargin = dp(c, 6);
-            card.addView(restBtn, rLp);
+            var restBtn = makeBtn(c, ar ? "استرجاع" : "Restore", false, onRestore);
+            var lp2 = new LinearLayout.LayoutParams(0, -2, 1f);
+            lp2.setMarginEnd(dp(c, 6));
+            btnRow.addView(restBtn, lp2);
 
-            var outBtn = makeBtn(c, ar ? "تسجيل الخروج" : "Sign Out", false, onSignOut);
-            var oLp = new LinearLayout.LayoutParams(-1, -2);
-            oLp.topMargin = dp(c, 6);
-            card.addView(outBtn, oLp);
+            var moreBtn = makeBtn(c, ar ? "المزيد" : "More", false,
+                    () -> showBackupActionsSheet(c, ar, true));
+            btnRow.addView(moreBtn, new LinearLayout.LayoutParams(0, -2, 0.9f));
         }
-        var saveLocal = makeBtn(c, ar ? "حفظ نسخة محلية (الهاتف + الشاشة)"
-                : "Save Backup Locally (Phone + TV)", false, onSaveLocal);
-        var saveParams = new LinearLayout.LayoutParams(-1, -2);
-        saveParams.topMargin = dp(c, 12);
-        card.addView(saveLocal, saveParams);
+    }
 
-        var restoreLocal = makeBtn(c, ar ? "استعادة نسخة محلية وإرسالها إلى الشاشة"
-                : "Restore Local Backup & Push to TV", false, onRestoreLocal);
-        var restoreParams = new LinearLayout.LayoutParams(-1, -2);
-        restoreParams.topMargin = dp(c, 6);
-        card.addView(restoreLocal, restoreParams);
+    private void showBackupActionsSheet(Context c, boolean ar, boolean signedIn) {
+        java.util.List<String> labels = new java.util.ArrayList<>();
+        java.util.List<Runnable> actions = new java.util.ArrayList<>();
+        if (signedIn) {
+            labels.add(ar ? "رفع النسخة السحابية الآن (الهاتف + الشاشة)" : "Upload Cloud Backup (Phone + TV)");
+            actions.add(onUpload);
+            labels.add(ar ? "استرجاع من Google وإرسالها للشاشة" : "Restore from Google & Push to TV");
+            actions.add(onRestore);
+        } else {
+            labels.add(ar ? "استرجاع من Google وإرسالها للشاشة" : "Restore from Google & Push to TV");
+            actions.add(onRestore);
+        }
+        labels.add(ar ? "حفظ نسخة محلية (الهاتف + الشاشة)" : "Save Local Backup (Phone + TV)");
+        actions.add(onSaveLocal);
+        labels.add(ar ? "استعادة نسخة محلية وإرسالها للشاشة" : "Restore Local Backup & Push to TV");
+        actions.add(onRestoreLocal);
+        if (signedIn) {
+            labels.add(ar ? "تسجيل الخروج من Google" : "Sign Out of Google");
+            actions.add(onSignOut);
+        }
+        new com.google.android.material.dialog.MaterialAlertDialogBuilder(c)
+                .setTitle(ar ? "خيارات النسخ الاحتياطي" : "Backup & Restore Options")
+                .setItems(labels.toArray(new String[0]), (d, which) -> {
+                    if (which >= 0 && which < actions.size() && actions.get(which) != null) {
+                        actions.get(which).run();
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
     }
 
     private static MaterialButton makeBtn(Context c, String text, boolean primary, Runnable click) {
@@ -237,15 +266,25 @@ public final class GoogleAccountHeaderPreference extends Preference {
                 ? com.google.android.material.R.attr.materialButtonStyle
                 : com.google.android.material.R.attr.materialButtonOutlinedStyle);
         btn.setText(text);
-        btn.setSingleLine(false);
-        btn.setMaxLines(2);
+        btn.setAllCaps(false);
+        btn.setSingleLine(true);
+        btn.setMaxLines(1);
+        btn.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        btn.setTextSize(13f);
+        btn.setMinWidth(0);
+        btn.setMinimumWidth(0);
+        btn.setInsetTop(0);
+        btn.setInsetBottom(0);
+        btn.setPadding(dp(c, 10), dp(c, 8), dp(c, 10), dp(c, 8));
         btn.setCornerRadius(dp(c, 12));
-        btn.setMinHeight(dp(c, 42));
+        btn.setMinHeight(dp(c, 40));
         if (primary) {
             btn.setBackgroundTintList(ColorStateList.valueOf(GOLD));
             btn.setTextColor(0xff141517);
+            btn.setTypeface(Typeface.DEFAULT_BOLD);
         } else {
             btn.setTextColor(GOLD);
+            btn.setStrokeColor(ColorStateList.valueOf(0x66f5c518));
         }
         btn.setOnClickListener(v -> { if (click != null) click.run(); });
         return btn;

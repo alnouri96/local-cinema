@@ -168,9 +168,12 @@ public class CinemaSettingsActivity extends LeanbackActivity {
 
     private void refreshStorageSummaryAsync(Runnable onUpdated) {
         io.execute(() -> {
-            long[] sizes = CinemaMetadataPrefetcher.calculateCacheSizesBytes(getApplicationContext());
-            String summary = l("الكاش المستخدم: ", "Used cache: ") + formatMb(sizes[1])
-                    + l(" · البوسترات والبيانات: ", " · Posters & Meta: ") + formatMb(sizes[0]);
+            CinemaCacheMaintenance.Breakdown b = CinemaCacheMaintenance.inspectBreakdown(getApplicationContext());
+            String summary = l("الكاش الآمن القابل للتنظيف: ", "Safe reclaimable cache: ")
+                    + CinemaCacheMaintenance.formatSize(b.totalBytes())
+                    + (b.torrentTempBytes() > 0L
+                            ? l(" · تورنت مؤقت: ", " · Torrent temp: ") + CinemaCacheMaintenance.formatSize(b.torrentTempBytes())
+                            : l(" · البوسترات: ", " · Posters: ") + CinemaCacheMaintenance.formatSize(b.postersAndImagesBytes()));
             mainHandler.post(() -> {
                 if (!isFinishing() && !isDestroyed()) {
                     storageSubtitleCache = summary;
@@ -197,8 +200,8 @@ public class CinemaSettingsActivity extends LeanbackActivity {
                         + l(" · الصوت: ", " · Audio: ") + CinemaPreferredAudio.label(this),
                 this::languageGroup);
         iconButton(R.drawable.cinema_ic_appearance,
-                l("المظهر والشاشة الرئيسية", "Appearance & Home Screen"),
-                l("الصفوف · الساعة والطقس · الخلفيات: ", "Home rows · Clock & Weather · Backdrop: ") + currentBackdropLabel(),
+                l("المظهر وتخصيص الشاشة الرئيسية", "Appearance & Home Screen"),
+                l("ترتيب الأقسام والإعلانات · البوسترات · الساعة والطقس", "Sections & Trailers order · Posters · Clock & Weather"),
                 this::appearance);
 
         sectionHeader(l("التشغيل والمحتوى", "Playback & Content"));
@@ -234,37 +237,106 @@ public class CinemaSettingsActivity extends LeanbackActivity {
         homePage = false;
         backTarget = this::libraryAndPostersGroup;
         currentRender = this::storageAndCachePage;
-        page(l("التخزين والكاش", "Storage & Cache"));
-        final long[] sizes = {0L, 0L};
-        TextView summaryView = text(this, CinemaTokens.LABEL, false);
-        summaryView.setPadding(0, dp(this, 6), 0, dp(this, 14));
-        summaryView.setText(storageSubtitleCache != null
-                ? storageSubtitleCache
-                : l("جارٍ حساب مساحة التخزين…", "Calculating storage usage…"));
-        content.addView(summaryView);
+        page(l("التخزين وتنظيف الكاش الآمن", "Storage & Safe Cache Cleaner"));
+
+        boolean rtl = arabic(this);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+        card.setBackground(rounded(0xff1d1e21, dp(this, 14), 0xff4c4637));
+        card.setPadding(dp(this, 18), dp(this, 16), dp(this, 18), dp(this, 16));
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(-1, -2);
+        cardLp.bottomMargin = dp(this, 14);
+        content.addView(card, cardLp);
+
+        LinearLayout headerRow = new LinearLayout(this);
+        headerRow.setOrientation(LinearLayout.HORIZONTAL);
+        headerRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        card.addView(headerRow, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView heading = text(this, 17, true);
+        heading.setText(l("تحليل الكاش الآمن للشاشة", "Safe Cache Breakdown"));
+        heading.setTextColor(CinemaTokens.GOLD);
+        heading.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
+        headerRow.addView(heading, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView totalBadge = text(this, 13, true);
+        totalBadge.setText(l("جارٍ الحساب…", "Calculating…"));
+        totalBadge.setTextColor(0xff141517);
+        totalBadge.setBackground(rounded(CinemaTokens.GOLD, dp(this, 10), 0));
+        totalBadge.setPadding(dp(this, 12), dp(this, 4), dp(this, 12), dp(this, 4));
+        headerRow.addView(totalBadge);
+
+        LinearLayout rowsBox = new LinearLayout(this);
+        rowsBox.setOrientation(LinearLayout.VERTICAL);
+        rowsBox.setBackground(rounded(0xff151619, dp(this, 10), 0xff2c2d33));
+        rowsBox.setPadding(dp(this, 14), dp(this, 10), dp(this, 14), dp(this, 10));
+        LinearLayout.LayoutParams boxLp = new LinearLayout.LayoutParams(-1, -2);
+        boxLp.topMargin = dp(this, 10);
+        card.addView(rowsBox, boxLp);
+
+        TextView torrentVal = addCacheBreakdownRow(rowsBox, l("ملفات بث التورنت المؤقتة", "Temp Torrent Buffers"), false);
+        TextView updatesVal = addCacheBreakdownRow(rowsBox, l("حزم التحديثات المؤقتة (APK)", "Cached Update APKs"), true);
+        TextView postersVal = addCacheBreakdownRow(rowsBox, l("كاش البوسترات والصور والبيانات", "Posters, Images & Metadata"), true);
+        TextView miscVal = addCacheBreakdownRow(rowsBox, l("ملفات مؤقتة أخرى", "Other Temporary Files"), true);
+
+        TextView safetyNote = text(this, 12, false);
+        safetyNote.setText(l(
+                "تنظيف آمن بالكامل: يحذف الملفات المؤقتة وبقايا البث فقط، ولا يمس ربط الهاتف أو الإضافات أو حساب Trakt أو تقدم المشاهدة أو الإعدادات.",
+                "100% Safe: clears temporary buffers and caches only. Phone Link, add-ons, Trakt, watch progress, and settings stay untouched."));
+        safetyNote.setTextColor(0xffb4b4bd);
+        LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, -2);
+        noteLp.topMargin = dp(this, 10);
+        card.addView(safetyNote, noteLp);
+
+        final CinemaCacheMaintenance.Breakdown[] latest = {new CinemaCacheMaintenance.Breakdown(0L, 0L, 0L, 0L)};
         Runnable reloadSizes = () -> io.execute(() -> {
-            long[] measured = CinemaMetadataPrefetcher.calculateCacheSizesBytes(getApplicationContext());
-            sizes[0] = measured[0];
-            sizes[1] = measured[1];
-            String textVal = l("مساحة البوسترات والبيانات المخبأة: ", "Posters & Metadata Cache: ") + formatMb(measured[0])
-                    + "\n" + l("إجمالي كاش التطبيق المؤقت: ", "Total App Temporary Cache: ") + formatMb(measured[1])
-                    + "\n" + l("لا يمس سجل المشاهدة أو التقدم أو الإعدادات أو ربط الهاتف وTrakt.",
-                    "Preserves watch history, resume progress, settings, Phone link, and Trakt.");
-            storageSubtitleCache = l("الكاش المستخدم: ", "Used cache: ") + formatMb(measured[1])
-                    + l(" · البوسترات والبيانات: ", " · Posters & Meta: ") + formatMb(measured[0]);
+            CinemaCacheMaintenance.Breakdown b = CinemaCacheMaintenance.inspectBreakdown(getApplicationContext());
+            latest[0] = b;
+            storageSubtitleCache = l("الكاش الآمن القابل للتنظيف: ", "Safe reclaimable cache: ")
+                    + CinemaCacheMaintenance.formatSize(b.totalBytes());
             mainHandler.post(() -> {
-                if (!isFinishing() && !isDestroyed()) summaryView.setText(textVal);
+                if (isFinishing() || isDestroyed()) return;
+                totalBadge.setText(CinemaCacheMaintenance.formatSize(b.totalBytes()));
+                torrentVal.setText(CinemaCacheMaintenance.formatSize(b.torrentTempBytes()));
+                updatesVal.setText(CinemaCacheMaintenance.formatSize(b.updateApkBytes()));
+                postersVal.setText(CinemaCacheMaintenance.formatSize(b.postersAndImagesBytes()));
+                miscVal.setText(CinemaCacheMaintenance.formatSize(b.miscTempBytes()));
             });
         });
         reloadSizes.run();
 
+        sectionHeader(l("التنظيف اليدوي الآمن", "Manual Safe Cleanup"));
+        iconButton(R.drawable.cinema_ic_system,
+                l("تنظيف الكاش الآمن الآن", "Clean Safe Cache Now"),
+                l("تحرير بقايا التورنت وحزم التحديث والصور والملفات المؤقتة فوراً دون المساس ببياناتك",
+                        "Free torrent remnants, old update APKs, image caches & temp files safely"),
+                () -> dialog(this)
+                        .setTitle(l("تنظيف الكاش الآمن الآن؟", "Clean Safe Cache Now?"))
+                        .setMessage(l("سيتم تحرير حوالي ", "Approximately ")
+                                + CinemaCacheMaintenance.formatSize(latest[0].totalBytes())
+                                + l(" من الكاش والملفات المؤقتة فقط.\n\nتبقى الإعدادات، ربط الهاتف، الإضافات، Trakt، وتقدم المشاهدة محفوظة بالكامل.",
+                                    " of temporary caches and buffers will be cleared.\n\nSettings, Phone Link, add-ons, Trakt, and watch progress will NOT be affected."))
+                        .setPositiveButton(l("تنظيف الآن", "Clean Now"), (d, w) -> io.execute(() -> {
+                            long freed = CinemaCacheMaintenance.clearSafeCacheBlocking(getApplicationContext());
+                            mainHandler.post(() -> {
+                                android.widget.Toast.makeText(this,
+                                        l("تم تنظيف الكاش الآمن وتحرير ", "Safe cache cleaned — freed ")
+                                                + CinemaCacheMaintenance.formatSize(freed) + " ✓",
+                                        android.widget.Toast.LENGTH_LONG).show();
+                                reloadSizes.run();
+                            });
+                        }))
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show());
+
         iconButton(R.drawable.cinema_ic_posters,
-                l("مسح كاش البوسترات والبيانات", "Clear Posters & Metadata Cache"),
-                l("حذف صور البوسترات وملفات TMDB المخبأة فقط وإعادة تحميلها بنظافة",
+                l("مسح كاش البوسترات والبيانات فقط", "Clear Posters & Metadata Cache Only"),
+                l("حذف صور البوسترات وملفات TMDB المخبأة فقط وإعادة تنزيلها بنظافة",
                         "Delete cached poster images & TMDB JSON files only and re-fetch cleanly"),
                 () -> dialog(this)
                         .setTitle(l("مسح كاش البوسترات والبيانات", "Clear Posters & Metadata Cache"))
-                        .setMessage(l("سيتم حذف ملفات صور البوسترات وبيانات TMDB المخبأة وإعادة تنزيلها، دون المساس بسجل المشاهدة أو الإعدادات.",
+                        .setMessage(l("سيتم حذف صور البوسترات وبيانات TMDB المخبأة وإعادة تنزيلها دون المساس بسجل المشاهدة أو الإعدادات.",
                                 "Cached poster images and TMDB metadata JSON files will be deleted and reloaded. Watch history and settings remain untouched."))
                         .setPositiveButton(l("مسح الآن", "Clear Now"), (d, w) -> io.execute(() -> {
                             CinemaMetadataPrefetcher.clearPostersAndMetadataCache(getApplicationContext());
@@ -279,25 +351,62 @@ public class CinemaSettingsActivity extends LeanbackActivity {
                         .setNegativeButton(android.R.string.cancel, null)
                         .show());
 
-        iconButton(R.drawable.cinema_ic_system,
-                l("مسح كاش التطبيق بالكامل", "Clear All App Cache"),
-                l("تنظيف جميع الملفات المؤقتة للتطبيق وإعادة حساب الحجم فوراً",
-                        "Clean all temporary application cache files and recalculate size immediately"),
-                () -> dialog(this)
-                        .setTitle(l("مسح كاش التطبيق بالكامل", "Clear All App Cache"))
-                        .setMessage(l("سيتم تنظيف الكاش المؤقت للتطبيق بالكامل دون التأثير على سجل المشاهدة أو الإعدادات أو ربط الهاتف.",
-                                "All temporary cache files will be removed while preserving watch progress, settings, and Phone/Trakt pairing."))
-                        .setPositiveButton(l("مسح الكاش", "Clear Cache"), (d, w) -> io.execute(() -> {
-                            CinemaMetadataPrefetcher.clearAllAppCache(getApplicationContext());
-                            mainHandler.post(() -> {
-                                android.widget.Toast.makeText(this,
-                                        l("تم تنظيف كاش التطبيق بنجاح", "All app cache cleared"),
-                                        android.widget.Toast.LENGTH_SHORT).show();
-                                reloadSizes.run();
-                            });
-                        }))
-                        .setNegativeButton(android.R.string.cancel, null)
-                        .show());
+        sectionHeader(l("الصيانة الذاتية الذكية", "Smart Self-Maintenance"));
+        boolean smartOn = CinemaCacheMaintenance.isSmartEnabled(this);
+        CinemaCacheMaintenance.AdaptiveProfile profile = CinemaCacheMaintenance.adaptiveProfile(this);
+        long lastRun = CinemaCacheMaintenance.lastRunMs(this);
+        long lastFreed = CinemaCacheMaintenance.lastFreedBytes(this);
+        String smartSub = l("الحد التكيّفي لهذا الجهاز: ", "Adaptive cap for this TV: ")
+                + CinemaCacheMaintenance.formatSize(profile.imageCapBytes())
+                + (lastRun > 0L
+                        ? l(" · آخر صيانة حرّرت: ", " · Last run freed: ") + CinemaCacheMaintenance.formatSize(lastFreed)
+                        : l(" · يزيل بقايا التورنت والتحديثات تلقائياً", " · Auto-prunes orphan torrents & stale APKs"));
+        rowButton(R.drawable.cinema_ic_shield,
+                l("الصيانة الذاتية الذكية التلقائية", "Smart Auto Self-Maintenance"),
+                smartSub,
+                smartOn,
+                () -> {
+                    CinemaCacheMaintenance.setSmartEnabled(this, !smartOn);
+                    storageAndCachePage();
+                });
+
+        iconButton(R.drawable.cinema_ic_updates,
+                l("تشغيل الصيانة الذكية الآن", "Run Smart Maintenance Now"),
+                l("حذف بقايا التورنت وحزم التحديث القديمة وتقليص الكاش الزائد مع إبقاء البوسترات الحديثة",
+                        "Prune orphan torrent buffers, stale APKs & excess cache while keeping recent posters"),
+                () -> io.execute(() -> {
+                    long freed = CinemaCacheMaintenance.runSmartMaintenanceBlocking(getApplicationContext(), true);
+                    mainHandler.post(() -> {
+                        android.widget.Toast.makeText(this,
+                                freed > 0L
+                                        ? l("اكتملت الصيانة الذكية · تم تحرير ", "Smart maintenance complete · freed ")
+                                                + CinemaCacheMaintenance.formatSize(freed) + " ✓"
+                                        : l("التخزين منظّم ونظيف بالفعل ✓", "Storage is already clean & optimized ✓"),
+                                android.widget.Toast.LENGTH_LONG).show();
+                        storageAndCachePage();
+                    });
+                }));
+    }
+
+    private TextView addCacheBreakdownRow(LinearLayout parent, String labelText, boolean topMargin) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        if (topMargin) lp.topMargin = dp(this, 6);
+        parent.addView(row, lp);
+
+        TextView lbl = text(this, 13, false);
+        lbl.setText(labelText);
+        lbl.setTextColor(0xffe4e4e7);
+        lbl.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
+        row.addView(lbl, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView val = text(this, 13, true);
+        val.setText("…");
+        val.setTextColor(CinemaTokens.GOLD);
+        row.addView(val);
+        return val;
     }
 
     private void languageGroup(){
@@ -312,11 +421,13 @@ public class CinemaSettingsActivity extends LeanbackActivity {
                 l("المختار حالياً: ", "Selected: ") + currentMetadataLangLabel(),
                 this::metadataLanguage);
         iconButton(R.drawable.cinema_ic_audio,
-                getString(R.string.cinema_pref_languages_title),
-                l("الصوت: ", "Audio: ") + CinemaPreferredAudio.label(this)
-                        + l(" · الترجمة: ", " · Subtitles: ")
-                        + CinemaLanguagePreferences.localizedSubtitleLabel(this, CinemaLanguagePreferences.primarySubtitleLanguage(this)),
-                () -> CinemaLanguagePreferences.showDialog(this, this::languageGroup));
+                getString(R.string.cinema_pref_audio_lang),
+                CinemaPreferredAudio.label(this),
+                () -> CinemaPreferredAudio.choose(this, this::languageGroup));
+        iconButton(R.drawable.cinema_subtitles,
+                getString(R.string.cinema_pref_subtitle_lang_title),
+                CinemaLanguagePreferences.localizedSubtitleLabel(this, CinemaLanguagePreferences.primarySubtitleLanguage(this)),
+                () -> CinemaLanguagePreferences.choosePreferredSubtitleLanguage(this, this::languageGroup));
     }
 
     private void libraryAndPostersGroup(){
@@ -336,9 +447,9 @@ public class CinemaSettingsActivity extends LeanbackActivity {
                 l("استعراض وإدارة قوائم الفيديو المخصّصة", "Browse and manage custom video lists"),
                 () -> startActivity(new Intent(this, com.archos.mediacenter.video.leanback.VideosByListActivity.class)));
         iconButton(R.drawable.cinema_ic_system,
-                l("التخزين والكاش", "Storage & Cache"),
+                l("التخزين وتنظيف الكاش الآمن", "Storage & Safe Cache Cleaner"),
                 storageSubtitleCache != null ? storageSubtitleCache
-                        : l("قياس وتنظيف كاش البوسترات والتطبيق", "Inspect and clear posters & app cache"),
+                        : l("تحليل وتنظيف الكاش المؤقت والصيانة الذاتية الذكية", "Inspect & clean temp cache and smart self-maintenance"),
                 this::storageAndCachePage);
     }
 
@@ -350,13 +461,12 @@ public class CinemaSettingsActivity extends LeanbackActivity {
         iconButton(R.drawable.cinema_ic_audio, getString(com.archos.mediacenter.video.R.string.cinema_cinema_engine),
                 currentDisplayModeLabel() + " · " + (prefs.getInt("cinema_display_delay_ms", 1500) / 1000.0) + " s", this::cinemaEngine);
         iconButton(R.drawable.cinema_subtitles,
-                l("إعدادات الترجمة", "Subtitle Settings"),
-                l("مزامنة الهاتف · اللغة: ", "Phone Sync · Language: ")
-                        + CinemaAutoSubtitles.languageLabel(CinemaAutoSubtitles.preferredLanguage(this))
-                        + " · " + currentSubtitleSourceLabel(),
+                l("إعدادات الترجمة الموحّدة ومصادرها", "Unified Subtitle Settings & Sources"),
+                com.meedx.providers.UnifiedSubtitleConfig.searchSelectionSummary(this, arabic(this))
+                        + " · " + com.meedx.providers.UnifiedSubtitleConfig.languageDisplay(
+                                com.meedx.providers.UnifiedSubtitleConfig.primaryLanguage(this), arabic(this))
+                        + l(" · المظهر والمزامنة مع الهاتف", " · Appearance & Phone Sync"),
                 () -> SubtitleSources.settings(this));
-        iconButton(R.drawable.cinema_subtitles, getString(R.string.addon_subtitle_settings),
-                getString(R.string.addon_subtitle_settings_description), this::subtitleAddonsSettings);
         iconButton(R.drawable.cinema_play_movie, getString(com.archos.mediacenter.video.R.string.cinema_advanced_video_and_audio_settings),
                 l("إعدادات فك الترميز والمزامنة والمشغّل المتقدمة والاستيراد/التصدير", "Hardware decoding, A/V, player preferences & import/export"), this::advanced);
     }
@@ -885,9 +995,63 @@ public class CinemaSettingsActivity extends LeanbackActivity {
 
     private void appearance(){
         homePage=false;backTarget=this::showRoot;currentRender=this::appearance;
-        page(l("المظهر والساعة", "Appearance & Clock"));
-        iconButton(R.drawable.cinema_ic_appearance, getString(com.archos.mediacenter.video.R.string.cinema_customize_home_screen),
-                l("ترتيب الصفوف، عدد وحجم البوسترات", "Rows order, poster count & size"), this::home);
+        page(l("المظهر وتخصيص الشاشة الرئيسية", "Appearance & Home Screen"));
+
+        sectionHeader(l("أقسام الشاشة الرئيسية وأولوية الترتيب", "Home Screen Sections & Priority Order"));
+        List<String> available = HomePreferences.defaultAvailableKeys(prefs);
+        List<String> sectionOrder = HomePreferences.sectionOrder(prefs, available);
+        for (int idx = 0; idx < sectionOrder.size(); idx++) {
+            final String key = sectionOrder.get(idx);
+            final int pos = idx;
+            String title = CinemaHomeFragment.sectionTitle(this, key);
+            boolean shown = HomePreferences.isSectionVisible(prefs, key);
+            int iconRes = HomePreferences.isTrailerKey(key) ? R.drawable.cinema_play_movie
+                    : (HomePreferences.isLibKey(key) ? R.drawable.cinema_folder : R.drawable.cinema_ic_appearance);
+            String kindTag = HomePreferences.isTrailerKey(key)
+                    ? l("قسم إعلانات", "Trailers Section")
+                    : (HomePreferences.isLibKey(key) ? l("مجلد مكتبة", "Library Folder") : l("صف رئيسي", "Home Row"));
+            String sub = l("الأولوية #", "Priority #") + (pos + 1) + " · " + kindTag
+                    + l(" · اضغط للتحكم بالظهور والترتيب", " · Tap to toggle or reorder");
+            rowButton(iconRes, title, sub, shown, () -> showHomeSectionActionsDialog(sectionOrder, key, title, pos, shown));
+        }
+        iconButton(R.drawable.cinema_ic_updates,
+                l("استعادة الترتيب والإعدادات الافتراضية", "Restore Default Order & Layout"),
+                l("إرجاع ترتيب الأقسام والبوسترات إلى الوضع الافتراضي", "Reset home sections, visibility & poster layout to default"),
+                () -> {
+                    HomePreferences.reset(prefs);
+                    appearance();
+                });
+
+        sectionHeader(l("البوسترات والخلفيات", "Posters & Backdrops"));
+        iconButton(R.drawable.cinema_ic_posters, getString(com.archos.mediacenter.video.R.string.cinema_posters_per_row),
+                l("العدد الحالي: ", "Selected: ") + prefs.getInt(HomePreferences.COUNT, 6),
+                () -> CinemaUi.dialog(this).setTitle(getString(com.archos.mediacenter.video.R.string.cinema_posters_per_row))
+                        .setItems(new String[]{"4", "5", "6", "7", "8", "9"}, (d, w) -> {
+                            prefs.edit().putInt(HomePreferences.COUNT, w + 4).apply();
+                            appearance();
+                        }).show());
+        iconButton(R.drawable.cinema_ic_posters, getString(com.archos.mediacenter.video.R.string.cinema_poster_size),
+                l("الحجم الحالي: ", "Selected: ") + posterSizeLabel(),
+                () -> CinemaUi.dialog(this).setTitle(getString(com.archos.mediacenter.video.R.string.cinema_poster_size))
+                        .setItems(new String[]{
+                                getString(com.archos.mediacenter.video.R.string.cinema_small),
+                                getString(com.archos.mediacenter.video.R.string.cinema_medium),
+                                getString(com.archos.mediacenter.video.R.string.cinema_large)}, (d, w) -> {
+                            prefs.edit().putString(HomePreferences.SIZE, new String[]{"small", "medium", "large"}[w]).apply();
+                            appearance();
+                        }).show());
+        toggle(R.drawable.cinema_play_movie, getString(com.archos.mediacenter.video.R.string.cinema_transitions), HomePreferences.MOTION, true, this::appearance);
+        iconButton(R.drawable.cinema_ic_posters, getString(com.archos.mediacenter.video.R.string.cinema_backdrop_quality),
+                l("الجودة الحالية: ", "Current quality: ") + currentBackdropLabel(),
+                () -> CinemaUi.dialog(this).setTitle(getString(com.archos.mediacenter.video.R.string.cinema_backdrop_quality))
+                        .setItems(new String[]{
+                                getString(com.archos.mediacenter.video.R.string.cinema_balanced_1280),
+                                getString(com.archos.mediacenter.video.R.string.cinema_high_1920)}, (d, w) -> {
+                            prefs.edit().putString(HomePreferences.BACKDROP, w == 0 ? "balanced" : "high").apply();
+                            appearance();
+                        }).show());
+
+        sectionHeader(l("الساعة والطقس", "Clock & Weather"));
         toggle(R.drawable.cinema_ic_timer, l("إظهار الساعة والتاريخ", "Show Clock & Date"), HomePreferences.CLOCK, true, this::appearance);
         iconButton(R.drawable.cinema_ic_timer, l("حجم الساعة", "Clock Size"),
                 l("الحجم الحالي: ", "Current size: ") + currentClockSizeLabel(), () -> {
@@ -929,9 +1093,46 @@ public class CinemaSettingsActivity extends LeanbackActivity {
                 HomePreferences.CLOCK_GREETING, true, this::appearance);
         toggle(R.drawable.cinema_ic_timer, l("إظهار أيقونة الشمس/القمر والطقس", "Show Sun/Moon & Weather"),
                 HomePreferences.CLOCK_WEATHER, true, this::appearance);
-        toggle(R.drawable.cinema_play_movie, getString(com.archos.mediacenter.video.R.string.cinema_transitions),HomePreferences.MOTION,true,this::appearance);
-        iconButton(R.drawable.cinema_ic_posters, getString(com.archos.mediacenter.video.R.string.cinema_backdrop_quality),
-                l("الجودة الحالية: ", "Current quality: ") + currentBackdropLabel(), ()->CinemaUi.dialog(this).setItems(new String[]{getString(com.archos.mediacenter.video.R.string.cinema_balanced_1280),getString(com.archos.mediacenter.video.R.string.cinema_high_1920)},(d,w)->{prefs.edit().putString(HomePreferences.BACKDROP,w==0?"balanced":"high").apply();appearance();}).show());
+    }
+
+    private void showHomeSectionActionsDialog(List<String> order, String key, String title, int index, boolean shown) {
+        java.util.List<String> labels = new java.util.ArrayList<>();
+        java.util.List<Runnable> actions = new java.util.ArrayList<>();
+        labels.add(shown ? l("إخفاء القسم من الشاشة الرئيسية", "Hide from Home Screen")
+                : l("إظهار القسم في الشاشة الرئيسية", "Show on Home Screen"));
+        actions.add(() -> HomePreferences.setSectionVisible(prefs, key, !shown));
+        if (index > 0) {
+            labels.add(l("⬆ نقل للأعلى تماماً (الأولوية الأولى)", "⬆ Move to Top (Priority #1)"));
+            actions.add(() -> {
+                java.util.List<String> updated = new java.util.ArrayList<>(order);
+                updated.remove(index);
+                updated.add(0, key);
+                HomePreferences.saveSectionOrder(prefs, updated);
+            });
+            labels.add(getString(com.archos.mediacenter.video.R.string.cinema_move_up));
+            actions.add(() -> {
+                java.util.List<String> updated = new java.util.ArrayList<>(order);
+                Collections.swap(updated, index, index - 1);
+                HomePreferences.saveSectionOrder(prefs, updated);
+            });
+        }
+        if (index < order.size() - 1) {
+            labels.add(getString(com.archos.mediacenter.video.R.string.cinema_move_down));
+            actions.add(() -> {
+                java.util.List<String> updated = new java.util.ArrayList<>(order);
+                Collections.swap(updated, index, index + 1);
+                HomePreferences.saveSectionOrder(prefs, updated);
+            });
+        }
+        CinemaUi.dialog(this).setTitle(title)
+                .setItems(labels.toArray(new String[0]), (d, w) -> {
+                    if (w >= 0 && w < actions.size()) {
+                        actions.get(w).run();
+                        appearance();
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
     }
     private String currentClockSizeLabel() {
         return switch (prefs.getString(HomePreferences.CLOCK_SIZE, "small")) {
@@ -1144,23 +1345,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     }
 
     private void home(){
-        homePage=true;backTarget=this::appearance;currentRender=this::home;page(getString(com.archos.mediacenter.video.R.string.cinema_customize_home_screen));
-        List<Integer> order=HomePreferences.order(prefs);
-        for(int id:order){
-            String title=CinemaHomeFragment.rowTitle(this,id);
-            boolean shown = prefs.getBoolean("cinema_row_" + id, true);
-            rowButton(R.drawable.cinema_ic_appearance, title, null, shown, ()->CinemaUi.dialog(this).setTitle(title)
-                    .setItems(new String[]{getString(com.archos.mediacenter.video.R.string.cinema_show_hide),getString(com.archos.mediacenter.video.R.string.cinema_move_up),getString(com.archos.mediacenter.video.R.string.cinema_move_down)},(d,w)->{
-                        if(w==0)prefs.edit().putBoolean("cinema_row_"+id,!prefs.getBoolean("cinema_row_"+id,true)).apply();
-                        else{int from=order.indexOf(id),to=from+(w==1?-1:1);if(to>=0&&to<order.size()){Collections.swap(order,from,to);HomePreferences.saveOrder(prefs,order);}}
-                        home();
-                    }).show());
-        }
-        iconButton(R.drawable.cinema_ic_posters, getString(com.archos.mediacenter.video.R.string.cinema_posters_per_row),
-                l("العدد الحالي: ", "Selected: ") + prefs.getInt(HomePreferences.COUNT,6), ()->CinemaUi.dialog(this).setItems(new String[]{"4","5","6","7","8","9"},(d,w)->{prefs.edit().putInt(HomePreferences.COUNT,w+4).apply();home();}).show());
-        iconButton(R.drawable.cinema_ic_posters, getString(com.archos.mediacenter.video.R.string.cinema_poster_size),
-                l("الحجم الحالي: ", "Selected: ") + posterSizeLabel(), ()->CinemaUi.dialog(this).setItems(new String[]{getString(com.archos.mediacenter.video.R.string.cinema_small),getString(com.archos.mediacenter.video.R.string.cinema_medium),getString(com.archos.mediacenter.video.R.string.cinema_large)},(d,w)->{prefs.edit().putString(HomePreferences.SIZE,new String[]{"small","medium","large"}[w]).apply();home();}).show());
-        iconButton(R.drawable.cinema_ic_updates, getString(com.archos.mediacenter.video.R.string.cinema_restore_defaults), null, ()->{HomePreferences.reset(prefs);home();});
+        appearance();
     }
     private String posterSizeLabel(){return switch(prefs.getString(HomePreferences.SIZE,"medium")){case "small"->getString(com.archos.mediacenter.video.R.string.cinema_small);case "large"->getString(com.archos.mediacenter.video.R.string.cinema_large);default->getString(com.archos.mediacenter.video.R.string.cinema_medium);};}
     @Override public void onBackPressed(){saveCurrentFocusState();if(homePage){appearance();return;}if(backTarget!=null){Runnable r=backTarget;backTarget=null;r.run();return;}if(!rootPage){showRoot();return;}super.onBackPressed();}

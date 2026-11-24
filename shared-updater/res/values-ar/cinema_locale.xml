@@ -2,7 +2,7 @@
     <string name="locale_app">لغة التطبيق</string>
     <string name="locale_system">تلقائي حسب لغة النظام</string>
     <string name="locale_ar">العربية</string>
-    <string name="locale_en">الإنجليزية</string>
+    <string name="locale_en">English</string>
     <string name="locale_metadata">لغة البوسترات ومعلومات الأفلام والتقييمات</string>
     <string name="locale_match">تلقائي — حسب لغة التطبيق</string>
     <string name="locale_refreshing">جارٍ تحديث معلومات الأفلام والبوسترات…</string>

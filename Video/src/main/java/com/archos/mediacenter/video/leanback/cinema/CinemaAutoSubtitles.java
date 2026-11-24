@@ -29,19 +29,19 @@ public final class CinemaAutoSubtitles {
     }
 
     static String languageLabel(String language){
-        if(language.isEmpty())return "All languages / كل اللغات";
-        if("arabic".equalsIgnoreCase(language))return "العربية";
-        return Character.toUpperCase(language.charAt(0))+language.substring(1);
+        if(language==null||language.isEmpty())return "كل اللغات";
+        return com.meedx.providers.UnifiedSubtitleConfig.languageDisplay(language, true);
     }
 
     static void chooseLanguage(Context context,String current,boolean allowAll,java.util.function.Consumer<String> selected){
-        List<String> values=new ArrayList<>(List.of("arabic","english","french","spanish","german","turkish","persian","kurdish","chinese","japanese","korean"));
+        List<String> values=new ArrayList<>(List.of("arabic","english","french","spanish","german","turkish","persian","kurdish","russian","ukrainian","indonesian","italian","portuguese","chinese","japanese","korean"));
         if(allowAll)values.add(1,"");
         if(!values.contains(current))values.add(current);
         String[] labels=new String[values.size()+1];
         for(int n=0;n<values.size();n++){
             boolean isSel=values.get(n).equalsIgnoreCase(current==null?"":current);
-            labels[n]=(isSel?"✓  ":"")+languageLabel(values.get(n));
+            String disp=values.get(n).isEmpty()?CinemaUi.label(context,"كل اللغات","All languages"):com.meedx.providers.UnifiedSubtitleConfig.languageDisplay(values.get(n),CinemaUi.arabic(context));
+            labels[n]=(isSel?"✓  ":"")+disp;
         }
         labels[values.size()]=CinemaUi.label(context,"لغة أخرى…","Other language…");
         CinemaUi.dialog(context).setTitle(CinemaUi.label(context,"لغة الترجمة","Subtitle language"))

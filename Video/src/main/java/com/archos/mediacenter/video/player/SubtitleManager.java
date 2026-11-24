@@ -726,16 +726,33 @@ public class SubtitleManager {
     }
 
     private boolean phoneBackground;
-    public void togglePhoneBackground() {
-        phoneBackground = !phoneBackground;
+    public void setPhoneBackground(boolean enabled) {
+        phoneBackground = enabled;
         if (mSubtitleTxtView != null) {
-            mSubtitleTxtView.setBackgroundColor(phoneBackground ? android.graphics.Color.BLACK : android.graphics.Color.TRANSPARENT);
+            mSubtitleTxtView.setBackgroundColor(phoneBackground ? 0xCC000000 : android.graphics.Color.TRANSPARENT);
+        }
+    }
+
+    public boolean isPhoneBackground() {
+        return phoneBackground;
+    }
+
+    public void togglePhoneBackground() {
+        setPhoneBackground(!phoneBackground);
+    }
+
+    public boolean isPhoneVisible() {
+        return mSubtitleLayout == null || mSubtitleLayout.getVisibility() == View.VISIBLE;
+    }
+
+    public void setPhoneVisibility(boolean visible) {
+        if (mSubtitleLayout != null) {
+            mSubtitleLayout.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
         }
     }
 
     public void togglePhoneVisibility() {
-        if (mSubtitleLayout != null) mSubtitleLayout.setVisibility(
-                mSubtitleLayout.getVisibility() == View.VISIBLE ? View.INVISIBLE : View.VISIBLE);
+        setPhoneVisibility(!isPhoneVisible());
     }
 
     public int getSize() {

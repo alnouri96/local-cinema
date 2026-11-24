@@ -275,28 +275,65 @@ public class CinemaDetailsActivity extends LeanbackActivity {
     }
 
     private void subtitleMenu(View anchor){
-        CinemaActionMenu.show(anchor,
-                new CinemaActionMenu.Action(getString(com.archos.mediacenter.video.R.string.cinema_embedded_subtitles),this::embeddedSubtitles),
-                new CinemaActionMenu.Action(getString(com.archos.mediacenter.video.R.string.cinema_choose_from_video_folder),()->{
-                    Intent intent=new Intent(this,CinemaFileBrowserActivity.class);
-                    intent.putExtra(CinemaFileBrowserActivity.EXTRA_FILTER_MODE, CinemaFileBrowserActivity.FILTER_SUBTITLES_ONLY);
-                    startActivityForResult(intent, 914);
-                }),
-                new CinemaActionMenu.Action(getString(com.archos.mediacenter.video.R.string.cinema_pref_languages_title),
-                        () -> CinemaLanguagePreferences.showDialog(this, null)),
-                new CinemaActionMenu.Action(SubtitleSources.label(this), () -> SubtitleSources.search(this, video)),
-                new CinemaActionMenu.Action(SubtitleSources.title(this), () -> SubtitleSources.settings(this)));
+        int savedChoice = CinemaTrackChoices.embedded(this, video.getFileUri());
+        int activeMode = switch (savedChoice) {
+            case -2 -> CinemaSubtitleHubDialog.hubModeFromCentral(this);
+            case -3 -> CinemaSubtitleHubDialog.MODE_MOVIE_SOURCE;
+            case -1 -> CinemaSubtitleHubDialog.MODE_OFF;
+            default -> CinemaSubtitleHubDialog.MODE_CUSTOM_TRACK;
+        };
+        var hub = CinemaSubtitleHubDialog.create(this)
+                .title(getString(com.archos.mediacenter.video.R.string.cinema_sub_hub_short))
+                .subtitleMode(activeMode,
+                        () -> {
+                            CinemaSubtitleHubDialog.saveCentralMode(this,
+                                    com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_AUTO);
+                            CinemaTrackChoices.embedded(this, video.getFileUri(), -2);
+                            Toast.makeText(this, getString(com.archos.mediacenter.video.R.string.cinema_subtitle_choice_saved_for_playback), Toast.LENGTH_SHORT).show();
+                        },
+                        () -> {
+                            CinemaSubtitleHubDialog.saveCentralMode(this,
+                                    com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_MOVIE_SOURCE);
+                            CinemaTrackChoices.embedded(this, video.getFileUri(), -3);
+                            Toast.makeText(this, getString(com.archos.mediacenter.video.R.string.cinema_subtitle_choice_saved_for_playback), Toast.LENGTH_SHORT).show();
+                        },
+                        () -> {
+                            int yr = video instanceof Movie m ? m.getYear() : -1;
+                            String knownImdbId = publicMetadata != null && publicMetadata.imdb() != null && !publicMetadata.imdb().isBlank()
+                                    ? publicMetadata.imdb()
+                                    : (detailsArt != null ? detailsArt.imdbId() : null);
+                            CinemaAutoSubtitleFetcher.fetchNow(this, video.getFileUri(), video.getName(),
+                                    null, knownImdbId, yr, false, -1, -1,
+                                    savedUri -> CinemaTrackChoices.embedded(this, video.getFileUri(), -3),
+                                    () -> SubtitleSources.search(this, video));
+                        },
+                        () -> {
+                            CinemaSubtitleHubDialog.saveCentralMode(this,
+                                    com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_OFF);
+                            CinemaTrackChoices.embedded(this, video.getFileUri(), -1);
+                            Toast.makeText(this, getString(com.archos.mediacenter.video.R.string.cinema_subtitle_choice_saved_for_playback), Toast.LENGTH_SHORT).show();
+                        });
+        if (trackMetadata != null) {
+            int ordinal = 0;
+            for (int n = 0; n < trackMetadata.getSubtitleTrackNb(); n++) {
+                var track = trackMetadata.getSubtitleTrack(n);
+                if (track == null || track.isExternal) continue;
+                final int pickOrd = ordinal++;
+                String trackLabel = CinemaSubtitleLabels.formatEmbeddedLabel(this, track);
+                String langCanon = CinemaSubtitleLabels.resolveEmbeddedLanguageCanonical(track.language, track.name);
+                hub.addEmbeddedTrack(trackLabel, langCanon, savedChoice == pickOrd, () -> {
+                    CinemaTrackChoices.embedded(this, video.getFileUri(), pickOrd);
+                    Toast.makeText(this, getString(com.archos.mediacenter.video.R.string.cinema_subtitle_choice_saved_for_playback), Toast.LENGTH_SHORT).show();
+                });
+            }
+        }
+        hub.onSearchOnline(() -> SubtitleSources.search(this, video))
+                .onPickMovieSource(() -> startActivityForResult(
+                        CinemaFileBrowserActivity.subtitlePickerIntent(this, video.getFileUri(), false), 914))
+                .show();
     }
 
-    private void embeddedSubtitles(){
-        if(trackMetadata==null){Toast.makeText(this,getString(com.archos.mediacenter.video.R.string.cinema_file_tracks_are_still_loading),Toast.LENGTH_SHORT).show();return;}
-        java.util.List<String> names=new java.util.ArrayList<>();java.util.List<Integer> ordinals=new java.util.ArrayList<>();
-        names.add(getString(com.archos.mediacenter.video.R.string.cinema_off_cinemadetailsactivity));ordinals.add(-1);names.add(getString(com.archos.mediacenter.video.R.string.cinema_automatic));ordinals.add(-2);int ordinal=0;
-        for(int n=0;n<trackMetadata.getSubtitleTrackNb();n++){var track=trackMetadata.getSubtitleTrack(n);if(track.isExternal)continue;names.add((ordinal+1)+" · "+join(language(track.language),track.name));ordinals.add(ordinal++);}
-        if(ordinal==0)names.add(getString(com.archos.mediacenter.video.R.string.cinema_no_embedded_subtitles_in_this_file));
-        CinemaUi.dialog(this).setTitle(getString(com.archos.mediacenter.video.R.string.cinema_embedded_subtitles_cinemadetailsactivity)).setItems(names.toArray(new String[0]),(dialog,index)->{if(index>=ordinals.size())return;CinemaTrackChoices.embedded(this,video.getFileUri(),ordinals.get(index));Toast.makeText(this,getString(com.archos.mediacenter.video.R.string.cinema_subtitle_choice_saved_for_playback),Toast.LENGTH_SHORT).show();}).show();
-    }
-    private String language(String code){if(code==null||code.isBlank()||code.equals("und"))return getString(com.archos.mediacenter.video.R.string.cinema_unknown_language);return new Locale(code).getDisplayLanguage(Locale.ENGLISH);}
+    private String language(String code){if(code==null||code.isBlank()||code.equals("und"))return getString(com.archos.mediacenter.video.R.string.cinema_unknown_language);return com.meedx.providers.UnifiedSubtitleConfig.languageDisplay(code, CinemaUi.arabic(this));}
     private String audioLabel(int index){var track=trackMetadata.getAudioTrack(index);return join(language(track.language),join(track.format,track.channels));}
     private int resolvedAudioTrackIndex() {
         if (trackMetadata == null || trackMetadata.getAudioTrackNb() <= 0) return -1;
@@ -317,13 +354,13 @@ public class CinemaDetailsActivity extends LeanbackActivity {
             items.add(prefix + audioLabel(n));
         }
         int priorityRowIndex = items.size();
-        items.add("🌐  " + getString(com.archos.mediacenter.video.R.string.cinema_pref_languages_title)
+        items.add("🌐  " + getString(com.archos.mediacenter.video.R.string.cinema_pref_audio_lang)
                 + "  (" + CinemaPreferredAudio.label(this) + ")");
         CinemaUi.dialog(this)
                 .setTitle(getString(com.archos.mediacenter.video.R.string.cinema_audio_tracks))
                 .setItems(items.toArray(new String[0]), (dialog, index) -> {
                     if (index == priorityRowIndex) {
-                        CinemaLanguagePreferences.showDialog(this, this::renderTechnical);
+                        CinemaPreferredAudio.choose(this, this::renderTechnical);
                         return;
                     }
                     if (index >= 0 && index < count) {

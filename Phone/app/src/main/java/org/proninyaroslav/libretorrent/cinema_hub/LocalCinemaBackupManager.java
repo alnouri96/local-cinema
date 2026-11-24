@@ -186,6 +186,14 @@ public final class LocalCinemaBackupManager {
                 com.meedx.providers.LiveTvPreferences.exportFavoriteCountriesJson(context));
         root.put("live_tv_prefs", liveTvPrefs);
 
+        // Unified Central Subtitle Config (newest snapshot across Phone & TV)
+        JSONObject phoneSubCfg = com.meedx.providers.UnifiedSubtitleConfig.exportSyncJson(context);
+        JSONObject tvSubCfg = tvSource != null ? tvSource.optJSONObject("subtitle_config") : null;
+        JSONObject unifiedSubCfg = (tvSubCfg != null
+                && tvSubCfg.optLong("updated_at", 0L) > phoneSubCfg.optLong("updated_at", 0L))
+                ? tvSubCfg : phoneSubCfg;
+        root.put("subtitle_config", unifiedSubCfg);
+
         // Phone block
         JSONObject phone = new JSONObject();
         phone.put("watch_records", PhoneWatchStore.exportRecentSyncRecords(context, 1500));
@@ -207,6 +215,7 @@ public final class LocalCinemaBackupManager {
             if (tvSource.has("tv_link_options")) tv.put("tv_link_options", tvSource.optJSONObject("tv_link_options"));
             if (tvKeys != null) tv.put("api_keys", tvKeys);
             if (tvSource.has("addons")) tv.put("addons", tvSource.optJSONArray("addons"));
+            if (tvSource.has("subtitle_config")) tv.put("subtitle_config", tvSource.optJSONObject("subtitle_config"));
             if (tvSource.has("watch_records")) tv.put("watch_records", tvSource.optJSONArray("watch_records"));
             root.put("tv", tv);
         }
@@ -242,6 +251,20 @@ public final class LocalCinemaBackupManager {
             if (!restoredCountry.isBlank()) com.meedx.providers.LiveTvPreferences.saveCountry(context, restoredCountry);
             com.meedx.providers.LiveTvPreferences.importFavoriteCountriesJson(
                     context, liveTvPrefs.optJSONArray(com.meedx.providers.LiveTvPreferences.FAVORITE_COUNTRIES_FIELD));
+        }
+
+        // 2c. Restore Central Unified Subtitle Config on Phone
+        JSONObject tvPreCheck = root.optJSONObject("tv");
+        JSONObject restoredSubCfg = root.optJSONObject("subtitle_config");
+        if (restoredSubCfg == null && tvPreCheck != null) {
+            restoredSubCfg = tvPreCheck.optJSONObject("subtitle_config");
+        }
+        if (restoredSubCfg != null) {
+            com.meedx.providers.UnifiedSubtitleConfig.importSyncJson(context, restoredSubCfg, true);
+            context.getSharedPreferences("cinema_subtitles", Context.MODE_PRIVATE).edit()
+                    .putBoolean("dual_subs_enabled", com.meedx.providers.UnifiedSubtitleConfig.dualSubtitlesEnabled(context))
+                    .putInt("dual_sub_position", com.meedx.providers.UnifiedSubtitleConfig.dualSubPosition(context))
+                    .apply();
         }
 
         // 3. Restore Phone Watch Records, Watchlist, & Preferences
@@ -307,6 +330,9 @@ public final class LocalCinemaBackupManager {
         JSONArray tvAddons = (tv != null && tv.optJSONArray("addons") != null) ? tv.optJSONArray("addons") : addons;
         if (tvAddons != null) {
             tvRestoreCmd.put("addons", tvAddons);
+        }
+        if (restoredSubCfg != null) {
+            tvRestoreCmd.put("subtitle_config", restoredSubCfg);
         }
         JSONArray tvWatch = (tv != null && tv.optJSONArray("watch_records") != null)
                 ? tv.optJSONArray("watch_records")
@@ -788,6 +814,7 @@ public final class LocalCinemaBackupManager {
         putIfPresent(keys, "trakt_slug", ProviderKeys.get(context, ProviderKeys.TRAKT_SLUG));
         putIfPresent(keys, "subsource_key", ProviderKeys.get(context, ProviderKeys.SUBSOURCE));
         putIfPresent(keys, "opensubtitles_key", ProviderKeys.get(context, ProviderKeys.OPEN_SUBTITLES));
+        putIfPresent(keys, "subdl_key", ProviderKeys.get(context, ProviderKeys.SUBDL));
         putIfPresent(keys, "tmdb_key", ProviderKeys.get(context, ProviderKeys.TMDB));
         putIfPresent(keys, "google_client_id", ProviderKeys.get(context, ProviderKeys.GOOGLE_CLIENT_ID));
         return keys;
@@ -811,6 +838,7 @@ public final class LocalCinemaBackupManager {
             payload.put("trakt_signout", !TraktSyncClient.isConnected(app));
             payload.put("subsource_key", ProviderKeys.get(app, ProviderKeys.SUBSOURCE));
             payload.put("opensubtitles_key", ProviderKeys.get(app, ProviderKeys.OPEN_SUBTITLES));
+            payload.put("subdl_key", ProviderKeys.get(app, ProviderKeys.SUBDL));
             payload.put("tmdb_key", ProviderKeys.get(app, ProviderKeys.TMDB));
             JSONArray addons = StremioAddons.exportJson(app);
             payload.put("addons", addons != null ? addons : new JSONArray());
@@ -823,6 +851,7 @@ public final class LocalCinemaBackupManager {
             payload.put("remember_playback_speed", musicPrefs.getBoolean("pref_remember_video_speed", false));
             SharedPreferences subPrefs = app.getSharedPreferences("cinema_subtitles", Context.MODE_PRIVATE);
             payload.put("dual_sub_position", Math.max(0, Math.min(2, subPrefs.getInt("dual_sub_position", 1))));
+            payload.put("subtitle_config", com.meedx.providers.UnifiedSubtitleConfig.exportSyncJson(app));
         } catch (Exception ignored) {}
         return payload;
     }
@@ -843,6 +872,7 @@ public final class LocalCinemaBackupManager {
         any |= saveKeyIfPresent(context, ProviderKeys.TRAKT_SLUG, keys.optString("trakt_slug", ""));
         any |= saveKeyIfPresent(context, ProviderKeys.SUBSOURCE, keys.optString("subsource_key", ""));
         any |= saveKeyIfPresent(context, ProviderKeys.OPEN_SUBTITLES, keys.optString("opensubtitles_key", ""));
+        any |= saveKeyIfPresent(context, ProviderKeys.SUBDL, keys.optString("subdl_key", ""));
         any |= saveKeyIfPresent(context, ProviderKeys.TMDB, keys.optString("tmdb_key", ""));
         any |= saveKeyIfPresent(context, ProviderKeys.GOOGLE_CLIENT_ID, keys.optString("google_client_id", ""));
         TraktSyncClient.migrateAndCleanCredentials(context);

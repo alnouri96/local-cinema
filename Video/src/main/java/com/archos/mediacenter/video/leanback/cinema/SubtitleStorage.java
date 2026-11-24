@@ -82,14 +82,20 @@ public final class SubtitleStorage extends SQLiteOpenHelper {
         return text.getBytes(StandardCharsets.UTF_8);
     }
     public Saved save(Uri video,Entry entry,long subtitleId) throws Exception {
-        return save(video,entry,subtitleId,()->true);
+        return save(video,entry,subtitleId,"ar","",()->true);
     }
     public Saved save(Uri video,Entry entry,long subtitleId,java.util.function.BooleanSupplier current) throws Exception {
+        return save(video,entry,subtitleId,"ar","",current);
+    }
+    public Saved save(Uri video,Entry entry,long subtitleId,String languageCode,String sourceName,java.util.function.BooleanSupplier current) throws Exception {
         if(!current.getAsBoolean())throw new java.util.concurrent.CancellationException();
         String filename=video.getLastPathSegment();if(filename==null)filename="video";
         int dot=filename.lastIndexOf('.');String stem=dot>0?filename.substring(0,dot):filename;
-        String extension=entry.name.substring(entry.name.lastIndexOf('.')).toLowerCase(Locale.ROOT);
-        String name=stem+".ar"+extension;Uri saved=null;
+        int extDot=entry.name.lastIndexOf('.');
+        String extension=extDot>=0?entry.name.substring(extDot).toLowerCase(Locale.ROOT):".srt";
+        String iso2=com.meedx.providers.UnifiedSubtitleConfig.toIso2(languageCode);
+        if(iso2==null||iso2.isBlank())iso2="ar";
+        String name=stem+"."+iso2+extension;Uri saved=null;
         String scheme=video.getScheme();
         if("file".equals(scheme)||(scheme!=null&&scheme.startsWith("smb"))){
             String path=video.getPath();if(path!=null&&path.contains("/")){
@@ -99,8 +105,10 @@ public final class SubtitleStorage extends SQLiteOpenHelper {
                     Uri target=parent.buildUpon().appendPath(name).build();
                     FileEditor editor=FileEditorFactory.getFileEditorForUrl(target,context);
                     if(editor.exists()){
-                        // Preserve existing subtitles; create a distinct file rather than overwrite.
-                        target=parent.buildUpon().appendPath(stem+".subsource-"+subtitleId+"-"+UUID.randomUUID()+".ar"+extension).build();
+                        String tag = (sourceName != null && !sourceName.isBlank())
+                                ? sourceName.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "")
+                                : "sub";
+                        target=parent.buildUpon().appendPath(stem+"."+tag+"-"+subtitleId+"-"+UUID.randomUUID()+"."+iso2+extension).build();
                         editor=FileEditorFactory.getFileEditorForUrl(target,context);
                         if(editor.exists())throw new IOException("Target already exists");
                     }
@@ -119,12 +127,13 @@ public final class SubtitleStorage extends SQLiteOpenHelper {
         if(saved==null){
             byte[] digest=MessageDigest.getInstance("SHA-256").digest(video.toString().getBytes(StandardCharsets.UTF_8));StringBuilder key=new StringBuilder();for(byte b:digest)key.append(String.format(Locale.US,"%02x",b));
             File dir=new File(context.getFilesDir(),"subtitles/"+key);if(!dir.isDirectory()&&!dir.mkdirs())throw new IOException("Cannot create subtitle folder");
-            File target=new File(dir,UUID.randomUUID()+".ar"+extension);if(!target.createNewFile())throw new IOException("Target already exists");
+            File target=new File(dir,UUID.randomUUID()+"."+iso2+extension);if(!target.createNewFile())throw new IOException("Target already exists");
             try(FileOutputStream out=new FileOutputStream(target)){out.write(entry.bytes);out.getFD().sync();}
             saved=Uri.fromFile(target);
         }
         // A manual choice or media switch during network I/O must not replace its binding.
         if(!current.getAsBoolean())throw new java.util.concurrent.CancellationException();
+        CinemaSubtitleLabels.recordSavedSource(context, saved, sourceName, languageCode, entry.name, beside);
         bind(video,saved);return new Saved(saved,beside);
     }
 }

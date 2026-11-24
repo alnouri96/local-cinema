@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-
 <com.archos.mediacenter.video.player.tvmenu.TVMenuItem
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:orientation="horizontal"
@@ -12,10 +11,12 @@
     <TextView
         android:id="@+id/info_text"
         android:layout_width="match_parent"
-        android:maxLines="2"
-        android:ellipsize="end"
-        android:background="@null"
         android:layout_height="match_parent"
+        android:singleLine="true"
+        android:ellipsize="marquee"
+        android:marqueeRepeatLimit="marquee_forever"
+        android:scrollHorizontally="true"
+        android:background="@null"
         android:gravity="start|center_vertical"
         android:textDirection="locale"
         android:paddingStart="10dp"
