@@ -155,7 +155,7 @@ public class TorrentEngine {
 
     public void startIfPending() {
         exec.execute(() -> {
-            if (!org.proninyaroslav.libretorrent.cinema_hub.TvHubActivity.isTempTorrentCastActive()) {
+            if (!org.proninyaroslav.libretorrent.cinema_hub.PhoneModuleBridges.tvHub().isTempTorrentCastActive()) {
                 purgeOrphanedTemporaryCasts();
             }
             if (isRunning()) {
@@ -177,7 +177,7 @@ public class TorrentEngine {
 
     public void purgeOrphanedTemporaryCastsAsync() {
         exec.execute(() -> {
-            if (!org.proninyaroslav.libretorrent.cinema_hub.TvHubActivity.isTempTorrentCastActive()) {
+            if (!org.proninyaroslav.libretorrent.cinema_hub.PhoneModuleBridges.tvHub().isTempTorrentCastActive()) {
                 purgeOrphanedTemporaryCasts();
             }
         });

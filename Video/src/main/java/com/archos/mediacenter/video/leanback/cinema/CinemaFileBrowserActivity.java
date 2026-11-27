@@ -54,6 +54,9 @@ import static com.archos.mediacenter.video.leanback.cinema.CinemaUi.*;
  */
 public final class CinemaFileBrowserActivity extends LeanbackActivity {
     public static final String EXTRA_FILTER_MODE = "cinema_filter_mode";
+    public static final String EXTRA_START_URI = "cinema_start_uri";
+    public static final String EXTRA_START_NAME = "cinema_start_name";
+    private boolean startedInFolder;
     public static final String EXTRA_INITIAL_VIDEO_URI = "cinema_initial_video_uri";
     public static final String FILTER_ALL = "all";
     public static final String FILTER_IMAGES_ONLY = "images";
@@ -218,7 +221,7 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
             });
         } else if (!imagesOnly) {
             control(tools, getString(R.string.cinema_network_files), () -> startActivity(new Intent(this,
-                    com.archos.mediacenter.video.leanback.network.NetworkRootActivity.class)));
+                    CinemaNetworkActivity.class)));
         }
 
         // Unified Selection / Clipboard Action Strip (shown when selecting, image-picking, or clipboard active)
@@ -274,6 +277,14 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
             if (movieSourceFolderUri != null) {
                 path.push(new Item(getString(R.string.cinema_sub_pick_movie_source), movieSourceFolderUri, true, 0L, 0L));
             }
+        }
+        String startUri = getIntent().getStringExtra(EXTRA_START_URI);
+        if (!subtitlesOnly && !imagesOnly && startUri != null && !startUri.isBlank()) {
+            Uri parsed = Uri.parse(startUri);
+            String startName = getIntent().getStringExtra(EXTRA_START_NAME);
+            if (startName == null || startName.isBlank()) startName = com.archos.filecorelibrary.FileUtils.getName(parsed);
+            path.push(new Item(startName, parsed, true, 0L, 0L));
+            startedInFolder = true;
         }
         load();
     }
@@ -898,7 +909,15 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
             photoIndex = Math.max(0, photos.indexOf(entry));
             showViewer();
         } else if (entry.isVideo()) {
-            setResultAndFinish(entry.uri());
+            if (startedInFolder) {
+                var video = new com.archos.mediacenter.video.browser.adapters.object.NonIndexedVideo(
+                        entry.uri(), entry.uri(), entry.name(), null);
+                startActivity(new Intent(this, CinemaDetailsActivity.class)
+                        .setData(entry.uri())
+                        .putExtra(com.archos.mediacenter.video.leanback.details.VideoDetailsFragment.EXTRA_VIDEO, video));
+            } else {
+                setResultAndFinish(entry.uri());
+            }
         } else {
             Toast.makeText(this, getString(R.string.cinema_this_file_type_cannot_be_opened), Toast.LENGTH_SHORT).show();
         }
@@ -1029,7 +1048,7 @@ public final class CinemaFileBrowserActivity extends LeanbackActivity {
             selectMode = false;
             adapter.notifyDataSetChanged();
             refreshActionStrip();
-        } else if (!path.isEmpty()) {
+        } else if (!path.isEmpty() && !(startedInFolder && path.size() == 1)) {
             selected = path.pop().uri();
             load();
         } else {

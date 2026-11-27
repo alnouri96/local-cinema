@@ -156,8 +156,8 @@ android {
         // below version tracks the one from F-Droid or universal package when generated with ./gradlew -Puniversal
         // this is overridden when using split apk and normal split apk generation or oneapk amazon generation
         // amazon apk is generated with ./gradlew -Poneapk
-        versionCode = 19
-        versionName = '1.0.0-beta.19'
+        versionCode = 20
+        versionName = "1.0.0"
         //archivesBaseName = "" + applicationId + "-" + versionCode + "-" + versionName
         project.extensions.getByType(BasePluginExtension).archivesName.set("Local-Cinema-" + versionCode + "-" + versionName)
         def archivesNameValue = project.extensions.getByType(BasePluginExtension).archivesName.get()

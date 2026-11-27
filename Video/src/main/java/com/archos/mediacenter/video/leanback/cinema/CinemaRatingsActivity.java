@@ -65,6 +65,8 @@ public final class CinemaRatingsActivity extends LeanbackActivity {
                     io.execute(()->{
                         try{
                             new ApiKeyStore(getApplicationContext(),"omdb").save(java.util.List.of(key));
+                            CinemaLinkServer.notifyTvSettingsMutated(getApplicationContext());
+                            CinemaLinkServer.broadcastApiKeysSync(getApplicationContext());
                             handler.post(()->{if(!isDestroyed())status.setText(label(this,"تم حفظ مفتاح OMDb بأمان. أعد فتح أي فيلم لجلب التقييمات المتاحة.","OMDb key saved securely. Reopen a film to request available ratings."));});
                         }catch(Exception failure){
                             handler.post(()->{if(!isDestroyed())status.setText(label(this,"تعذّر حفظ مفتاح OMDb.","Could not save OMDb key."));});
@@ -78,6 +80,8 @@ public final class CinemaRatingsActivity extends LeanbackActivity {
         remove.setOnClickListener(v->io.execute(()->{
             try{
                 new ApiKeyStore(getApplicationContext(),"omdb").save(java.util.List.of());
+                CinemaLinkServer.notifyTvSettingsMutated(getApplicationContext());
+                CinemaLinkServer.broadcastApiKeysSync(getApplicationContext());
                 handler.post(()->{if(!isDestroyed())status.setText(label(this,"تمت إزالة مفتاح OMDb.","OMDb key removed."));});
             }catch(Exception ignored){}
         }));

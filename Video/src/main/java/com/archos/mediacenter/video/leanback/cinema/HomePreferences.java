@@ -38,21 +38,13 @@ public final class HomePreferences {
         List<Integer> result = new ArrayList<>();
         if (!prefs.getBoolean("cinema_watched_row_v6", false)) {
             prefs.edit()
-                    .putString(ORDER, "1,3,4")
+                    .putString(ORDER, "1")
                     .putBoolean("cinema_row_1", true)
                     .putBoolean("cinema_row_6", false)
-                    .putBoolean("cinema_row_3", true)
-                    .putBoolean("cinema_row_4", true)
                     .putBoolean("cinema_watched_row_v6", true)
                     .apply();
         }
-        for (String token : prefs.getString(ORDER, "1,3,4").split(",")) {
-            try {
-                int id = Integer.parseInt(token);
-                if ((id == 1 || id == 3 || id == 4) && !result.contains(id)) result.add(id);
-            } catch (NumberFormatException ignored) {}
-        }
-        for (int id : new int[]{1, 3, 4}) if (!result.contains(id)) result.add(id);
+        result.add(1);
         return result;
     }
 
@@ -151,18 +143,14 @@ public final class HomePreferences {
     }
 
     /**
-     * Returns the default list of available section keys for settings UI, preserving the current
-     * Home Screen default layout (Continue Watching -> Movies/Series or Library Folders -> Trailers).
+     * Returns the default list of available section keys for settings UI, locked strictly to
+     * Continue Watching + indexed library folder names (`lib:<FolderName>`) + Trailer strips.
+     * Legacy auto-grouped `Movies` / `Shows` (`row:3` / `row:4`) rows are never emitted.
      */
     public static List<String> defaultAvailableKeys(SharedPreferences prefs) {
         List<String> keys = new ArrayList<>();
-        boolean hasNonMobile = hasNonMobileLibrary(prefs);
         List<String> libs = knownLibrarySections(prefs);
         keys.add(KEY_CONTINUE);
-        if (!hasNonMobile) {
-            keys.add(KEY_RECENT_MOVIES);
-            keys.add(KEY_RECENT_SHOWS);
-        }
         for (String lib : libs) {
             String lk = libSectionKey(lib);
             if (!keys.contains(lk)) keys.add(lk);
@@ -175,11 +163,17 @@ public final class HomePreferences {
 
     /**
      * Resolves persisted section priority order across all currently available sections.
-     * Preserves exact default ordering when untouched; never drops newly added folders or sections.
+     * Preserves exact default ordering when untouched; never drops newly added folders or sections,
+     * and filters out deprecated auto-grouped `row:2` / `row:3` / `row:4` / `row:6` keys.
      */
     public static List<String> sectionOrder(SharedPreferences prefs, List<String> availableKeys) {
         List<String> result = new ArrayList<>();
-        Set<String> availableSet = new LinkedHashSet<>(availableKeys);
+        Set<String> availableSet = new LinkedHashSet<>();
+        for (String k : availableKeys) {
+            if (k == null || k.isBlank()) continue;
+            if (k.startsWith("row:") && !KEY_CONTINUE.equals(k)) continue;
+            availableSet.add(k);
+        }
         String raw = prefs.getString(SECTION_ORDER, null);
         if (raw != null && !raw.isBlank()) {
             try {
@@ -191,16 +185,10 @@ public final class HomePreferences {
                     }
                 }
             } catch (Exception ignored) {}
-        } else {
-            // Migrate legacy integer core order (1,3,4) cleanly before appending remaining defaults.
-            for (int id : order(prefs)) {
-                String k = coreSectionKey(id);
-                if (availableSet.contains(k) && !result.contains(k)) {
-                    result.add(k);
-                }
-            }
+        } else if (availableSet.contains(KEY_CONTINUE)) {
+            result.add(KEY_CONTINUE);
         }
-        for (String k : availableKeys) {
+        for (String k : availableSet) {
             if (!result.contains(k)) result.add(k);
         }
         return result;
@@ -208,31 +196,19 @@ public final class HomePreferences {
 
     public static void saveSectionOrder(SharedPreferences prefs, List<String> orderedKeys) {
         JSONArray arr = new JSONArray();
-        List<Integer> coreIds = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
         if (orderedKeys != null) {
             for (String k : orderedKeys) {
-                if (k == null || k.isBlank() || !seen.add(k)) continue;
+                if (k == null || k.isBlank()) continue;
+                if (k.startsWith("row:") && !KEY_CONTINUE.equals(k)) continue;
+                if (!seen.add(k)) continue;
                 arr.put(k);
-                if (k.startsWith("row:")) {
-                    try {
-                        int id = Integer.parseInt(k.substring(4));
-                        if ((id == 1 || id == 3 || id == 4) && !coreIds.contains(id)) coreIds.add(id);
-                    } catch (NumberFormatException ignored) {}
-                }
             }
         }
-        SharedPreferences.Editor ed = prefs.edit().putString(SECTION_ORDER, arr.toString());
-        if (!coreIds.isEmpty()) {
-            for (int id : new int[]{1, 3, 4}) if (!coreIds.contains(id)) coreIds.add(id);
-            StringBuilder s = new StringBuilder();
-            for (int id : coreIds) {
-                if (s.length() > 0) s.append(',');
-                s.append(id);
-            }
-            ed.putString(ORDER, s.toString());
-        }
-        ed.apply();
+        prefs.edit()
+                .putString(SECTION_ORDER, arr.toString())
+                .putString(ORDER, "1")
+                .apply();
     }
 
     public static String layoutSignature(SharedPreferences prefs) {

@@ -59,12 +59,12 @@ public final class CinemaBrowser {
             new java.util.HashMap<>();
 
     final Context context;
+    private android.app.Activity hostActivity;
     private FrameLayout host;
     private View upstream;
     private Consumer<Uri> addTorrent;
     final SharedPreferences settings;
     MaterialButton videoList;
-    private Runnable openFeeds = () -> {};
     private final BrowserDownloadManager downloadManager;
     private final Runnable downloadListener = this::refreshDownloadsState;
     com.google.android.material.bottomsheet.BottomSheetDialog downloadsDialog;
@@ -79,7 +79,15 @@ public final class CinemaBrowser {
     private android.widget.ProgressBar progress;
     private LinearLayout recent;
     private LinearLayout siteGrid;
+    private LinearLayout topSearchBar;
     private LinearLayout navigationBar;
+    private android.widget.PopupWindow moreMenuPopup;
+    private boolean inFullScreen;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final java.util.Set<GeckoSession> killedSessions =
+            java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+    private final java.util.Set<GeckoSession> pendingExternalOpenSessions =
+            java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
     private static final java.util.Set<java.lang.ref.WeakReference<CinemaBrowser>> ACTIVE_INSTANCES =
             java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private final android.content.SharedPreferences.OnSharedPreferenceChangeListener prefsListener =
@@ -111,19 +119,68 @@ public final class CinemaBrowser {
     private AlertDialog blockerPopup;
     private boolean showing;
     private int tabIndex;
+    private String lastInterceptedStremioUrl = "";
+    private long lastInterceptedStremioAtMs = 0L;
     private final CinemaBrowserSettingsSheet settingsSheet = new CinemaBrowserSettingsSheet(this);
     private final CinemaBrowserMediaBridge mediaBridge = new CinemaBrowserMediaBridge(this);
 
     public CinemaBrowser(FrameLayout host, View upstream, Consumer<Uri> addTorrent, Runnable pickExtension) {
-        this.context = host.getContext();
+        this.hostActivity = resolveHostActivity(host.getContext());
+        this.context = createDarkBrowserContext(host.getContext());
         this.host = host;
         this.upstream = upstream;
         this.addTorrent = addTorrent;
         this.pickExtension = pickExtension;
-        settings = context.getSharedPreferences("cinema_browser", Context.MODE_PRIVATE);
+        settings = this.context.getSharedPreferences("cinema_browser", Context.MODE_PRIVATE);
         downloadManager = BrowserDownloadManager.get(this.context);
         settings.registerOnSharedPreferenceChangeListener(prefsListener);
         ACTIVE_INSTANCES.add(new java.lang.ref.WeakReference<>(this));
+    }
+
+    private static android.app.Activity resolveHostActivity(Context ctx) {
+        Context cur = ctx;
+        while (cur instanceof android.content.ContextWrapper cw) {
+            if (cur instanceof android.app.Activity act) return act;
+            cur = cw.getBaseContext();
+        }
+        return null;
+    }
+
+    static Context createDarkBrowserContext(Context base) {
+        var darkConfig = new android.content.res.Configuration(base.getResources().getConfiguration());
+        darkConfig.uiMode = (darkConfig.uiMode & ~android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+                | android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        var wrapper = new androidx.appcompat.view.ContextThemeWrapper(
+                base, org.proninyaroslav.libretorrent.R.style.AppTheme);
+        wrapper.applyOverrideConfiguration(darkConfig);
+        return wrapper;
+    }
+
+    static AlertDialog styleDarkDialog(AlertDialog dialog) {
+        if (dialog == null) return null;
+        float d = dialog.getContext().getResources().getDisplayMetrics().density;
+        var bg = new android.graphics.drawable.GradientDrawable();
+        bg.setColor(0xff171717);
+        bg.setCornerRadius(Math.round(20 * d));
+        bg.setStroke(Math.max(1, Math.round(d)), 0x44e5a93b);
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(bg);
+        }
+        var pos = dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE);
+        if (pos != null) pos.setTextColor(0xffe5a93b);
+        var neu = dialog.getButton(android.content.DialogInterface.BUTTON_NEUTRAL);
+        if (neu != null) neu.setTextColor(0xffe5a93b);
+        var neg = dialog.getButton(android.content.DialogInterface.BUTTON_NEGATIVE);
+        if (neg != null) neg.setTextColor(0xffd4d4d8);
+        return dialog;
+    }
+
+    static void applyDarkWebViewSettings(android.webkit.WebView webView) {
+        if (webView == null) return;
+        webView.setBackgroundColor(0xff171717);
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            webView.getSettings().setAlgorithmicDarkeningAllowed(true);
+        }
     }
 
     public static void notifyBookmarksUpdated() {
@@ -150,10 +207,72 @@ public final class CinemaBrowser {
         updateBookmarkStar();
     }
 
-    public void setOpenFeedsAction(Runnable action) { openFeeds = action; }
+    public static void registerModulePort() {
+        PhoneModuleBridges.registerBrowser(new PhoneModuleBridges.BrowserModulePort() {
+            @Override
+            public String ensureRuntimeConfigFile(Context context) {
+                return ensureGeckoConfigFile(context);
+            }
+
+            @Override
+            public void clearBrowserCacheOnly() {
+                CinemaBrowser.clearBrowserCacheOnly();
+            }
+
+            @Override
+            public void purgeOrphanedDownloadStaging(Context context) {
+                if (context != null) {
+                    BrowserDownloadManager.get(context).purgeOrphanedStagingFiles();
+                }
+            }
+
+            @Override
+            public long computeOrphanedDownloadStagingBytes(Context context) {
+                return context != null ? BrowserDownloadManager.get(context).computeOrphanedStagingBytes() : 0L;
+            }
+
+            @Override
+            public void notifyBookmarksUpdated() {
+                CinemaBrowser.notifyBookmarksUpdated();
+            }
+
+            @Override
+            public java.io.File fetchTorrentFileWithHeaders(Context context, String url, String referer,
+                                                            String userAgent, String cookie) {
+                return CinemaBrowser.fetchTorrentFileWithHeaders(context, url, referer, userAgent, cookie);
+            }
+        });
+    }
+
+    public static String ensureGeckoConfigFile(Context context) {
+        if (context == null) return null;
+        try {
+            java.io.File cfg = new java.io.File(context.getApplicationContext().getFilesDir(), "geckoview-config.yaml");
+            String yaml = "prefs:\n"
+                    + "  browser.cache.disk.enable: true\n"
+                    + "  browser.cache.disk.capacity: 102400\n"
+                    + "  browser.cache.disk.smart_size.enabled: false\n"
+                    + "  browser.cache.disk.max_entry_size: 20480\n"
+                    + "  browser.cache.offline.capacity: 32768\n"
+                    + "  media.cache_size: 32768\n"
+                    + "  ui.systemUsesDarkTheme: 1\n"
+                    + "  layout.css.prefers-color-scheme.content-override: 0\n"
+                    + "  toolkit.telemetry.enabled: false\n"
+                    + "  datareporting.healthreport.uploadEnabled: false\n";
+            byte[] wanted = yaml.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            if (!cfg.isFile() || cfg.length() != wanted.length) {
+                try (java.io.FileOutputStream out = new java.io.FileOutputStream(cfg, false)) {
+                    out.write(wanted);
+                    out.flush();
+                }
+            }
+            return cfg.getAbsolutePath();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
 
     public void detachHost() {
-        openFeeds = () -> {};
         hide();
         if (page != null && page.getParent() instanceof android.view.ViewGroup parent) {
             parent.removeView(page);
@@ -163,11 +282,15 @@ public final class CinemaBrowser {
     public void reattachHost(FrameLayout newHost, View newUpstream,
                              Consumer<Uri> newAddTorrent, Runnable newPickExtension) {
         if (newHost == null || newUpstream == null) return;
+        this.hostActivity = resolveHostActivity(newHost.getContext());
         this.host = newHost;
         this.upstream = newUpstream;
         this.addTorrent = newAddTorrent;
         this.pickExtension = newPickExtension;
         this.extensions = null;
+        if (browser != null && hostActivity != null) {
+            browser.setActivityContextDelegate(() -> hostActivity);
+        }
         if (page != null) {
             if (page.getParent() instanceof android.view.ViewGroup parent && parent != newHost) {
                 parent.removeView(page);
@@ -178,17 +301,24 @@ public final class CinemaBrowser {
             page.setVisibility(showing ? View.VISIBLE : View.GONE);
             newUpstream.setVisibility(showing ? View.INVISIBLE : View.VISIBLE);
             androidx.core.view.ViewCompat.requestApplyInsets(page);
+            if (showing) resumeBrowserRendering();
         }
     }
 
     public void home() {
         if (!showing) return;
+        if (inFullScreen) applyFullScreenUi(false);
         if (homeTab == null) homeTab = newBookmarkedTab();
         activate(tabs.indexOf(homeTab));
     }
 
     public boolean goBack() {
         if (active == null) return false;
+        if (inFullScreen) {
+            try { active.exitFullScreen(); } catch (Throwable ignored) {}
+            applyFullScreenUi(false);
+            return true;
+        }
         if ((navigation.getOrDefault(active, 0) & 1) != 0) {
             active.goBack();
             return true;
@@ -243,7 +373,7 @@ public final class CinemaBrowser {
     }
 
     private void showBrowserMenu() {
-        new AlertDialog.Builder(context).setTitle(context.getString(org.proninyaroslav.libretorrent.R.string.cinema_browser))
+        styleDarkDialog(new AlertDialog.Builder(context).setTitle(context.getString(org.proninyaroslav.libretorrent.R.string.cinema_browser))
                 .setItems(new String[]{context.getString(org.proninyaroslav.libretorrent.R.string.cinema_bookmarks), context.getString(org.proninyaroslav.libretorrent.R.string.cinema_history), "Protection", context.getString(org.proninyaroslav.libretorrent.R.string.cinema_reload)}, (dialog, index) -> {
                     switch (index) {
                         case 0 -> home();
@@ -251,7 +381,7 @@ public final class CinemaBrowser {
                         case 2 -> showSettings();
                         case 3 -> active.reload();
                     }
-                }).show();
+                }).show());
     }
 
     GeckoRuntime runtime() {
@@ -262,51 +392,265 @@ public final class CinemaBrowser {
         mediaBridge.showVideos();
     }
 
-    private void showMore() {
-        var menu = new androidx.appcompat.widget.PopupMenu(context, more);
-        int activeDl = downloadManager.activeCount();
-        String dlLabel = "⬇ " + l("التحميلات", "Downloads") + (activeDl > 0 ? " (" + activeDl + ")" : "");
-        menuItem(menu, dlLabel, this::showDownloadsSheet);
-        menuItem(menu, "⟳ " + l("إعادة فحص الفيديو", "Rescan for video"), () -> {
-            if (active == homeTab) {
-                CinemaSnackBanner.show(context, l("افتح صفحة تحتوي على فيديو أولاً", "Open a video page first"));
-                return;
-            }
-            mediaBridge.rescanActiveSession();
-            CinemaSnackBanner.show(context, l("جاري إعادة فحص الصفحة والروابط...", "Rescanning page & frames for video..."));
-        });
-        menuItem(menu, context.getString(org.proninyaroslav.libretorrent.R.string.cinema_reload), () -> active.reload());
-        menuItem(menu, context.getString(org.proninyaroslav.libretorrent.R.string.cinema_bookmarks), this::home);
-        menuItem(menu, context.getString(org.proninyaroslav.libretorrent.R.string.cinema_history), this::showHistory);
-        menuItem(menu, context.getString(org.proninyaroslav.libretorrent.R.string.cinema_share_page), this::sharePage);
-        menu.getMenu().add(context.getString(org.proninyaroslav.libretorrent.R.string.cinema_desktop_mode)).setCheckable(true)
-                .setChecked(settings.getBoolean("desktop", false))
-                .setOnMenuItemClickListener(item -> {
-                    setDesktopMode(!item.isChecked());
-                    return true;
-                });
-        menu.getMenu().add(context.getString(org.proninyaroslav.libretorrent.R.string.cinema_search_all_torrents)).setOnMenuItemClickListener(item -> {
-            var query = new EditText(context);
-            query.setSingleLine(true);
-            query.setHint(org.proninyaroslav.libretorrent.R.string.cinema_browser_search_knaben);
-            new AlertDialog.Builder(context).setTitle(context.getString(org.proninyaroslav.libretorrent.R.string.cinema_search_all_torrents)).setView(query)
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .setPositiveButton(org.proninyaroslav.libretorrent.R.string.cinema_action_search, (dialog, which) -> {
-                        String term = query.getText().toString().trim();
-                        if (!term.isEmpty()) openPage(TORRENT_SEARCH + Uri.encode(term));
-                    }).show();
-            return true;
-        });
-        menuItem(menu, context.getString(org.proninyaroslav.libretorrent.R.string.cinema_extensions), this::showExtensions);
-        menuItem(menu, context.getString(org.proninyaroslav.libretorrent.R.string.cinema_browser_settings), this::showSettings);
-        menu.show();
+    private void dismissMoreMenu() {
+        if (moreMenuPopup != null && moreMenuPopup.isShowing()) {
+            moreMenuPopup.dismiss();
+        }
+        moreMenuPopup = null;
     }
 
-    private void menuItem(androidx.appcompat.widget.PopupMenu menu, String label, Runnable action) {
-        menu.getMenu().add(label).setOnMenuItemClickListener(item -> {
-            action.run();
-            return true;
+    private void showTorrentSearchDialog() {
+        var query = new EditText(context);
+        query.setSingleLine(true);
+        query.setTextColor(0xfff4f4f6);
+        query.setHintTextColor(0xff8e8e98);
+        query.setHint(org.proninyaroslav.libretorrent.R.string.cinema_browser_search_knaben);
+        var pad = new LinearLayout(context);
+        pad.setPadding(dp(20), dp(8), dp(20), dp(4));
+        pad.addView(query, new LinearLayout.LayoutParams(-1, -2));
+        styleDarkDialog(new AlertDialog.Builder(context)
+                .setTitle(l("البحث في جميع ملفات التورنت", "Search All Torrents"))
+                .setView(pad)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(org.proninyaroslav.libretorrent.R.string.cinema_action_search, (dialog, which) -> {
+                    String term = query.getText().toString().trim();
+                    if (!term.isEmpty()) openPage(TORRENT_SEARCH + Uri.encode(term));
+                }).show());
+    }
+
+    private void showMore() {
+        if (moreMenuPopup != null && moreMenuPopup.isShowing()) {
+            moreMenuPopup.dismiss();
+            return;
+        }
+        boolean rtl = isArabic();
+        var cardBg = new android.graphics.drawable.GradientDrawable();
+        cardBg.setColor(0xff171717);
+        cardBg.setCornerRadius(dp(18));
+        cardBg.setStroke(Math.max(1, dp(1)), 0xff2a2a2a);
+
+        var card = new FrameLayout(context);
+        card.setBackground(cardBg);
+        card.setClipToOutline(true);
+        card.setOutlineProvider(android.view.ViewOutlineProvider.BACKGROUND);
+
+        var scroll = new android.widget.ScrollView(context);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+
+        var list = new LinearLayout(context);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+        list.setPadding(dp(6), dp(6), dp(6), dp(6));
+
+        final var popup = new android.widget.PopupWindow(
+                card,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                true);
+        moreMenuPopup = popup;
+        popup.setOutsideTouchable(true);
+        popup.setElevation(dp(18));
+        popup.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
+        popup.setOnDismissListener(() -> {
+            if (moreMenuPopup == popup) moreMenuPopup = null;
+            resumeBrowserRendering();
         });
+
+        // 1. Reload
+        list.addView(buildMoreMenuRow(popup,
+                org.proninyaroslav.libretorrent.R.drawable.ic_browser_menu_reload,
+                l("إعادة تحميل", "Reload"),
+                null,
+                () -> {
+                    if (active == homeTab) {
+                        renderSites(true);
+                        renderRecent(true);
+                    } else if (active != null) {
+                        reopenSessionIfClosed(active);
+                        if (active.isOpen()) active.reload();
+                    }
+                }));
+
+        // 2. Rescan Video
+        list.addView(buildMoreMenuRow(popup,
+                org.proninyaroslav.libretorrent.R.drawable.ic_browser_menu_rescan_video,
+                l("إعادة فحص الفيديو", "Rescan Video"),
+                null,
+                () -> {
+                    if (active == homeTab) {
+                        CinemaSnackBanner.show(context, l("افتح صفحة تحتوي على فيديو أولاً", "Open a video page first"));
+                        return;
+                    }
+                    mediaBridge.rescanActiveSession();
+                    CinemaSnackBanner.show(context, l("جاري إعادة فحص الصفحة والروابط...", "Rescanning page & frames for video..."));
+                }));
+
+        // 3. Downloads
+        int activeDl = downloadManager.activeCount();
+        View dlBadge = null;
+        if (activeDl > 0) {
+            var badgeTv = new android.widget.TextView(context);
+            badgeTv.setText(Integer.toString(activeDl));
+            badgeTv.setTextSize(11.5f);
+            badgeTv.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            badgeTv.setTextColor(0xff171717);
+            badgeTv.setGravity(android.view.Gravity.CENTER);
+            badgeTv.setPadding(dp(8), dp(2), dp(8), dp(2));
+            badgeTv.setBackground(surface(0xffe5a93b, 10));
+            dlBadge = badgeTv;
+        }
+        list.addView(buildMoreMenuRow(popup,
+                org.proninyaroslav.libretorrent.R.drawable.ic_cinema_dl,
+                l("التحميلات", "Downloads"),
+                dlBadge,
+                this::showDownloadsSheet));
+
+        list.addView(buildMoreMenuDivider());
+
+        // 4. Bookmarks
+        list.addView(buildMoreMenuRow(popup,
+                org.proninyaroslav.libretorrent.R.drawable.ic_browser_menu_bookmarks,
+                l("المفضلة", "Bookmarks"),
+                null,
+                this::home));
+
+        // 5. History
+        list.addView(buildMoreMenuRow(popup,
+                org.proninyaroslav.libretorrent.R.drawable.ic_browser_menu_history,
+                l("السجل", "History"),
+                null,
+                this::showHistory));
+
+        list.addView(buildMoreMenuDivider());
+
+        // 6. Desktop Mode (with sleek gold switch)
+        boolean desktopOn = isDesktopMode();
+        var desktopSwitch = new com.google.android.material.materialswitch.MaterialSwitch(context);
+        desktopSwitch.setChecked(desktopOn);
+        desktopSwitch.setClickable(false);
+        desktopSwitch.setFocusable(false);
+        desktopSwitch.setThumbTintList(android.content.res.ColorStateList.valueOf(desktopOn ? 0xff171717 : 0xffd4d4d8));
+        desktopSwitch.setTrackTintList(android.content.res.ColorStateList.valueOf(desktopOn ? 0xffe5a93b : 0xff2e2e34));
+        desktopSwitch.setTrackDecorationTintList(android.content.res.ColorStateList.valueOf(desktopOn ? 0xffe5a93b : 0xff45454d));
+        list.addView(buildMoreMenuRow(popup,
+                org.proninyaroslav.libretorrent.R.drawable.ic_browser_menu_desktop,
+                l("وضع سطح المكتب", "Desktop Mode"),
+                desktopSwitch,
+                () -> setDesktopMode(!isDesktopMode())));
+
+        // 7. Share Page
+        list.addView(buildMoreMenuRow(popup,
+                org.proninyaroslav.libretorrent.R.drawable.ic_browser_menu_share,
+                l("مشاركة الصفحة", "Share Page"),
+                null,
+                this::sharePage));
+
+        // 8. Search All Torrents (strictly via PhoneModuleBridges with local fallback)
+        list.addView(buildMoreMenuRow(popup,
+                org.proninyaroslav.libretorrent.R.drawable.ic_browser_menu_torrent_search,
+                l("البحث في جميع ملفات التورنت", "Search All Torrents"),
+                null,
+                () -> {
+                    if (!PhoneModuleBridges.hostShell().openGlobalTorrentSearch(context)) {
+                        showTorrentSearchDialog();
+                    }
+                }));
+
+        list.addView(buildMoreMenuDivider());
+
+        // 9. Extensions
+        list.addView(buildMoreMenuRow(popup,
+                org.proninyaroslav.libretorrent.R.drawable.ic_browser_menu_extensions,
+                l("الإضافات", "Extensions"),
+                null,
+                this::showExtensions));
+
+        // 10. Browser Settings
+        list.addView(buildMoreMenuRow(popup,
+                org.proninyaroslav.libretorrent.R.drawable.ic_browser_menu_settings,
+                l("إعدادات المتصفح", "Browser Settings"),
+                null,
+                this::showSettings));
+
+        scroll.addView(list);
+        card.addView(scroll, new FrameLayout.LayoutParams(-1, -2));
+
+        var dm = context.getResources().getDisplayMetrics();
+        int popupWidth = Math.min(dp(276), dm.widthPixels - dp(24));
+        int[] anchorScreen = new int[2];
+        more.getLocationOnScreen(anchorScreen);
+        int maxHeight = Math.max(dp(240), anchorScreen[1] - dp(36));
+
+        card.measure(
+                View.MeasureSpec.makeMeasureSpec(popupWidth, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(maxHeight, View.MeasureSpec.AT_MOST));
+        int measuredH = Math.min(maxHeight, card.getMeasuredHeight());
+        popup.setWidth(popupWidth);
+        popup.setHeight(measuredH);
+
+        int x = (anchorScreen[0] + more.getWidth() / 2 < dm.widthPixels / 2)
+                ? Math.max(dp(12), anchorScreen[0])
+                : Math.min(dm.widthPixels - dp(12), anchorScreen[0] + more.getWidth()) - popupWidth;
+        int y = Math.max(dp(28), anchorScreen[1] - measuredH - dp(8));
+        popup.showAtLocation(page != null ? page : more, android.view.Gravity.NO_GRAVITY, x, y);
+    }
+
+    private View buildMoreMenuDivider() {
+        var div = new View(context);
+        div.setBackgroundColor(0xff26262a);
+        var lp = new LinearLayout.LayoutParams(-1, Math.max(1, dp(1)));
+        lp.setMargins(dp(10), dp(4), dp(10), dp(4));
+        div.setLayoutParams(lp);
+        return div;
+    }
+
+    private LinearLayout buildMoreMenuRow(android.widget.PopupWindow popup,
+                                          int iconRes,
+                                          String labelText,
+                                          View trailing,
+                                          Runnable onSelect) {
+        var row = new LinearLayout(context);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(46));
+        row.setPaddingRelative(dp(12), dp(8), dp(12), dp(8));
+        row.setClickable(true);
+        row.setFocusable(true);
+        row.setBackground(new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(0x2ce5a93b),
+                null,
+                surface(0xffffffff, 12)));
+
+        var icon = new android.widget.ImageView(context);
+        icon.setImageResource(iconRes);
+        icon.setImageTintList(android.content.res.ColorStateList.valueOf(0xffe5a93b));
+        icon.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+        row.addView(icon, new LinearLayout.LayoutParams(dp(20), dp(20)));
+
+        var label = new android.widget.TextView(context);
+        label.setText(labelText);
+        label.setTextSize(14f);
+        label.setTextColor(0xfff4f4f6);
+        label.setSingleLine(true);
+        label.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        label.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
+        var labelLp = new LinearLayout.LayoutParams(0, -2, 1f);
+        labelLp.setMarginStart(dp(12));
+        if (trailing != null) {
+            labelLp.setMarginEnd(dp(8));
+        }
+        row.addView(label, labelLp);
+
+        if (trailing != null) {
+            row.addView(trailing, new LinearLayout.LayoutParams(-2, -2));
+        }
+
+        row.setOnClickListener(v -> {
+            popup.dismiss();
+            onSelect.run();
+        });
+        return row;
     }
 
     public boolean isShowing() { return showing; }
@@ -320,6 +664,7 @@ public final class CinemaBrowser {
     }
 
     public void onHostPaused() {
+        dismissMoreMenu();
         if (newWindowPrompt != null) newWindowPrompt.dismiss();
         if (active != null) {
             mediaBridge.pauseIfBackgroundNotAllowed(active);
@@ -344,6 +689,8 @@ public final class CinemaBrowser {
     public void hide() {
         if (!showing) return;
         showing = false;
+        dismissMoreMenu();
+        if (inFullScreen) applyFullScreenUi(false);
         if (newWindowPrompt != null) newWindowPrompt.dismiss();
         mediaBridge.pauseIfBackgroundNotAllowed(active);
         upstream.setVisibility(View.VISIBLE);
@@ -355,19 +702,105 @@ public final class CinemaBrowser {
         if (browser != null) browser.releaseSession();
     }
 
-    private void resumeBrowserRendering() {
-        GeckoView view = browser;
-        if (view == null) return;
-        view.postOnAnimation(() -> {
-            if (browser != view || !view.isAttachedToWindow() || !view.isShown()
-                    || active == null || view.getSession() != active
-                    || (bookmarkPage != null && bookmarkPage.isShown())) return;
-            active.setActive(true);
-            view.invalidate();
+    private void applyFullScreenUi(boolean full) {
+        inFullScreen = full;
+        if (topSearchBar != null) topSearchBar.setVisibility(full ? View.GONE : View.VISIBLE);
+        if (navigationBar != null) navigationBar.setVisibility(full ? View.GONE : View.VISIBLE);
+        if (full && progress != null) progress.setVisibility(View.INVISIBLE);
+        if (full) dismissMoreMenu();
+        if (hostActivity != null && hostActivity.getWindow() != null) {
+            var controller = androidx.core.view.WindowCompat.getInsetsController(
+                    hostActivity.getWindow(), hostActivity.getWindow().getDecorView());
+            if (controller != null) {
+                if (full) {
+                    controller.setSystemBarsBehavior(
+                            androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                    controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars());
+                } else {
+                    controller.show(androidx.core.view.WindowInsetsCompat.Type.systemBars());
+                }
+            }
+        }
+        if (page != null) androidx.core.view.ViewCompat.requestApplyInsets(page);
+        resumeBrowserRendering();
+    }
+
+    private void reopenSessionIfClosed(GeckoSession session) {
+        if (session == null || runtime == null || session.isOpen()) return;
+        if (pendingExternalOpenSessions.contains(session)) return;
+        if (!killedSessions.remove(session)) return;
+        try {
+            session.open(runtime);
+            if (session == homeTab) return;
+            String savedState = tabStates.get(session);
+            if (savedState != null && !savedState.isBlank()) {
+                var restored = GeckoSession.SessionState.fromString(savedState);
+                if (restored != null) {
+                    session.restoreState(restored);
+                    return;
+                }
+            }
+            String url = locations.get(session);
+            if (url != null && !url.isBlank() && isWebPage(url)) {
+                session.loadUri(url);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private void recoverKilledSession(GeckoSession session) {
+        if (session != null) {
+            killedSessions.add(session);
+        }
+        mainHandler.post(() -> {
+            if (!tabs.contains(session) || runtime == null) return;
+            reopenSessionIfClosed(session);
+            if (showing && session == active && session != homeTab && browser != null) {
+                try { browser.releaseSession(); } catch (Throwable ignored) {}
+                try { browser.setSession(session); } catch (Throwable ignored) {}
+                resumeBrowserRendering();
+            }
         });
     }
 
+    private final Runnable repaintBrowserRunnable = new Runnable() {
+        @Override
+        public void run() {
+            GeckoView view = browser;
+            if (!showing || view == null || !view.isAttachedToWindow() || !view.isShown()
+                    || active == null || active == homeTab
+                    || (bookmarkPage != null && bookmarkPage.isShown())) return;
+            reopenSessionIfClosed(active);
+            if (view.getSession() != active) {
+                try { view.setSession(active); } catch (Throwable ignored) {}
+            }
+            if (active.isOpen()) {
+                try { active.setActive(true); } catch (Throwable ignored) {}
+                if (runtime != null) {
+                    try { runtime.getWebExtensionController().setTabActive(active, true); } catch (Throwable ignored) {}
+                }
+            }
+            if (view.getWidth() <= 0 || view.getHeight() <= 0) {
+                view.requestLayout();
+            }
+            view.postInvalidateOnAnimation();
+        }
+    };
+
+    void resumeBrowserRendering() {
+        GeckoView view = browser;
+        if (!showing || view == null || active == null || active == homeTab) return;
+        reopenSessionIfClosed(active);
+        if (view.getSession() != active) {
+            try { view.setSession(active); } catch (Throwable ignored) {}
+        }
+        mainHandler.removeCallbacks(repaintBrowserRunnable);
+        view.removeCallbacks(repaintBrowserRunnable);
+        view.postOnAnimation(repaintBrowserRunnable);
+        mainHandler.postDelayed(repaintBrowserRunnable, 140L);
+    }
+
     public void dispose() {
+        dismissMoreMenu();
         downloadManager.removeListener(downloadListener);
         if (downloadsDialog != null && downloadsDialog.isShowing()) downloadsDialog.dismiss();
         if (blockerPopup != null) blockerPopup.dismiss();
@@ -382,12 +815,16 @@ public final class CinemaBrowser {
             blocker.setTabDelegate(null);
         }
         if (browser != null) browser.releaseSession();
-        for (var tab : tabs) tab.close();
+        for (var tab : tabs) {
+            if (tab.isOpen()) tab.close();
+        }
         tabs.clear();
         privateTabs.clear();
         tabStates.clear();
         locations.clear();
         navigation.clear();
+        killedSessions.clear();
+        pendingExternalOpenSessions.clear();
         mediaBridge.clearAllOnDispose();
         renderedSitesSignature = "";
         renderedRecentSignature = "";
@@ -422,9 +859,10 @@ public final class CinemaBrowser {
                     .doubleTapZoomingEnabled(true)
                     .inputAutoZoomEnabled(false)
                     .loginAutofillEnabled(true)
+                    .preferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_DARK)
                     .allowInsecureConnections(settings.getBoolean("https", true)
                             ? GeckoRuntimeSettings.HTTPS_ONLY : GeckoRuntimeSettings.ALLOW_ALL);
-            String cfgPath = CinemaCacheManager.ensureGeckoConfigFile(context);
+            String cfgPath = ensureGeckoConfigFile(context);
             if (cfgPath != null && !cfgPath.isBlank()) {
                 builder.configFilePath(cfgPath);
             }
@@ -446,7 +884,12 @@ public final class CinemaBrowser {
         ensureBlocker();
         page = new LinearLayout(context);
         page.setOrientation(LinearLayout.VERTICAL);
+        page.setBackgroundColor(0xff171717);
         androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(page, (view, insets) -> {
+            if (inFullScreen) {
+                view.setPadding(0, 0, 0, 0);
+                return insets;
+            }
             var bars = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.statusBars()
                     | androidx.core.view.WindowInsetsCompat.Type.displayCutout());
             view.setPadding(bars.left, bars.top, bars.right, 0);
@@ -466,8 +909,10 @@ public final class CinemaBrowser {
         address.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
         address.setGravity(android.view.Gravity.START | android.view.Gravity.CENTER_VERTICAL);
         address.setBackground(null);
-        address.setPadding(dp(14), 0, dp(8), 0);
+        address.setPadding(dp(16), 0, dp(16), 0);
         address.setTextSize(14f);
+        address.setTextColor(0xfff4f4f6);
+        address.setHintTextColor(0xff8e8e98);
         address.setSingleLine();
         address.setHint(context.getString(org.proninyaroslav.libretorrent.R.string.cinema_type_an_address_or_search));
         address.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
@@ -482,27 +927,30 @@ public final class CinemaBrowser {
             return true;
         });
         var search = new LinearLayout(context);
+        topSearchBar = search;
+        search.setBackgroundColor(0xff171717);
         search.setGravity(android.view.Gravity.CENTER_VERTICAL);
         var addressBar = new LinearLayout(context);
+        addressBar.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
         addressBar.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
         addressBar.setGravity(android.view.Gravity.CENTER_VERTICAL);
         addressBar.setBackground(surface(0xff252529, 24));
-        addressBar.addView(address, new LinearLayout.LayoutParams(0, -1, 1));
+        var addrLp = new LinearLayout.LayoutParams(0, -1, 1);
+        addressBar.addView(address, addrLp);
         bookmarkStar = new android.widget.TextView(context);
         bookmarkStar.setGravity(android.view.Gravity.CENTER);
-        bookmarkStar.setTextSize(24);
+        bookmarkStar.setTextSize(20);
         var highlight = new android.util.TypedValue();
         if (context.getTheme().resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, highlight, true))
             bookmarkStar.setBackgroundResource(highlight.resourceId);
         bookmarkStar.setVisibility(View.GONE);
         bookmarkStar.setOnClickListener(view -> toggleBookmark());
-        var starSize = new LinearLayout.LayoutParams(dp(36), dp(36));
-        starSize.setMarginEnd(dp(5));
+        var starSize = new LinearLayout.LayoutParams(dp(34), dp(34));
+        starSize.leftMargin = dp(4);
+        starSize.rightMargin = dp(8);
         addressBar.addView(bookmarkStar, starSize);
         search.addView(addressBar, new LinearLayout.LayoutParams(0, dp(44), 1));
         search.setPadding(dp(12), dp(4), dp(12), dp(4));
-        topControl(search, org.proninyaroslav.libretorrent.R.drawable.ic_rss_feed_24px,
-                context.getString(org.proninyaroslav.libretorrent.R.string.cinema_feeds), () -> openFeeds.run());
         videoList = topControl(search, org.proninyaroslav.libretorrent.R.drawable.ic_cinema_cast_play,
                 "Video list", this::showVideos);
         videoList.setEnabled(false);
@@ -553,14 +1001,18 @@ public final class CinemaBrowser {
         browser.setAutofillEnabled(true);
         browser.setFocusable(true);
         browser.setFocusableInTouchMode(true);
-        if (context instanceof android.app.Activity hostActivity) {
+        if (hostActivity != null) {
             browser.setActivityContextDelegate(() -> hostActivity);
         }
+        var browserViewport = new FrameLayout(context);
+        browserViewport.setBackgroundColor(0xff171717);
+        browserViewport.addView(browser, new FrameLayout.LayoutParams(-1, -1));
         var content = new FrameLayout(context);
-        content.addView(browser, new FrameLayout.LayoutParams(-1, -1));
+        content.setBackgroundColor(0xff171717);
+        content.addView(browserViewport, new FrameLayout.LayoutParams(-1, -1));
         page.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
         var scroll = new android.widget.ScrollView(context);
-        scroll.setBackgroundColor(0xff101113);
+        scroll.setBackgroundColor(0xff171717);
         var links = new LinearLayout(context);
         links.setOrientation(LinearLayout.VERTICAL);
         int inset = Math.round(16 * context.getResources().getDisplayMetrics().density);
@@ -581,6 +1033,7 @@ public final class CinemaBrowser {
         content.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
         bookmarkPage = scroll;
         navigationBar = new LinearLayout(context);
+        navigationBar.setBackgroundColor(0xff171717);
         navigationBar.setPadding(dp(8), dp(4), dp(8), dp(4));
         back = browserControl(navigationBar, org.proninyaroslav.libretorrent.R.drawable.ic_cinema_back,
                 context.getString(org.proninyaroslav.libretorrent.R.string.cinema_back), this::goBack);
@@ -634,6 +1087,9 @@ public final class CinemaBrowser {
                 .hideSoftInputFromWindow(address.getWindowToken(), 0);
         page.setFocusableInTouchMode(true);
         page.requestFocus();
+        if (interceptStremioInstallUri(query)) {
+            return;
+        }
         if (query.startsWith("https://") || query.startsWith("http://") || query.startsWith("magnet:?")) {
             if (!routeTorrent(query, false)) openPage(query);
             return;
@@ -647,6 +1103,30 @@ public final class CinemaBrowser {
 
     private GeckoSession newTab(String title, String uri) {
         return newTab(title, uri, false);
+    }
+
+    private boolean interceptStremioInstallUri(String rawUri) {
+        if (rawUri == null || rawUri.isBlank()) return false;
+        String trimmed = rawUri.trim();
+        if (!trimmed.regionMatches(true, 0, "stremio:", 0, 8)
+                && !trimmed.regionMatches(true, 0, "stremios:", 0, 9)) {
+            return false;
+        }
+        String normalizedKey = trimmed;
+        try {
+            normalizedKey = com.meedx.providers.StremioAddons.normalizeManifestUrl(trimmed);
+        } catch (Exception ignored) {}
+        long now = android.os.SystemClock.elapsedRealtime();
+        if ((now - lastInterceptedStremioAtMs) < 1800L
+                && (normalizedKey.equalsIgnoreCase(lastInterceptedStremioUrl) || (now - lastInterceptedStremioAtMs) < 750L)) {
+            return true;
+        }
+        lastInterceptedStremioUrl = normalizedKey;
+        lastInterceptedStremioAtMs = now;
+        Uri destination = Uri.parse(trimmed);
+        new Handler(Looper.getMainLooper()).post(() ->
+                PhoneModuleBridges.tvHub().openStremioAddonInstall(context, destination));
+        return true;
     }
 
     private GeckoSession newTab(String title, String uri, boolean privateMode) {
@@ -670,7 +1150,10 @@ public final class CinemaBrowser {
                 }
                 if (session == active) mediaBridge.updateDiscovery();
                 if (session == active) {
-                    if (!address.hasFocus()) address.setText(url);
+                    if (!address.hasFocus()) {
+                        address.setText(url);
+                        address.scrollTo(0, 0);
+                    }
                     updateBookmarkStar();
                 }
             }
@@ -690,19 +1173,15 @@ public final class CinemaBrowser {
                     return GeckoResult.allow();
                 }
                 if (routeTorrent(request.uri, false)) return GeckoResult.deny();
-                Uri destination = Uri.parse(request.uri);
-                String scheme = destination.getScheme();
-                if ("stremio".equalsIgnoreCase(scheme)) {
-                    if (session == active) {
-                        context.startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW, destination,
-                                context, TvHubActivity.class));
-                    }
+                if (interceptStremioInstallUri(request.uri)) {
                     return GeckoResult.deny();
                 }
+                Uri destination = Uri.parse(request.uri);
+                String scheme = destination.getScheme();
                 String domain = destination.getHost();
                 if (settings.getBoolean("malware", true) && blockedHost(domain)) {
-                    if (session == active) new AlertDialog.Builder(context).setTitle(context.getString(org.proninyaroslav.libretorrent.R.string.cinema_blocked_unsafe_site))
-                            .setMessage(domain).setPositiveButton(android.R.string.ok, null).show();
+                    if (session == active) styleDarkDialog(new AlertDialog.Builder(context).setTitle(context.getString(org.proninyaroslav.libretorrent.R.string.cinema_blocked_unsafe_site))
+                            .setMessage(domain).setPositiveButton(android.R.string.ok, null).show());
                     return GeckoResult.deny();
                 }
                 if ("data".equals(scheme) && request.uri.startsWith("data:text/html")) return GeckoResult.allow();
@@ -718,16 +1197,23 @@ public final class CinemaBrowser {
                     Uri previous = request.triggerUri == null ? null : Uri.parse(request.triggerUri);
                     if (previous != null && !sameSite(previous, destination)) return GeckoResult.deny();
                 }
-                if (!request.isRedirect && session == active && BrowserDownloadManager.isDirectVideoUrl(request.uri, null)) {
+                if (session == active && request.target != TARGET_WINDOW_NEW
+                        && (!request.isRedirect || request.hasUserGesture)
+                        && BrowserDownloadManager.isDirectVideoUrl(request.uri, null)) {
                     int idx = tabs.indexOf(session);
                     String hint = idx >= 0 ? titles.get(idx) : "";
-                    new Handler(Looper.getMainLooper()).post(() -> promptDirectVideoDownload(request.uri, null, -1L, hint));
+                    String ref = locations.getOrDefault(session, "");
+                    new Handler(Looper.getMainLooper()).post(() ->
+                            promptDirectVideoDownload(request.uri, null, -1L, hint, ref, null, null));
                     return GeckoResult.deny();
                 }
                 return GeckoResult.allow();
             }
 
             @Override public GeckoResult<GeckoSession> onNewSession(GeckoSession session, String uri) {
+                if (interceptStremioInstallUri(uri)) {
+                    return GeckoResult.fromValue(null);
+                }
                 boolean approved = approvedWindowSource == session && uri.equals(approvedWindowUrl);
                 if (approved) {
                     approvedWindowSource = null;
@@ -735,14 +1221,23 @@ public final class CinemaBrowser {
                 }
                 if (!approved && settings.getBoolean("popups", true)) return GeckoResult.fromValue(null);
                 var next = newTab(context.getString(org.proninyaroslav.libretorrent.R.string.cinema_new_tab), null, privateTabs.contains(session));
+                pendingExternalOpenSessions.add(next);
                 openerTabs.put(next, session);
-                new Handler(Looper.getMainLooper()).post(() -> activate(tabs.indexOf(next)));
+                mainHandler.post(() -> activate(tabs.indexOf(next)));
                 return GeckoResult.fromValue(next);
             }
 
         });
         tab.setProgressDelegate(new GeckoSession.ProgressDelegate() {
             @Override public void onPageStart(GeckoSession session, String url) {
+                pendingExternalOpenSessions.remove(session);
+                killedSessions.remove(session);
+                if (showing && session == active && session != homeTab && session.isOpen()) {
+                    try { session.setActive(true); } catch (Throwable ignored) {}
+                    if (runtime != null) {
+                        try { runtime.getWebExtensionController().setTabActive(session, true); } catch (Throwable ignored) {}
+                    }
+                }
                 if (url == null || !tabs.contains(session) || session == homeTab || "about:blank".equals(url)) return;
                 mediaBridge.clearSessionDiscoveryState(session);
                 if (session == active) {
@@ -754,7 +1249,7 @@ public final class CinemaBrowser {
             @Override public void onProgressChange(GeckoSession session, int value) {
                 if (session == active) {
                     progress.setProgress(value);
-                    progress.setVisibility(value < 100 ? View.VISIBLE : View.INVISIBLE);
+                    progress.setVisibility(value < 100 && !inFullScreen ? View.VISIBLE : View.INVISIBLE);
                 }
             }
 
@@ -787,6 +1282,31 @@ public final class CinemaBrowser {
                     mediaBridge.onTitleChanged(session, title);
                 }
             }
+
+            @Override public void onFullScreen(GeckoSession session, boolean fullScreen) {
+                mainHandler.post(() -> {
+                    if (session == active) {
+                        applyFullScreenUi(fullScreen);
+                    }
+                });
+            }
+
+            @Override public void onCrash(GeckoSession session) {
+                recoverKilledSession(session);
+            }
+
+            @Override public void onKill(GeckoSession session) {
+                recoverKilledSession(session);
+            }
+
+            @Override public void onFirstComposite(GeckoSession session) {
+                pendingExternalOpenSessions.remove(session);
+                killedSessions.remove(session);
+                if (session == active && browser != null) {
+                    browser.postInvalidateOnAnimation();
+                }
+            }
+
             @Override public void onExternalResponse(GeckoSession session, WebResponse response) {
                 var type = response.headers.get("content-type");
                 var disp = response.headers.get("content-disposition");
@@ -859,35 +1379,50 @@ public final class CinemaBrowser {
 
     private void activate(int index) {
         if (!showing || index < 0 || index >= tabs.size()) return;
+        dismissMoreMenu();
         GeckoSession nextTab = tabs.get(index);
+        if (inFullScreen && active != nextTab) {
+            applyFullScreenUi(false);
+        }
         if (active != null) {
             if (active != nextTab) {
                 mediaBridge.pauseIfBackgroundNotAllowed(active);
-                try { active.setActive(false); } catch (Throwable ignored) {}
+                if (active.isOpen()) {
+                    try { active.setActive(false); } catch (Throwable ignored) {}
+                }
             }
-            runtime.getWebExtensionController().setTabActive(active, false);
+            if (active.isOpen()) {
+                try { runtime.getWebExtensionController().setTabActive(active, false); } catch (Throwable ignored) {}
+            }
         }
         for (var tab : tabs) {
-            if (tab != null && tab != nextTab) {
+            if (tab != null && tab != nextTab && tab.isOpen()) {
                 try { tab.setActive(false); } catch (Throwable ignored) {}
             }
         }
         browser.releaseSession();
         tabIndex = index;
         active = nextTab;
+        boolean home = active == homeTab;
+        reopenSessionIfClosed(active);
         applyDesktopSettingsToTab(nextTab, isDesktopMode());
         browser.setSession(active);
-        boolean home = active == homeTab;
-        try { active.setActive(!home); } catch (Throwable ignored) {}
+        if (active.isOpen()) {
+            try { active.setActive(!home); } catch (Throwable ignored) {}
+        }
         bookmarkPage.setVisibility(home ? View.VISIBLE : View.GONE);
         if (home) {
             page.setFocusableInTouchMode(true);
             page.requestFocus();
         } else {
             browser.requestFocus();
-            mediaBridge.sendZoomToSession(active, getBrowserZoomPercent());
+            if (active.isOpen()) {
+                mediaBridge.sendZoomToSession(active, getBrowserZoomPercent());
+            }
+            resumeBrowserRendering();
         }
         address.setText(locations.getOrDefault(active, ""));
+        address.scrollTo(0, 0);
         updateBookmarkStar();
         progress.setVisibility(View.INVISIBLE);
         updateNavigation(active, 0, false);
@@ -896,7 +1431,9 @@ public final class CinemaBrowser {
             renderSites(false);
             renderRecent(false);
         }
-        runtime.getWebExtensionController().setTabActive(active, true);
+        if (active.isOpen()) {
+            try { runtime.getWebExtensionController().setTabActive(active, true); } catch (Throwable ignored) {}
+        }
         action = null;
         attachAllExtensionDelegates();
         saveTabs();
@@ -1030,8 +1567,12 @@ public final class CinemaBrowser {
 
     private void updateBookmarkStar() {
         String key = active == homeTab ? null : bookmarkKey(locations.get(active));
-        bookmarkStar.setVisibility(key == null ? View.GONE : View.VISIBLE);
-        if (key == null) return;
+        boolean showStar = key != null;
+        bookmarkStar.setVisibility(showStar ? View.VISIBLE : View.GONE);
+        if (address != null) {
+            address.setPadding(dp(16), 0, showStar ? dp(10) : dp(16), 0);
+        }
+        if (!showStar) return;
         boolean saved = sites().stream().anyMatch(site -> key.equals(bookmarkKey(site.url())));
         bookmarkStar.setText(saved ? "★" : "☆");
         bookmarkStar.setTextColor(saved ? 0xffe5b84b : 0xffa1a1aa);
@@ -1211,13 +1752,13 @@ public final class CinemaBrowser {
             SiteFaviconManager.deleteIfUnused(context, removedUrl, remainingKnownSiteUrls(items));
             saveSites(items);
         });
-        new AlertDialog.Builder(context)
+        styleDarkDialog(new AlertDialog.Builder(context)
                 .setTitle(site.name() + "  (#" + (index + 1) + ")")
                 .setItems(labels.toArray(new String[0]), (dialog, choice) -> {
                     if (choice >= 0 && choice < actions.size()) actions.get(choice).run();
                 })
                 .setNegativeButton(android.R.string.cancel, null)
-                .show();
+                .show());
     }
 
     private void showMoveSitePositionDialog(ArrayList<Site> items, int fromIndex) {
@@ -1229,11 +1770,11 @@ public final class CinemaBrowser {
             Site s = items.get(i);
             slots[i] = (i + 1) + ". " + s.name() + (i == fromIndex ? (ar ? " (الحالي)" : " (Current)") : "");
         }
-        new AlertDialog.Builder(context)
+        styleDarkDialog(new AlertDialog.Builder(context)
                 .setTitle(ar ? ("اختر الموضع الجديد لـ " + target.name()) : ("Move \"" + target.name() + "\" to Position"))
                 .setItems(slots, (d, toIndex) -> moveSite(items, fromIndex, toIndex))
                 .setNegativeButton(android.R.string.cancel, null)
-                .show();
+                .show());
     }
 
     private void moveSite(ArrayList<Site> items, int fromIndex, int toIndex) {
@@ -1260,18 +1801,22 @@ public final class CinemaBrowser {
         form.setPadding(dp(20), 0, dp(20), 0);
         var name = new EditText(context);
         name.setSingleLine(true);
+        name.setTextColor(0xfff4f4f6);
+        name.setHintTextColor(0xff8e8e98);
         name.setHint(org.proninyaroslav.libretorrent.R.string.cinema_bookmark_name);
         var url = new EditText(context);
         url.setSingleLine(true);
+        url.setTextColor(0xfff4f4f6);
+        url.setHintTextColor(0xff8e8e98);
         url.setHint(org.proninyaroslav.libretorrent.R.string.cinema_bookmark_url);
         url.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
         url.setText(existing == null ? initialUrl : existing.url());
         if (existing != null) name.setText(existing.name());
         form.addView(name);
         form.addView(url);
-        var dialog = new AlertDialog.Builder(context).setTitle(existing == null ? context.getString(org.proninyaroslav.libretorrent.R.string.cinema_add_site) : "Edit site")
+        var dialog = styleDarkDialog(new AlertDialog.Builder(context).setTitle(existing == null ? context.getString(org.proninyaroslav.libretorrent.R.string.cinema_add_site) : "Edit site")
                 .setView(form).setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton(existing == null ? "Add" : "Save", null).show();
+                .setPositiveButton(existing == null ? "Add" : "Save", null).show());
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             String value = url.getText().toString().trim();
             if (!value.contains("://")) value = "https://" + value;
@@ -1417,6 +1962,7 @@ public final class CinemaBrowser {
         rs.setFontSizeFactor(1.0f);
         rs.setDoubleTapZoomingEnabled(true);
         rs.setInputAutoZoomEnabled(false);
+        rs.setPreferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_DARK);
     }
 
     private void applyDesktopSettingsToTab(GeckoSession tab, boolean enabled) {
@@ -1617,8 +2163,9 @@ public final class CinemaBrowser {
             @Override public GeckoResult<GeckoSession> onNewTab(WebExtension extension,
                     WebExtension.CreateTabDetails details) {
                 var dashboard = makeBackgroundTab(extTitle);
+                pendingExternalOpenSessions.add(dashboard);
                 extensionTabs.add(dashboard);
-                new Handler(Looper.getMainLooper()).post(() -> {
+                mainHandler.post(() -> {
                     if (blockerPopup != null) blockerPopup.dismiss();
                     activate(tabs.indexOf(dashboard));
                 });
@@ -1640,6 +2187,7 @@ public final class CinemaBrowser {
                 var view = new GeckoView(context);
                 view.setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW);
                 var popupLayout = new FrameLayout(context);
+                popupLayout.setBackgroundColor(0xff171717);
                 int height = Math.round(450 * context.getResources().getDisplayMetrics().density);
                 popupLayout.addView(view, new FrameLayout.LayoutParams(-1, height));
                 var dialog = new AlertDialog.Builder(context).setTitle(extTitle).setView(popupLayout)
@@ -1648,10 +2196,11 @@ public final class CinemaBrowser {
                 dialog.setOnDismissListener(window -> {
                     if (blockerPopup == dialog) blockerPopup = null;
                     view.releaseSession();
-                    popup.close();
+                    if (popup.isOpen()) popup.close();
+                    resumeBrowserRendering();
                 });
                 dialog.show();
-                popup.open(runtime);
+                styleDarkDialog(dialog);
                 view.setSession(popup);
                 return GeckoResult.fromValue(popup);
             }
@@ -1758,12 +2307,17 @@ public final class CinemaBrowser {
         mediaBridge.removeSession(tab);
         tabStates.remove(tab);
         openerTabs.remove(tab);
-        tab.close();
+        killedSessions.remove(tab);
+        pendingExternalOpenSessions.remove(tab);
+        if (tab.isOpen()) tab.close();
     }
 
     private void sharePage() {
-        String url = locations.get(active);
-        if (url == null) return;
+        String url = active == homeTab ? null : locations.get(active);
+        if (url == null || url.isBlank()) {
+            CinemaSnackBanner.show(context, l("افتح صفحة ويب أولاً للمشاركة", "Open a web page first to share"));
+            return;
+        }
         var intent = new android.content.Intent(android.content.Intent.ACTION_SEND)
                 .setType("text/plain").putExtra(android.content.Intent.EXTRA_TEXT, url);
         context.startActivity(android.content.Intent.createChooser(intent, null));
@@ -1884,9 +2438,11 @@ public final class CinemaBrowser {
         clear.setBackground(surface(0xff26262a, 24));
         panel.addView(clear, new LinearLayout.LayoutParams(-1, dp(48)));
         renderHistoryRows(rows, clear, dialog);
+        dialog.setOnDismissListener(d -> resumeBrowserRendering());
         dialog.setContentView(panel);
         dialog.getBehavior().setState(com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_EXPANDED);
         dialog.show();
+        if (panel.getParent() instanceof View parent) parent.setBackgroundColor(android.graphics.Color.TRANSPARENT);
     }
 
     private org.json.JSONObject visitDetails() {
@@ -2059,6 +2615,63 @@ public final class CinemaBrowser {
         return isArabic() ? ar : en;
     }
 
+    String getOpenerCleanTitle(GeckoSession tab) {
+        if (tab == null) return "";
+        GeckoSession cur = openerTabs.get(tab);
+        int guard = 0;
+        while (cur != null && cur != tab && guard++ < 4) {
+            String clean = mediaBridge != null ? mediaBridge.getSessionCleanTitle(cur) : "";
+            if (!clean.isBlank()) return clean;
+            String verified = mediaBridge != null ? mediaBridge.getLastVerifiedSessionTitle(cur) : "";
+            if (!verified.isBlank()) return verified;
+            int idx = tabs.indexOf(cur);
+            if (idx >= 0 && idx < titles.size()) {
+                String loc = java.util.Objects.toString(locations.get(cur), "");
+                if (!CinemaBrowserMediaBridge.isCloakedWrapperUrl(loc)) {
+                    String t = CinemaBrowserMediaBridge.cleanVideoTitle(titles.get(idx));
+                    if (!t.isBlank()) return t;
+                }
+            }
+            cur = openerTabs.get(cur);
+        }
+        return "";
+    }
+
+    void enqueueVideoOptionDownload(CinemaBrowserMediaBridge.VideoOption option, String cleanTitle) {
+        if (option == null || option.url() == null || !option.url().startsWith("http")) return;
+        String filename = BrowserDownloadManager.buildStreamFilename(
+                cleanTitle, option.height(), option.adaptive(), option.kind(), option.url());
+        String referer = (option.referer() != null && !option.referer().isBlank()) ? option.referer()
+                : (active != null ? java.util.Objects.toString(locations.get(active), "") : "");
+        String origin = (option.origin() != null && !option.origin().isBlank()) ? option.origin()
+                : CinemaBrowserMediaBridge.deriveOriginFromReferer(referer);
+        String ua = (option.userAgent() != null && !option.userAgent().isBlank()) ? option.userAgent() : "";
+        if (ua.isBlank()) {
+            try {
+                String defUa = android.webkit.WebSettings.getDefaultUserAgent(context);
+                if (defUa != null) ua = defUa;
+            } catch (Throwable ignored) {}
+        }
+        String cookie = option.cookie() == null ? "" : option.cookie();
+        String auth = option.authorization() == null ? "" : option.authorization();
+        var item = downloadManager.enqueueStream(
+                option.url(),
+                option.audioUrl(),
+                option.kind(),
+                option.height(),
+                filename,
+                option.sizeBytes() > 0 ? option.sizeBytes() : -1L,
+                referer,
+                origin,
+                ua,
+                cookie,
+                auth);
+        CinemaSnackBanner.show(context,
+                l("بدأ التحميل إلى Local Cinema/Download: ", "Downloading to Local Cinema/Download: ") + item.filename,
+                l("التحميلات", "Downloads"),
+                this::showDownloadsSheet);
+    }
+
     private void refreshDownloadsState() {
         if (downloadsDialog != null && downloadsDialog.isShowing() && downloadsContainer != null) {
             renderDownloadsContainer();
@@ -2077,8 +2690,8 @@ public final class CinemaBrowser {
                 : l("سيتم تحديده تلقائياً عند البدء", "Will be detected on start");
         String message = l("اسم الملف: ", "Filename: ") + suggestedName
                 + "\n" + l("الحجم: ", "Size: ") + sizeText
-                + "\n" + l("مسار الحفظ: ", "Save path: ") + "Local Cinema/Downloading";
-        new AlertDialog.Builder(context)
+                + "\n" + l("مسار الحفظ: ", "Save path: ") + "Local Cinema/Download";
+        styleDarkDialog(new AlertDialog.Builder(context)
                 .setTitle(l("تم اكتشاف رابط فيديو مباشر", "Direct Video Link Detected"))
                 .setMessage(message)
                 .setPositiveButton(l("تحميل للجهاز", "Download"), (d, w) -> {
@@ -2098,11 +2711,81 @@ public final class CinemaBrowser {
                             l("التحميلات", "Downloads"),
                             this::showDownloadsSheet);
                 })
-                .setNeutralButton(l("بث على الشاشة", "Cast to TV"), (d, w) ->
-                        TvHubActivity.castFromBrowser(context, url, null, "mp4", suggestedName, 0,
-                                null, explicitReferer, "", explicitUa, explicitCookie, null))
+                .setNeutralButton(l("بث على الشاشة", "Cast to TV"), (d, w) -> {
+                    String referer = (explicitReferer != null && !explicitReferer.isBlank()) ? explicitReferer
+                            : (active != null ? java.util.Objects.toString(locations.get(active), "") : "");
+                    PhoneModuleBridges.tvHub().castDirectStreamUrl(
+                            context, url, "mp4", suggestedName, referer, explicitUa, explicitCookie);
+                })
                 .setNegativeButton(android.R.string.cancel, null)
-                .show();
+                .show());
+    }
+
+    void downloadCapturedTorrent(String magnetUri, String torrentUrl, String referer, String userAgent, String cookie) {
+        if (magnetUri != null && magnetUri.startsWith("magnet:?")) {
+            addTorrent.accept(Uri.parse(magnetUri));
+            return;
+        }
+        if (torrentUrl == null || torrentUrl.isBlank()) return;
+        java.util.concurrent.Executors.newSingleThreadExecutor().execute(() -> {
+            java.io.File cached = fetchTorrentFileWithHeaders(context, torrentUrl, referer, userAgent, cookie);
+            new Handler(Looper.getMainLooper()).post(() -> {
+                if (cached != null && cached.isFile() && cached.length() > 32) {
+                    addTorrent.accept(Uri.fromFile(cached));
+                } else {
+                    addTorrent.accept(Uri.parse(torrentUrl));
+                }
+            });
+        });
+    }
+
+    static java.io.File fetchTorrentFileWithHeaders(Context ctx, String urlStr, String referer, String ua, String cookie) {
+        if (ctx == null || urlStr == null || !urlStr.startsWith("http")) return null;
+        String current = urlStr;
+        for (int hop = 0; hop < 5; hop++) {
+            java.net.HttpURLConnection conn = null;
+            try {
+                java.net.URL u = new java.net.URL(current);
+                conn = (java.net.HttpURLConnection) u.openConnection();
+                conn.setInstanceFollowRedirects(false);
+                conn.setConnectTimeout(6000);
+                conn.setReadTimeout(8000);
+                if (referer != null && !referer.isBlank()) conn.setRequestProperty("Referer", referer);
+                if (ua != null && !ua.isBlank()) conn.setRequestProperty("User-Agent", ua);
+                if (cookie != null && !cookie.isBlank()) conn.setRequestProperty("Cookie", cookie);
+                int code = conn.getResponseCode();
+                if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                    String loc = conn.getHeaderField("Location");
+                    conn.disconnect();
+                    if (loc == null || loc.isBlank()) return null;
+                    current = new java.net.URL(u, loc.trim()).toString();
+                    continue;
+                }
+                if (code < 200 || code >= 300) {
+                    conn.disconnect();
+                    return null;
+                }
+                java.io.File dir = new java.io.File(ctx.getCacheDir(), "grabbed_torrents");
+                if (!dir.exists()) dir.mkdirs();
+                java.io.File out = new java.io.File(dir, "grab_" + System.currentTimeMillis() + ".torrent");
+                try (var in = conn.getInputStream(); var fos = new java.io.FileOutputStream(out)) {
+                    byte[] buf = new byte[8192];
+                    int n;
+                    int total = 0;
+                    while ((n = in.read(buf)) != -1) {
+                        total += n;
+                        if (total > 4 * 1024 * 1024) break;
+                        fos.write(buf, 0, n);
+                    }
+                }
+                conn.disconnect();
+                return out;
+            } catch (Exception ignored) {
+                if (conn != null) conn.disconnect();
+                return null;
+            }
+        }
+        return null;
     }
 
     private void showDownloadsSheet() {
@@ -2133,7 +2816,7 @@ public final class CinemaBrowser {
         var heading = new LinearLayout(context);
         heading.setOrientation(LinearLayout.VERTICAL);
         heading.addView(historyText(l("مدير تحميلات المتصفح", "Browser Downloads"), 18, 0xfff5c518, true));
-        heading.addView(historyText("Local Cinema/Downloading · " + l("ضغط مطوّل للحذف النهائي من الجهاز", "Long-press any row to delete file from device"),
+        heading.addView(historyText("Local Cinema/Download · " + l("ضغط مطوّل للحذف النهائي من الجهاز", "Long-press any row to delete file from device"),
                 11, 0xffa1a1aa, false));
         header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
         header.addView(historyAction("×", 0xfffafafa, dialog::dismiss), new LinearLayout.LayoutParams(dp(44), dp(44)));
@@ -2151,6 +2834,7 @@ public final class CinemaBrowser {
                 downloadsDialog = null;
                 downloadsContainer = null;
             }
+            resumeBrowserRendering();
         });
         renderDownloadsContainer();
         dialog.setContentView(panel);
@@ -2165,8 +2849,7 @@ public final class CinemaBrowser {
         var downloadable = new ArrayList<CinemaBrowserMediaBridge.VideoOption>();
         if (active != null && active != homeTab) {
             for (var opt : mediaBridge.videoOptions(active)) {
-                if (!"hls".equalsIgnoreCase(opt.kind()) && !"dash".equalsIgnoreCase(opt.kind())
-                        && opt.url() != null && opt.url().startsWith("http")) {
+                if (CinemaBrowserMediaBridge.isOptionDownloadable(opt)) {
                     downloadable.add(opt);
                 }
             }
@@ -2176,7 +2859,9 @@ public final class CinemaBrowser {
                     + " (" + downloadable.size() + ")", 13, 0xffe5b84b, true);
             capSec.setPadding(0, dp(8), 0, dp(6));
             downloadsContainer.addView(capSec);
-            String pageTitle = downloadable.stream().map(CinemaBrowserMediaBridge.VideoOption::title).filter(t -> !t.isBlank())
+            String resolvedTitle = mediaBridge.resolveActiveSessionTitle(active);
+            String pageTitle = !resolvedTitle.isBlank() ? resolvedTitle
+                    : downloadable.stream().map(CinemaBrowserMediaBridge.VideoOption::title).filter(t -> !t.isBlank())
                     .findFirst().orElse("Video");
             for (var opt : downloadable) {
                 var row = new LinearLayout(context);
@@ -2194,10 +2879,18 @@ public final class CinemaBrowser {
                 var info = historyText(opt.format() + extra, 12, 0xfffafafa, false);
                 info.setPadding(dp(8), 0, dp(6), 0);
                 row.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
-                row.addView(historyAction("⬇", 0xfff5c518, () ->
-                        promptDirectVideoDownload(opt.url(), null, opt.sizeBytes() > 0 ? opt.sizeBytes() : -1L,
-                                pageTitle, opt.referer(), opt.userAgent(), opt.cookie())),
-                        new LinearLayout.LayoutParams(dp(40), dp(36)));
+                var dlIcon = new android.widget.ImageView(context);
+                dlIcon.setImageResource(org.proninyaroslav.libretorrent.R.drawable.ic_cinema_dl);
+                dlIcon.setImageTintList(android.content.res.ColorStateList.valueOf(0xffe5a93b));
+                dlIcon.setScaleType(android.widget.ImageView.ScaleType.CENTER_INSIDE);
+                dlIcon.setPadding(dp(7), dp(6), dp(7), dp(6));
+                var dlBg = surface(0xff2a2417, 9);
+                dlBg.setStroke(Math.max(1, dp(1)), 0x77e5a93b);
+                dlIcon.setBackground(new android.graphics.drawable.RippleDrawable(
+                        android.content.res.ColorStateList.valueOf(0x33e5a93b), dlBg, surface(0xffffffff, 9)));
+                dlIcon.setContentDescription(l("تحميل الفيديو", "Download video"));
+                dlIcon.setOnClickListener(v -> enqueueVideoOptionDownload(opt, pageTitle));
+                row.addView(dlIcon, new LinearLayout.LayoutParams(dp(34), dp(32)));
                 downloadsContainer.addView(row, lp);
             }
         }
@@ -2209,8 +2902,8 @@ public final class CinemaBrowser {
             else activeDlList.add(it);
         }
         if (all.isEmpty() && downloadable.isEmpty()) {
-            var empty = historyText(l("لا توجد تحميلات حتى الآن.\nاضغط على أي رابط فيديو مباشر (MP4 / MKV / WebM) أو زر ⬇ داخل قائمة الفيديو للتحميل إلى Local Cinema/Downloading.",
-                    "No downloads yet.\nTap any direct video link (MP4 / MKV / WebM) or ⬇ in the video sheet to save to Local Cinema/Downloading."),
+            var empty = historyText(l("لا توجد تحميلات حتى الآن.\nاضغط على زر التحميل الذهبي (↓) أمام أي جودة أو بث داخل قائمة الفيديو للحفظ المباشر في Local Cinema/Download.",
+                    "No downloads yet.\nTap the golden download button (↓) beside any stream quality in the video sheet to save directly into Local Cinema/Download."),
                     13, 0xffa1a1aa, false);
             empty.setPadding(dp(4), dp(20), dp(4), dp(20));
             downloadsContainer.addView(empty);
@@ -2260,7 +2953,7 @@ public final class CinemaBrowser {
         } else {
             var play = historyAction("▶", 0xff4ade80, () -> {
                 if (downloadsDialog != null) downloadsDialog.dismiss();
-                TvHubActivity.castDownloadedFile(context, item.filePath, item.filename);
+                PhoneModuleBridges.tvHub().castLocalVideoFile(context, item.filePath, item.filename);
             });
             top.addView(play, new LinearLayout.LayoutParams(dp(40), dp(40)));
         }
@@ -2311,7 +3004,7 @@ public final class CinemaBrowser {
         }
 
         card.setOnLongClickListener(v -> {
-            new AlertDialog.Builder(context)
+            styleDarkDialog(new AlertDialog.Builder(context)
                     .setTitle(l("حذف الملف نهائياً من الجهاز؟", "Delete file permanently from device?"))
                     .setMessage(item.filename + "\n" + item.filePath)
                     .setPositiveButton(l("حذف نهائياً", "Delete Permanently"), (d, w) -> {
@@ -2321,7 +3014,7 @@ public final class CinemaBrowser {
                                 : l("تمت إزالة السجل.", "Record removed."));
                     })
                     .setNegativeButton(android.R.string.cancel, null)
-                    .show();
+                    .show());
             return true;
         });
         return card;

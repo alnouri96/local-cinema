@@ -2,7 +2,7 @@
 
 <p>
   <a href="https://github.com/alnouri96/local-cinema/releases/latest">
-    <img src="https://img.shields.io/github/v/release/alnouri96/meedx?style=for-the-badge&label=Latest_Release&color=E5A93B&labelColor=171717&logo=github&logoColor=FFFFFF" alt="Latest Release" />
+    <img src="https://img.shields.io/github/v/release/alnouri96/local-cinema?style=for-the-badge&label=Latest_Release&color=E5A93B&labelColor=171717&logo=github&logoColor=FFFFFF" alt="Latest Release" />
   </a>
   <a href="https://meedx.pages.dev/tv">
     <img src="https://img.shields.io/badge/Android_TV-Download_APK-E5A93B?style=for-the-badge&logo=android&logoColor=FFFFFF&labelColor=171717" alt="Download Local Cinema TV APK" />
@@ -22,6 +22,8 @@ Both apps are **open source and 100% free**.
 التطبيقان **مفتوحا المصدر ومجانيان بالكامل**. يشغّل تطبيق التلفاز مكتبتك من وحدة تخزين أو من مشاركة SMB. يدير تطبيق الهاتف التلفاز ويرسل الوسائط إليه عبر الشبكة المحلية.
 
 [Source code / الكود المصدري](https://github.com/alnouri96/local-cinema) · [Third-party licenses / تراخيص الجهات الخارجية](docs/THIRD_PARTY.md)
+
+**Current stable release:** `v1.0.0` (`versionCode = 20`)
 
 [Download the TV and phone apps](https://meedx.pages.dev/downloads) · [Setup and add-ons](https://meedx.pages.dev/apps/local-cinema) · [Release notes](CHANGELOG-CINEMA.md)
 

@@ -150,36 +150,114 @@ public final class UnifiedSubtitleEngine {
         return text != null && NON_LATIN.matcher(text).find();
     }
 
+    private static final Pattern PIPE_CHARS = Pattern.compile("[|\\u2502\\u2503\\uff5c\\u00a6\\u2758]");
+    private static final Pattern INVISIBLE_BIDI = Pattern.compile("[\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufeff]");
+    private static final Pattern PIPE_COUNTRY_NOISE = Pattern.compile(
+            "(?iu)^(?:ايرانى|ایرانی|ايراني|فارسی|فارسى|عربي|عربى|مترجم|مدبلج|فيلم|فیلم|مسلسل|سریال|iranian|persian|movie|film|series|hd|fhd|uhd|4k)$");
+
+    /** Normalizes box-drawing/fullwidth vertical bars (e.g. U+2502 '│') to '|' and strips invisible bidi marks. */
+    public static String normalizePipesAndBidi(String raw) {
+        if (raw == null || raw.isEmpty()) return "";
+        String stripped = INVISIBLE_BIDI.matcher(raw).replaceAll("");
+        return PIPE_CHARS.matcher(stripped).replaceAll("|");
+    }
+
     public static String cleanRawTitle(String raw) {
         if (raw == null) return "";
-        String t = raw.trim()
-                .replaceFirst("(?i)\\.(mp4|mkv|avi|webm|mov|ts)$", "")
-                .replaceAll("\\[[^\\]]*\\]", " ")
+        String norm = normalizePipesAndBidi(raw);
+        List<String> segs = extractCleanPipeSegments(norm);
+        if (!segs.isEmpty()) {
+            for (String s : segs) {
+                if (!containsNonLatin(s) && containsLatinLetters(s)) return s;
+            }
+            return segs.get(0);
+        }
+        return cleanSingleSegmentTitle(norm, false);
+    }
+
+    /** Extracts the secondary localized title from pipe-delimited names (e.g. "Saye Haye Roshan │ سایه های روشن │ 2025"). */
+    public static String extractAlternatePipeTitle(String raw) {
+        if (raw == null) return "";
+        String norm = normalizePipesAndBidi(raw);
+        if (!norm.contains("|")) return "";
+        List<String> segs = extractCleanPipeSegments(norm);
+        if (segs.size() < 2) return "";
+        String primary = cleanRawTitle(norm);
+        for (String s : segs) {
+            if (!s.equalsIgnoreCase(primary)) return s;
+        }
+        return "";
+    }
+
+    public static List<String> extractCleanPipeSegments(String raw) {
+        if (raw == null) return List.of();
+        String norm = normalizePipesAndBidi(raw);
+        if (!norm.contains("|")) return List.of();
+        String withoutExt = norm.trim().replaceFirst("(?i)\\.(mp4|mkv|avi|webm|mov|m4v|ts|wmv)$", "");
+        String[] parts = withoutExt.split("\\|");
+        List<String> out = new ArrayList<>();
+        for (String part : parts) {
+            String cleaned = cleanSingleSegmentTitle(part, true);
+            if (cleaned.isEmpty()) continue;
+            if (cleaned.matches("(?:19|20)\\d{2}")) continue;
+            if (PIPE_COUNTRY_NOISE.matcher(cleaned).matches()) continue;
+            boolean dup = false;
+            for (String ex : out) {
+                if (ex.equalsIgnoreCase(cleaned)) { dup = true; break; }
+            }
+            if (!dup) out.add(cleaned);
+        }
+        return out;
+    }
+
+    private static String cleanSingleSegmentTitle(String raw, boolean fromPipe) {
+        if (raw == null) return "";
+        String t = normalizePipesAndBidi(raw).trim()
+                .replaceFirst("(?i)\\.(mp4|mkv|avi|webm|mov|m4v|ts|wmv)$", "")
+                .replaceAll("\\[[^\\]]*\\]|\\{[^}]*\\}", " ")
                 .replaceAll("\\((?:فيلم|مسلسل|انمي|أنمي|movie|series|film)?\\s*(?:19|20)\\d{2}\\)", " ")
-                .replaceAll("(?i)\\b(?:2160p|1440p|1080p|720p|480p|360p|4K|WEB[- .]?DL|WEBRip|Blu[- .]?Ray|BDRip|HDRip|HDTV|DVDRip|HEVC|AVC|H\\.?26[45]|X\\.?26[45]|AV1|10bit|AAC|AC3|DTS|HDR|SDR)\\b.*", "")
-                .replaceAll("^(?:فيلم|مسلسل|أنمي|انمي)\\s+", "")
+                .replaceAll("(?i)(?:^|\\s|\\b)(?:2160p|1440p|1080p|720p|480p|360p|4K|8K|WEB[- .]?DL|WEBRip|Blu[- .]?Ray|BDRip|HDRip|HDTV|DVDRip|BRRip|HEVC|AVC|H\\.?26[45]|X\\.?26[45]|AV1|10bit|AAC|AC3|DTS|HDR10\\+?|HDR|SDR)(?:\\b|\\s|$).*", "")
+                .replaceAll("^(?:فيلم|فیلم|مسلسل|سریال|أنمي|انمي)\\s+", "")
                 .replace('.', ' ')
                 .replace('_', ' ')
+                .replace('|', ' ')
                 .replaceAll("\\s+", " ")
                 .trim();
+        if (fromPipe) {
+            t = t.replaceFirst("(?i)\\s+(?:Movie|Film|Series)$", "").trim();
+            t = t.replaceFirst("\\s+(?:19|20)\\d{2}$", "").trim();
+        }
         return t;
     }
 
     public static ResolvedQuery resolveQuery(Context context, String rawTitle, String knownImdb,
                                              int knownYear, boolean knownSeries, int knownSeason, int knownEpisode) {
-        return resolveQuery(context, rawTitle, null, knownImdb, knownYear, knownSeries, knownSeason, knownEpisode);
+        return resolveQuery(context, rawTitle, null, null, knownImdb, 0L, knownYear, knownSeries, knownSeason, knownEpisode, false);
     }
 
-    /**
-     * Resolves an Arabic/Persian/non-English or raw filename title into verified English/original
-     * title candidates, release year, and IMDb ID using Cinemeta, IMDb Suggestion API, optional TMDb,
-     * and strictly similarity-verified Wikidata/Wikipedia — never blindly replacing with an unrelated film.
-     */
     public static ResolvedQuery resolveQuery(Context context, String rawTitle, String preferredEnglishHint,
                                              String knownImdb, int knownYear, boolean knownSeries,
                                              int knownSeason, int knownEpisode) {
-        String display = rawTitle == null ? "" : rawTitle.trim();
+        return resolveQuery(context, rawTitle, preferredEnglishHint, null, knownImdb, 0L,
+                knownYear, knownSeries, knownSeason, knownEpisode, false);
+    }
+
+    /**
+     * Resolves an Arabic/Persian/non-English, MediaDB-indexed, or raw filename title into verified
+     * English/original title candidates, release year, and IMDb ID.
+     * When {@code authoritativePosterTitle} is true (indexed MediaDB/poster item), the clean poster/TMDb
+     * title is strictly preserved as Priority #1, followed by {@code alternateDbTitle} as Priority #2.
+     */
+    public static ResolvedQuery resolveQuery(Context context, String rawTitle, String preferredEnglishHint,
+                                             String alternateDbTitle, String knownImdb, long knownTmdbId,
+                                             int knownYear, boolean knownSeries, int knownSeason,
+                                             int knownEpisode, boolean authoritativePosterTitle) {
+        String display = normalizePipesAndBidi(rawTitle == null ? "" : rawTitle.trim());
         String englishHint = cleanRawTitle(preferredEnglishHint == null ? "" : preferredEnglishHint);
+        String altDbClean = cleanRawTitle(alternateDbTitle == null ? "" : alternateDbTitle);
+        if (altDbClean.isEmpty() && display.contains("|")) {
+            altDbClean = extractAlternatePipeTitle(display);
+        }
         int season = knownSeason;
         int episode = knownEpisode;
         if (display.length() > 0 && (season <= 0 || episode <= 0)) {
@@ -199,9 +277,53 @@ public final class UnifiedSubtitleEngine {
         }
         String cleaned = cleanRawTitle(display.replaceAll("(?i)S\\d{1,2}[\\s._-]*E\\d{1,3}.*$", "").trim());
         String imdb = (knownImdb != null && knownImdb.matches("tt[0-9]+")) ? knownImdb : "";
-        String englishTitle = cleaned;
+        String englishTitle = !englishHint.isBlank() && !containsNonLatin(englishHint) ? englishHint : cleaned;
         boolean translated = false;
         List<TitleCandidate> candidates = new ArrayList<>();
+
+        // Step 0: Direct TMDb ID lookup when MediaDB provides tmdbId (resolves clean English/original title & IMDb ID)
+        if (context != null && knownTmdbId > 0L) {
+            String tmdbKey = ProviderKeys.get(context, ProviderKeys.TMDB).trim();
+            if (!tmdbKey.isEmpty()) {
+                try {
+                    String epType = isSeries ? "tv" : "movie";
+                    String u = "https://api.themoviedb.org/3/" + epType + "/" + knownTmdbId
+                            + "?api_key=" + encode(tmdbKey) + "&language=en-US&append_to_response=external_ids";
+                    JSONObject detail = new JSONObject(httpGet(u, UA, null, 4500, 5500));
+                    String tmdbEn = cleanRawTitle(detail.optString(isSeries ? "name" : "title", ""));
+                    String tmdbOrig = cleanRawTitle(detail.optString(isSeries ? "original_name" : "original_title", ""));
+                    JSONObject ext = detail.optJSONObject("external_ids");
+                    String extImdb = ext != null ? ext.optString("imdb_id", "").trim() : detail.optString("imdb_id", "").trim();
+                    if (imdb.isEmpty() && extImdb.matches("tt[0-9]+")) imdb = extImdb;
+                    if (year <= 0) {
+                        String rd = detail.optString(isSeries ? "first_air_date" : "release_date", "");
+                        if (rd.length() >= 4 && rd.substring(0, 4).matches("\\d{4}")) {
+                            year = Integer.parseInt(rd.substring(0, 4));
+                        }
+                    }
+                    String bestTmdbTitle = (!tmdbEn.isEmpty() && !containsNonLatin(tmdbEn)) ? tmdbEn
+                            : ((!tmdbOrig.isEmpty() && !containsNonLatin(tmdbOrig)) ? tmdbOrig : tmdbEn);
+                    if (!bestTmdbTitle.isEmpty()) {
+                        translated = containsNonLatin(cleaned) && !containsNonLatin(bestTmdbTitle);
+                        englishTitle = bestTmdbTitle;
+                        addTitleCandidate(candidates, new TitleCandidate(bestTmdbTitle, imdb, year, "TMDb", 100));
+                    }
+                    if (!tmdbOrig.isEmpty() && !tmdbOrig.equalsIgnoreCase(bestTmdbTitle)) {
+                        addTitleCandidate(candidates, new TitleCandidate(tmdbOrig, imdb, year, "TMDb Original", 96));
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+
+        // Priority 1 seed: If caller passed an authoritative scraped MediaDB/Poster title, lock it in as Candidate #1
+        if (authoritativePosterTitle) {
+            String p1 = (!englishHint.isBlank() && !containsNonLatin(englishHint)) ? englishHint
+                    : (!containsNonLatin(englishTitle) && !englishTitle.isBlank() ? englishTitle : cleaned);
+            if (!p1.isBlank()) {
+                addTitleCandidate(candidates, new TitleCandidate(p1, imdb, year, "MediaDB", 100));
+                englishTitle = p1;
+            }
+        }
 
         // Step 1: If we already have a valid IMDb ID, pull exact English title & year from Cinemeta (~240ms)
         if (!imdb.isEmpty()) {
@@ -223,6 +345,9 @@ public final class UnifiedSubtitleEngine {
                     addTitleCandidate(candidates, new TitleCandidate(englishTitle, imdb, year, "Cinemeta", 100));
                 }
             } catch (Exception ignored) {}
+            if (!altDbClean.isBlank() && !altDbClean.equalsIgnoreCase(englishTitle)) {
+                addTitleCandidate(candidates, new TitleCandidate(altDbClean, imdb, year, "MediaDB Alt", 94));
+            }
             if (!containsNonLatin(englishTitle) && !englishTitle.isBlank()) {
                 return new ResolvedQuery(cleaned.isEmpty() ? englishTitle : cleaned, englishTitle, imdb, year,
                         isSeries, season, episode, translated, candidates);
@@ -340,10 +465,15 @@ public final class UnifiedSubtitleEngine {
             }
         }
 
+        // Priority 2: Alternate/localized MediaDB title (cleaned of '|', quality tags, and extensions)
+        if (!altDbClean.isBlank()) {
+            addTitleCandidate(candidates, new TitleCandidate(altDbClean, imdb, year, "MediaDB Alt", 93));
+        }
+
         // Rank candidates by confidence (descending) and pick top verified match ONLY if high confidence
         candidates.sort((a, b) -> Integer.compare(b.confidence(), a.confidence()));
-        if (candidates.size() > 3) {
-            candidates = new ArrayList<>(candidates.subList(0, 3));
+        if (candidates.size() > 4) {
+            candidates = new ArrayList<>(candidates.subList(0, 4));
         }
 
         if (!candidates.isEmpty()) {
@@ -605,10 +735,25 @@ public final class UnifiedSubtitleEngine {
         return res;
     }
 
+    public record VideoParams(String filename, long videoSize, String videoHash, String addonItemId) {
+        public static final VideoParams NONE = new VideoParams("", 0L, "", "");
+
+        public VideoParams(String filename, long videoSize, String videoHash) {
+            this(filename, videoSize, videoHash, "");
+        }
+    }
+
     /** Searches all requested subtitle sources concurrently and returns ranked, deduplicated results. */
     public static List<Candidate> search(Context context, ResolvedQuery query, List<String> wantedLanguages,
                                          Set<String> requestedSources, String videoFileName) {
+        return search(context, query, wantedLanguages, requestedSources,
+                new VideoParams(videoFileName == null ? "" : videoFileName, 0L, "", ""));
+    }
+
+    public static List<Candidate> search(Context context, ResolvedQuery query, List<String> wantedLanguages,
+                                         Set<String> requestedSources, VideoParams params) {
         if (context == null || query == null) return Collections.emptyList();
+        VideoParams vp = params == null ? VideoParams.NONE : params;
         Set<String> sources = (requestedSources == null || requestedSources.isEmpty())
                 ? UnifiedSubtitleConfig.selectedSearchSources(context)
                 : requestedSources;
@@ -624,24 +769,35 @@ public final class UnifiedSubtitleEngine {
         }
         if (langs.isEmpty()) langs.addAll(UnifiedSubtitleConfig.languagePriorities(context));
 
-        String releaseRef = (videoFileName != null && !videoFileName.isBlank()) ? videoFileName : query.englishTitle;
-        ExecutorService pool = Executors.newFixedThreadPool(Math.min(6, Math.max(1, runnable.size())));
-        List<Future<List<Candidate>>> futures = new ArrayList<>();
+        String releaseRef = (vp.filename() != null && !vp.filename().isBlank()) ? vp.filename() : query.englishTitle;
+        long searchStartMs = System.currentTimeMillis();
+        long addonDeadlineMs = searchStartMs + 5000L;     // Strict 5.0s max wall-clock budget for Stremio subtitle add-ons
+        long standardDeadlineMs = searchStartMs + 11000L; // Shared wall-clock budget for built-in/API sources
+        ExecutorService pool = Executors.newFixedThreadPool(Math.min(12, Math.max(2, runnable.size())));
+        record RunningSource(String srcId, Future<List<Candidate>> future) {}
+        List<RunningSource> running = new ArrayList<>(runnable.size());
         for (String srcId : runnable) {
-            futures.add(pool.submit(taskForSource(context.getApplicationContext(), srcId, query, langs, releaseRef)));
+            running.add(new RunningSource(srcId, pool.submit(
+                    taskForSource(context.getApplicationContext(), srcId, query, langs, releaseRef, vp, addonDeadlineMs))));
         }
 
         Map<String, Candidate> dedup = new LinkedHashMap<>();
-        for (Future<List<Candidate>> fut : futures) {
+        for (RunningSource rs : running) {
+            boolean isAddonSource = UnifiedSubtitleConfig.isStremioSubProviderId(rs.srcId())
+                    || UnifiedSubtitleConfig.SRC_STREMIO_ADDONS.equals(rs.srcId());
+            long deadline = isAddonSource ? addonDeadlineMs : standardDeadlineMs;
+            long waitMs = Math.max(40L, deadline - System.currentTimeMillis());
             try {
-                List<Candidate> batch = fut.get(14, TimeUnit.SECONDS);
+                List<Candidate> batch = rs.future().get(waitMs, TimeUnit.MILLISECONDS);
                 if (batch != null) {
                     for (Candidate c : batch) {
                         String key = c.sourceId + "|" + c.downloadUrl + "|" + c.externalId + "|" + c.releaseName;
                         dedup.putIfAbsent(key, c);
                     }
                 }
-            } catch (Exception ignored) {}
+            } catch (Throwable ignored) {
+                rs.future().cancel(true);
+            }
         }
         pool.shutdownNow();
 
@@ -658,31 +814,51 @@ public final class UnifiedSubtitleEngine {
     }
 
     private static Callable<List<Candidate>> taskForSource(Context app, String srcId, ResolvedQuery q,
-                                                           List<String> langs, String releaseRef) {
-        return () -> switch (srcId) {
-            case UnifiedSubtitleConfig.SRC_OPENSUBTITLES_V3 -> searchOpenSubtitlesV3(q, langs, releaseRef);
-            case UnifiedSubtitleConfig.SRC_OPENSUBTITLES_FREE -> searchOpenSubtitlesFree(q, langs, releaseRef);
-            case UnifiedSubtitleConfig.SRC_YIFY -> searchYify(q, langs, releaseRef);
-            case UnifiedSubtitleConfig.SRC_GESTDOWN -> searchGestdown(q, langs, releaseRef);
-            case UnifiedSubtitleConfig.SRC_STREMIO_ADDONS -> searchStremioSubtitleAddons(app, q, langs, releaseRef);
-            case UnifiedSubtitleConfig.SRC_SUBSOURCE -> searchSubsource(app, q, langs, releaseRef);
-            case UnifiedSubtitleConfig.SRC_SUBDL -> searchSubdl(app, q, langs, releaseRef);
-            case UnifiedSubtitleConfig.SRC_OPENSUBTITLES_API -> searchOpenSubtitlesApi(app, q, langs, releaseRef);
-            default -> Collections.emptyList();
+                                                           List<String> langs, String releaseRef, VideoParams vp,
+                                                           long addonDeadlineMs) {
+        return () -> {
+            if (UnifiedSubtitleConfig.isStremioSubProviderId(srcId)) {
+                return searchSingleStremioSubtitleAddon(app, srcId, q, langs, releaseRef, vp, addonDeadlineMs);
+            }
+            return switch (srcId) {
+                case UnifiedSubtitleConfig.SRC_OPENSUBTITLES_V3 -> searchOpenSubtitlesV3(q, langs, releaseRef, vp);
+                case UnifiedSubtitleConfig.SRC_OPENSUBTITLES_FREE -> searchOpenSubtitlesFree(q, langs, releaseRef, vp);
+                case UnifiedSubtitleConfig.SRC_YIFY -> searchYify(q, langs, releaseRef);
+                case UnifiedSubtitleConfig.SRC_GESTDOWN -> searchGestdown(q, langs, releaseRef);
+                case UnifiedSubtitleConfig.SRC_STREMIO_ADDONS -> searchStremioSubtitleAddons(app, q, langs, releaseRef, vp, addonDeadlineMs);
+                case UnifiedSubtitleConfig.SRC_SUBSOURCE -> searchSubsource(app, q, langs, releaseRef);
+                case UnifiedSubtitleConfig.SRC_SUBDL -> searchSubdl(app, q, langs, releaseRef);
+                case UnifiedSubtitleConfig.SRC_OPENSUBTITLES_API -> searchOpenSubtitlesApi(app, q, langs, releaseRef, vp);
+                default -> Collections.emptyList();
+            };
         };
     }
 
     // ---- 1. OpenSubtitles v3 (Stremio keyless) ----
-    private static List<Candidate> searchOpenSubtitlesV3(ResolvedQuery q, List<String> langs, String releaseRef) {
+    private static List<Candidate> searchOpenSubtitlesV3(ResolvedQuery q, List<String> langs,
+                                                         String releaseRef, VideoParams vp) {
         List<Candidate> out = new ArrayList<>();
         if (q.imdbId.isEmpty()) return out;
         try {
             String mediaId = q.isSeries && q.season > 0 && q.episode > 0
                     ? q.imdbId + ":" + q.season + ":" + q.episode : q.imdbId;
             String type = q.isSeries ? "series" : "movie";
-            String url = "https://opensubtitles-v3.strem.io/subtitles/" + type + "/" + encode(mediaId) + ".json";
-            JSONArray subs = new JSONObject(httpGet(url, UA, null, 6000, 9000)).optJSONArray("subtitles");
+            String extra = StremioAddons.buildSubtitleExtraSegment(vp.filename(), vp.videoSize(), vp.videoHash());
+            JSONArray subs = null;
+            if (!extra.isEmpty()) {
+                try {
+                    String extraUrl = "https://opensubtitles-v3.strem.io/subtitles/" + type + "/"
+                            + Uri.encode(mediaId, ":") + "/" + extra + ".json";
+                    subs = new JSONObject(httpGet(extraUrl, UA, null, 6000, 9000)).optJSONArray("subtitles");
+                } catch (Exception ignored) {}
+            }
+            if (subs == null || subs.length() == 0) {
+                String plainUrl = "https://opensubtitles-v3.strem.io/subtitles/" + type + "/"
+                        + Uri.encode(mediaId, ":") + ".json";
+                subs = new JSONObject(httpGet(plainUrl, UA, null, 6000, 9000)).optJSONArray("subtitles");
+            }
             if (subs == null) return out;
+            boolean hasHash = vp.videoHash() != null && vp.videoHash().trim().matches("(?i)[0-9a-f]{16}");
             for (int i = 0; i < subs.length() && out.size() < 30; i++) {
                 JSONObject s = subs.optJSONObject(i);
                 if (s == null) continue;
@@ -690,19 +866,21 @@ public final class UnifiedSubtitleEngine {
                 if (!subUrl.startsWith("http")) continue;
                 String langCanon = UnifiedSubtitleConfig.canonicalLangName(s.optString("lang", ""));
                 if (!matchesWantedLanguages(langCanon, langs)) continue;
-                String rel = s.optString("SubFileName", s.optString("id", q.englishTitle));
+                String rel = s.optString("SubFileName", s.optString("title", s.optString("id", q.englishTitle)));
                 SubtitleMatch.Result r = rankCandidate(releaseRef, rel, true, q);
                 if (r.episodeConflict()) continue;
+                int hashBonus = (hasHash && i < 3) ? 8 : 0;
                 out.add(new Candidate(UnifiedSubtitleConfig.SRC_OPENSUBTITLES_V3, "OpenSubtitles v3",
                         langCanon, rel, detectFormat(rel, subUrl), subUrl, "", "plain",
-                        s.optString("id", ""), r.score() + 12, r.confidence()));
+                        s.optString("id", ""), r.score() + 12 + hashBonus, r.confidence()));
             }
         } catch (Exception ignored) {}
         return out;
     }
 
     // ---- 2. OpenSubtitles Legacy REST (Keyless, works by IMDb OR verified Latin text query) ----
-    private static List<Candidate> searchOpenSubtitlesFree(ResolvedQuery q, List<String> langs, String releaseRef) {
+    private static List<Candidate> searchOpenSubtitlesFree(ResolvedQuery q, List<String> langs,
+                                                           String releaseRef, VideoParams vp) {
         List<Candidate> out = new ArrayList<>();
         // Rule 1: Never send pure non-Latin text queries without IMDb ID (rest.opensubtitles.org returns trending junk)
         boolean hasImdb = !q.imdbId.isEmpty() && q.imdbId.matches("tt[0-9]+");
@@ -916,41 +1094,80 @@ public final class UnifiedSubtitleEngine {
         return out;
     }
 
-    // ---- 5. Installed Stremio Subtitle Add-ons ----
-    private static List<Candidate> searchStremioSubtitleAddons(Context app, ResolvedQuery q,
-                                                               List<String> langs, String releaseRef) {
+    // ---- 5. Installed Stremio Subtitle Add-ons (Ultimate Smart Subs (USS), SubSense, Persian Stremio, etc.) ----
+    private static List<Candidate> searchSingleStremioSubtitleAddon(Context app, String providerId, ResolvedQuery q,
+                                                                    List<String> langs, String releaseRef,
+                                                                    VideoParams vp, long deadlineEpochMs) {
         List<Candidate> out = new ArrayList<>();
-        if (q.imdbId.isEmpty()) return out;
         try {
-            String mediaId = q.isSeries && q.season > 0 && q.episode > 0
-                    ? q.imdbId + ":" + q.season + ":" + q.episode : q.imdbId;
-            String type = q.isSeries ? "series" : "movie";
-            for (StremioAddons.Addon addon : StremioAddons.list(app)) {
-                if (addon == null || !addon.enabled || !StremioAddons.providesSubtitles(addon)) continue;
-                String base = addon.baseUrl;
-                if (base == null || base.isBlank() || base.contains("opensubtitles-v3.strem.io")) continue;
-                try {
-                    String url = base + "/subtitles/" + type + "/" + encode(mediaId) + ".json";
-                    JSONArray subs = new JSONObject(httpGet(url, UA, null, 5000, 7000)).optJSONArray("subtitles");
-                    if (subs == null) continue;
-                    String badge = addon.name != null && !addon.name.isBlank() ? addon.name : "Stremio Add-on";
-                    for (int i = 0; i < subs.length() && out.size() < 20; i++) {
-                        JSONObject s = subs.optJSONObject(i);
-                        if (s == null) continue;
-                        String subUrl = s.optString("url", "").trim();
-                        if (!subUrl.startsWith("http")) continue;
-                        String langCanon = UnifiedSubtitleConfig.canonicalLangName(s.optString("lang", ""));
-                        if (!matchesWantedLanguages(langCanon, langs)) continue;
-                        String rel = s.optString("SubFileName", s.optString("id", badge));
-                        SubtitleMatch.Result r = rankCandidate(releaseRef, rel, true, q);
-                        out.add(new Candidate(UnifiedSubtitleConfig.SRC_STREMIO_ADDONS, badge,
-                                langCanon, rel, detectFormat(rel, subUrl), subUrl, "", "plain",
-                                s.optString("id", ""), r.score() + 8, r.confidence()));
-                    }
-                } catch (Exception ignored) {}
+            UnifiedSubtitleConfig.ProviderInfo pInfo = UnifiedSubtitleConfig.providerById(app, providerId);
+            if (pInfo == null || !pInfo.isStremioAddon) return out;
+            String imdbBase = (q.imdbId != null && q.imdbId.matches("tt[0-9]+")) ? q.imdbId : "";
+            String customId = vp.addonItemId() == null ? "" : vp.addonItemId().trim();
+            if (imdbBase.isEmpty() && customId.isEmpty()) return out;
+            String imdbMediaId = imdbBase.isEmpty() ? ""
+                    : (q.isSeries && q.season > 0 && q.episode > 0
+                            ? imdbBase + ":" + q.season + ":" + q.episode : imdbBase);
+            String customMediaId = "";
+            if (!customId.isEmpty()) {
+                if (customId.startsWith("kitsu:") && !customId.matches("(?i)kitsu:[0-9]+:[0-9]+") && q.isSeries && q.episode > 0) {
+                    customMediaId = customId + ":" + q.episode;
+                } else {
+                    customMediaId = customId;
+                }
             }
-        } catch (Exception ignored) {}
+            String type = q.isSeries ? "series" : "movie";
+            String extra = StremioAddons.buildSubtitleExtraSegment(vp.filename(), vp.videoSize(), vp.videoHash());
+            JSONArray subs = null;
+            if (!imdbMediaId.isEmpty()) {
+                subs = StremioAddons.querySubtitleEndpointByUrlFast(
+                        pInfo.addonManifestUrl, pInfo.addonBaseUrl, type, imdbMediaId, extra,
+                        3500, 4200, deadlineEpochMs);
+            }
+            if ((subs == null || subs.length() == 0) && !customMediaId.isEmpty() && !customMediaId.equals(imdbMediaId)) {
+                subs = StremioAddons.querySubtitleEndpointByUrlFast(
+                        pInfo.addonManifestUrl, pInfo.addonBaseUrl, type, customMediaId, extra,
+                        3500, 4200, deadlineEpochMs);
+            }
+            appendStremioSubtitleRows(subs, providerId, pInfo.name, q, langs, releaseRef, out);
+        } catch (Throwable ignored) {}
         return out;
+    }
+
+    private static List<Candidate> searchStremioSubtitleAddons(Context app, ResolvedQuery q,
+                                                               List<String> langs, String releaseRef,
+                                                               VideoParams vp, long deadlineEpochMs) {
+        List<Candidate> out = new ArrayList<>();
+        try {
+            for (UnifiedSubtitleConfig.ProviderInfo p : UnifiedSubtitleConfig.installedStremioSubtitleProviders(app)) {
+                if (System.currentTimeMillis() >= deadlineEpochMs) break;
+                out.addAll(searchSingleStremioSubtitleAddon(app, p.id, q, langs, releaseRef, vp, deadlineEpochMs));
+            }
+        } catch (Throwable ignored) {}
+        return out;
+    }
+
+    private static void appendStremioSubtitleRows(JSONArray subs, String sourceId, String badgeName,
+                                                  ResolvedQuery q, List<String> langs,
+                                                  String releaseRef, List<Candidate> out) {
+        if (subs == null) return;
+        String badge = (badgeName != null && !badgeName.isBlank()) ? badgeName : "Stremio Add-on";
+        for (int i = 0; i < subs.length() && out.size() < 30; i++) {
+            JSONObject s = subs.optJSONObject(i);
+            if (s == null) continue;
+            String subUrl = s.optString("url", "").trim();
+            if (!subUrl.startsWith("http")) continue;
+            String rawLang = s.optString("lang", s.optString("language", ""));
+            String langCanon = UnifiedSubtitleConfig.canonicalLangName(rawLang);
+            if (!matchesWantedLanguages(langCanon, langs)) continue;
+            String rel = s.optString("SubFileName",
+                    s.optString("title", s.optString("name", s.optString("id", badge))));
+            SubtitleMatch.Result r = rankCandidate(releaseRef, rel, true, q);
+            if (r.episodeConflict()) continue;
+            out.add(new Candidate(sourceId, badge,
+                    langCanon, rel, detectFormat(rel, subUrl), subUrl, "", "plain",
+                    s.optString("id", ""), r.score() + 11, r.confidence()));
+        }
     }
 
     // ---- 6. Subsource API (Optional Key) ----
@@ -1095,7 +1312,8 @@ public final class UnifiedSubtitleEngine {
     }
 
     // ---- 8. OpenSubtitles.com REST API (Optional Key) ----
-    private static List<Candidate> searchOpenSubtitlesApi(Context app, ResolvedQuery q, List<String> langs, String releaseRef) {
+    private static List<Candidate> searchOpenSubtitlesApi(Context app, ResolvedQuery q, List<String> langs,
+                                                          String releaseRef, VideoParams vp) {
         List<Candidate> out = new ArrayList<>();
         String key = ProviderKeys.get(app, ProviderKeys.OPEN_SUBTITLES).trim();
         if (key.isEmpty()) return out;
@@ -1117,6 +1335,9 @@ public final class UnifiedSubtitleEngine {
                 ub.appendQueryParameter(q.isSeries ? "parent_imdb_id" : "imdb_id", q.imdbId.substring(2));
             } else {
                 ub.appendQueryParameter("query", q.englishTitle);
+            }
+            if (vp.videoHash() != null && vp.videoHash().trim().matches("(?i)[0-9a-f]{16}")) {
+                ub.appendQueryParameter("moviehash", vp.videoHash().trim().toLowerCase(Locale.ROOT));
             }
             if (q.isSeries && q.season > 0) ub.appendQueryParameter("season_number", String.valueOf(q.season));
             if (q.isSeries && q.episode > 0) ub.appendQueryParameter("episode_number", String.valueOf(q.episode));
@@ -1193,7 +1414,7 @@ public final class UnifiedSubtitleEngine {
 
     /** Live-tests a single provider against a known title and returns latency & live count. */
     public static ProviderTestResult testProvider(Context context, String sourceId) {
-        UnifiedSubtitleConfig.ProviderInfo info = UnifiedSubtitleConfig.providerById(sourceId);
+        UnifiedSubtitleConfig.ProviderInfo info = UnifiedSubtitleConfig.providerById(context, sourceId);
         if (info == null) {
             return new ProviderTestResult(false, 0, 0, "مصدر غير معروف", "Unknown source");
         }
@@ -1335,25 +1556,35 @@ public final class UnifiedSubtitleEngine {
 
     private static byte[] httpGetBytes(String url, String userAgent, Map<String, String> headers,
                                        int connectMs, int readMs, int maxBytes) throws IOException {
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-        conn.setConnectTimeout(connectMs);
-        conn.setReadTimeout(readMs);
-        conn.setInstanceFollowRedirects(true);
-        if (userAgent != null) conn.setRequestProperty("User-Agent", userAgent);
-        if (headers != null) {
-            for (Map.Entry<String, String> e : headers.entrySet()) {
-                conn.setRequestProperty(e.getKey(), e.getValue());
+        String current = url;
+        for (int hop = 0; hop < 5; hop++) {
+            HttpURLConnection conn = (HttpURLConnection) new URL(current).openConnection();
+            conn.setConnectTimeout(connectMs);
+            conn.setReadTimeout(readMs);
+            conn.setInstanceFollowRedirects(false);
+            if (userAgent != null) conn.setRequestProperty("User-Agent", userAgent);
+            if (headers != null) {
+                for (Map.Entry<String, String> e : headers.entrySet()) {
+                    conn.setRequestProperty(e.getKey(), e.getValue());
+                }
+            }
+            try {
+                int code = conn.getResponseCode();
+                if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                    String loc = conn.getHeaderField("Location");
+                    if (loc == null || loc.isBlank()) throw new IOException("HTTP " + code);
+                    current = new URL(new URL(current), loc.trim()).toString();
+                    continue;
+                }
+                if (code != 200) throw new IOException("HTTP " + code);
+                try (InputStream in = conn.getInputStream()) {
+                    return readAll(in, maxBytes);
+                }
+            } finally {
+                conn.disconnect();
             }
         }
-        try {
-            int code = conn.getResponseCode();
-            if (code != 200) throw new IOException("HTTP " + code);
-            try (InputStream in = conn.getInputStream()) {
-                return readAll(in, maxBytes);
-            }
-        } finally {
-            conn.disconnect();
-        }
+        throw new IOException("Too many redirects");
     }
 
     private static String httpPostJson(String url, String jsonBody, String userAgent,

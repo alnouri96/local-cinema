@@ -4,7 +4,6 @@ import android.content.Context;
 import androidx.core.os.ConfigurationCompat;
 import androidx.preference.PreferenceManager;
 import com.archos.mediacenter.video.CustomApplication;
-import com.archos.mediacenter.video.utils.VideoPreferencesCommon;
 
 public final class MetadataLanguage {
     public static final String PREF = "cinema_metadata_language";
@@ -15,7 +14,7 @@ public final class MetadataLanguage {
         String stored = PreferenceManager.getDefaultSharedPreferences(context).getString(PREF, "");
         if ("ar-SA".equals(stored) || "en-US".equals(stored)) return stored;
         String uiLang = CustomApplication.getUiLocale(context);
-        if (uiLang != null && !uiLang.isEmpty() && !VideoPreferencesCommon.KEY_UI_LANG_SYSTEM.equalsIgnoreCase(uiLang)) {
+        if (!CinemaNovaLegacyPrefs.isSystemUiLanguage(uiLang)) {
             return uiLang.toLowerCase(java.util.Locale.ROOT).startsWith("ar") ? "ar-SA" : "en-US";
         }
         var locale = ConfigurationCompat.getLocales(context.getResources().getConfiguration()).get(0);

@@ -177,6 +177,10 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
     /* package */ public static final String KEY_SUBTITLE_SIZE = "pref_play_subtitle_size_key";
     /* package */ public static final String KEY_SUBTITLE_VPOS = "pref_play_subtitle_vpos_key";
     public static final String KEY_SUBTITLE_OUTLINE = "pref_play_subtitle_outline_key";
+    public static final String KEY_SUBTITLE_OUTLINE_LEVEL = "pref_play_subtitle_outline_level_key";
+    public static final String KEY_SUBTITLE_OUTLINE_COLOR = "pref_play_subtitle_outline_color_key";
+    public static final String KEY_SUBTITLE_BG = "pref_play_subtitle_bg_key";
+    public static final String KEY_SUBTITLE_BG_OPACITY = "pref_play_subtitle_bg_opacity_key";
     public static final String KEY_SUBTITLE_COLOR = "pref_play_subtitle_color_key";
     private static final String KEY_PLAYER_FORMAT = "player_pref_format_key";
     private static final String KEY_PLAYER_AUTO_FORMAT = "player_pref_auto_format_key";
@@ -358,7 +362,7 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
             if (!"color".equals(action)) mSecondarySubtitle.applyStyle(action, value);
         }
         if (handledPrimary) {
-            if (("delay".equals(action) || "reset".equals(action)) && mSubtitleDelayMenuItem != null) {
+            if (("delay".equals(action) || "delay_reset".equals(action) || "reset".equals(action)) && mSubtitleDelayMenuItem != null) {
                 mSubtitleDelayMenuItem.setText(com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleTimingOverlay
                         .formatCompactShortcutTitle(this, getCurrentSubtitleDelayMs()));
             }
@@ -383,17 +387,28 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                 if (mSecondarySubtitle != null && mSecondarySubtitle.hasCues()) mSecondarySubtitle.refreshLayout();
             }
             case "delay" -> setSubtitleDelay(value);
+            case "delay_reset" -> {
+                if (mVideoInfo != null && mVideoInfo.subtitleDelay != 0) {
+                    setSubtitleDelay(-mVideoInfo.subtitleDelay);
+                }
+            }
             case "reset" -> {
                 mSubtitleManager.setSize(36);
                 mSubtitleManager.setVerticalPosition(64);
                 mSubtitleManager.setColor(android.graphics.Color.WHITE);
-                mSubtitleManager.setPhoneBackground(false);
+                mSubtitleManager.setPhoneBackground(false, 70);
+                mSubtitleManager.setOutlineLevel(0);
+                mSubtitleManager.setOutlineColor(android.graphics.Color.BLACK);
                 mSubtitleManager.setPhoneVisibility(true);
                 if (mPreferences != null) {
                     mPreferences.edit()
                             .putInt(KEY_SUBTITLE_SIZE, 36)
                             .putInt(KEY_SUBTITLE_VPOS, 64)
                             .putInt(KEY_SUBTITLE_COLOR, android.graphics.Color.WHITE)
+                            .putBoolean(KEY_SUBTITLE_BG, false)
+                            .putInt(KEY_SUBTITLE_BG_OPACITY, 70)
+                            .putInt(KEY_SUBTITLE_OUTLINE_LEVEL, 0)
+                            .putInt(KEY_SUBTITLE_OUTLINE_COLOR, android.graphics.Color.BLACK)
                             .putBoolean(KEY_SUBTITLE_OUTLINE, false)
                             .apply();
                 }
@@ -402,16 +417,92 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
             }
             case "background" -> {
                 boolean curBg = mPreferences != null
-                        ? mPreferences.getBoolean(KEY_SUBTITLE_OUTLINE, mSubtitleOutlineDefault)
+                        ? mPreferences.getBoolean(KEY_SUBTITLE_BG, mSubtitleManager.isPhoneBackground())
                         : mSubtitleManager.isPhoneBackground();
                 boolean nextBg = !curBg;
-                mSubtitleManager.setPhoneBackground(nextBg);
+                int bgOp = mPreferences != null
+                        ? mPreferences.getInt(KEY_SUBTITLE_BG_OPACITY, com.meedx.providers.UnifiedSubtitleConfig.bgOpacity(this))
+                        : mSubtitleManager.getPhoneBgOpacity();
+                if (nextBg && bgOp == 0) bgOp = 70;
+                mSubtitleManager.setPhoneBackground(nextBg, bgOp);
                 if (mPreferences != null) {
-                    mPreferences.edit().putBoolean(KEY_SUBTITLE_OUTLINE, nextBg).apply();
+                    mPreferences.edit()
+                            .putBoolean(KEY_SUBTITLE_BG, nextBg)
+                            .putInt(KEY_SUBTITLE_BG_OPACITY, com.meedx.providers.UnifiedSubtitleConfig.normalizeBgOpacity(bgOp))
+                            .apply();
+                }
+            }
+            case "bg_opacity" -> {
+                int curOp = mPreferences != null
+                        ? mPreferences.getInt(KEY_SUBTITLE_BG_OPACITY, mSubtitleManager.getPhoneBgOpacity())
+                        : mSubtitleManager.getPhoneBgOpacity();
+                int nextOp = value >= 0
+                        ? com.meedx.providers.UnifiedSubtitleConfig.normalizeBgOpacity(value)
+                        : com.meedx.providers.UnifiedSubtitleConfig.nextBgOpacity(curOp);
+                boolean enableBg = nextOp > 0;
+                mSubtitleManager.setPhoneBackground(enableBg, nextOp);
+                if (mPreferences != null) {
+                    mPreferences.edit()
+                            .putBoolean(KEY_SUBTITLE_BG, enableBg)
+                            .putInt(KEY_SUBTITLE_BG_OPACITY, nextOp)
+                            .apply();
+                }
+            }
+            case "outline" -> {
+                int curLvl = mPreferences != null
+                        ? mPreferences.getInt(KEY_SUBTITLE_OUTLINE_LEVEL, mSubtitleManager.getOutlineLevel())
+                        : mSubtitleManager.getOutlineLevel();
+                int nextLvl = value >= 0
+                        ? Math.max(0, Math.min(3, value))
+                        : com.meedx.providers.UnifiedSubtitleConfig.nextOutlineLevel(curLvl);
+                mSubtitleManager.setOutlineLevel(nextLvl);
+                if (mPreferences != null) {
+                    mPreferences.edit()
+                            .putInt(KEY_SUBTITLE_OUTLINE_LEVEL, nextLvl)
+                            .putBoolean(KEY_SUBTITLE_OUTLINE, nextLvl > 0)
+                            .apply();
+                }
+            }
+            case "outline_color" -> {
+                int normCol = com.meedx.providers.UnifiedSubtitleConfig.normalizeOutlineColor(value);
+                mSubtitleManager.setOutlineColor(normCol);
+                int curLvl = mPreferences != null
+                        ? mPreferences.getInt(KEY_SUBTITLE_OUTLINE_LEVEL, mSubtitleManager.getOutlineLevel())
+                        : mSubtitleManager.getOutlineLevel();
+                int nextLvl = curLvl == 0 ? 2 : curLvl;
+                mSubtitleManager.setOutlineLevel(nextLvl);
+                if (mPreferences != null) {
+                    mPreferences.edit()
+                            .putInt(KEY_SUBTITLE_OUTLINE_COLOR, normCol)
+                            .putInt(KEY_SUBTITLE_OUTLINE_LEVEL, nextLvl)
+                            .putBoolean(KEY_SUBTITLE_OUTLINE, nextLvl > 0)
+                            .apply();
                 }
             }
             case "visible" -> mSubtitleManager.togglePhoneVisibility();
         }
+    }
+
+    /** Reloads subtitle appearance from UnifiedSubtitleConfig when synced live from Phone. */
+    public void reloadUnifiedSubtitleAppearance() {
+        int sz = com.meedx.providers.UnifiedSubtitleConfig.textSize(this);
+        int vp = com.meedx.providers.UnifiedSubtitleConfig.vpos(this);
+        int col = com.meedx.providers.UnifiedSubtitleConfig.textColor(this);
+        boolean bg = com.meedx.providers.UnifiedSubtitleConfig.opaqueBg(this);
+        int bgOp = com.meedx.providers.UnifiedSubtitleConfig.bgOpacity(this);
+        int outLvl = com.meedx.providers.UnifiedSubtitleConfig.outlineLevel(this);
+        int outCol = com.meedx.providers.UnifiedSubtitleConfig.outlineColor(this);
+        int dualPos = com.meedx.providers.UnifiedSubtitleConfig.dualSubPosition(this);
+        if (mSubtitleManager != null) {
+            if (mAdaptiveSubtitleContrast != null) mAdaptiveSubtitleContrast.setEnabled(false);
+            mSubtitleManager.setSize(sz);
+            mSubtitleManager.setColor(col);
+            setSubtitleVpos(vp, "reloadUnifiedSubtitleAppearance");
+            mSubtitleManager.setOutlineColor(outCol);
+            mSubtitleManager.setOutlineLevel(outLvl);
+            mSubtitleManager.setPhoneBackground(bg, bgOp);
+        }
+        applyPhoneSubtitleStyle("dual_position", dualPos);
     }
 
     private void clearConflictingSecondarySubtitle(VideoMetadata meta, int primaryTrackIndex) {
@@ -1295,17 +1386,30 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
         mIsReadytoStart = false;
         if (log.isDebugEnabled()) log.debug("postOnPlayerServiceBind() ");
 
-        // Read HTTP headers passed by external apps (MX Player API / Stremio)
+        // Read HTTP headers passed by external apps / Stremio / Live TV
+        Bundle mergedHeaders = new Bundle();
         Bundle headersBundle = getIntent().getBundleExtra("headers");
-        if (headersBundle != null && !headersBundle.isEmpty()) {
+        if (headersBundle != null) mergedHeaders.putAll(headersBundle);
+        Bundle channelHeadersBundle = getIntent().getBundleExtra("channel_headers");
+        if (channelHeadersBundle != null) mergedHeaders.putAll(channelHeadersBundle);
+        String uaExtra = getIntent().getStringExtra("channel_ua");
+        if (uaExtra != null && !uaExtra.isBlank() && !mergedHeaders.containsKey("User-Agent")) {
+            mergedHeaders.putString("User-Agent", uaExtra);
+        }
+        String refExtra = getIntent().getStringExtra("channel_referer");
+        if (refExtra != null && !refExtra.isBlank() && !mergedHeaders.containsKey("Referer")) {
+            mergedHeaders.putString("Referer", refExtra);
+        }
+        if (!mergedHeaders.isEmpty()) {
             mExtraMap = new java.util.HashMap<>();
-            for (String key : headersBundle.keySet()) {
-                Object value = headersBundle.get(key);
-                if (value instanceof String) {
+            for (String key : mergedHeaders.keySet()) {
+                Object value = mergedHeaders.get(key);
+                if (value instanceof String && !((String) value).isBlank()) {
                     mExtraMap.put(key, (String) value);
                 }
             }
-            if (log.isDebugEnabled()) log.debug("postOnPlayerServiceBind: found {} HTTP headers from external intent: {}", mExtraMap.size(), mExtraMap.keySet());
+            getIntent().putExtra("headers", mergedHeaders);
+            if (log.isDebugEnabled()) log.debug("postOnPlayerServiceBind: found {} HTTP headers from intent: {}", mExtraMap.size(), mExtraMap.keySet());
         } else {
             if (log.isDebugEnabled()) log.debug("postOnPlayerServiceBind: no HTTP headers in external intent");
         }
@@ -1342,7 +1446,8 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                     () -> mPlayer == null ? 0 : mPlayer.getCurrentPosition(),
                     () -> mPlayer == null ? 0 : mPlayer.getDuration(),
                     () -> mPlayer != null && mPlayer.isPlaying(),
-                    position -> { if (mPlayer != null) mPlayer.seekTo(position); });
+                    position -> { if (mPlayer != null) mPlayer.seekTo(position); },
+                    muted -> { if (mPlayer != null) mPlayer.setFilterMuted(muted); });
         }
         cinemaPlaybackFilters.setMedia(mUri, mVideoId, getIntent());
         cinemaPlaybackFilters.resume();
@@ -2487,8 +2592,20 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                 ? mPreferences.getInt(KEY_SUBTITLE_COLOR, mSubtitleColorDefault)
                 : com.meedx.providers.UnifiedSubtitleConfig.textColor(this);
         boolean curBg = mPreferences != null
-                ? mPreferences.getBoolean(KEY_SUBTITLE_OUTLINE, mSubtitleOutlineDefault)
+                ? mPreferences.getBoolean(KEY_SUBTITLE_BG, com.meedx.providers.UnifiedSubtitleConfig.opaqueBg(this))
                 : com.meedx.providers.UnifiedSubtitleConfig.opaqueBg(this);
+        int curBgOpacity = mPreferences != null
+                ? com.meedx.providers.UnifiedSubtitleConfig.normalizeBgOpacity(
+                        mPreferences.getInt(KEY_SUBTITLE_BG_OPACITY, com.meedx.providers.UnifiedSubtitleConfig.bgOpacity(this)))
+                : com.meedx.providers.UnifiedSubtitleConfig.bgOpacity(this);
+        int curOutlineLevel = mPreferences != null
+                ? Math.max(0, Math.min(3, mPreferences.getInt(KEY_SUBTITLE_OUTLINE_LEVEL,
+                        com.meedx.providers.UnifiedSubtitleConfig.outlineLevel(this))))
+                : com.meedx.providers.UnifiedSubtitleConfig.outlineLevel(this);
+        int curOutlineColor = mPreferences != null
+                ? com.meedx.providers.UnifiedSubtitleConfig.normalizeOutlineColor(
+                        mPreferences.getInt(KEY_SUBTITLE_OUTLINE_COLOR, com.meedx.providers.UnifiedSubtitleConfig.outlineColor(this)))
+                : com.meedx.providers.UnifiedSubtitleConfig.outlineColor(this);
         boolean curVisible = mSubtitleManager == null || mSubtitleManager.isPhoneVisible();
 
         int activeMode = com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleHubDialog.hubModeFromCentral(this);
@@ -2566,7 +2683,7 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                             if (mSecondarySubtitle != null) mSecondarySubtitle.clear();
                             refreshSubtitleTVMenu();
                         })
-                .liveAppearance(delayMs, curSize, curColor, curBg, curVisible, (action, value) -> {
+                .liveAppearance(delayMs, curSize, curColor, curBg, curBgOpacity, curOutlineLevel, curOutlineColor, curVisible, (action, value) -> {
                     applyPhoneSubtitleStyle(action, value);
                     persistNativeSubtitleStyleToUnified();
                 })
@@ -2578,9 +2695,19 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
         int sz = mSubtitleManager.getSize();
         int vp = mSubtitleManager.getVerticalPosition();
         int col = mPreferences != null ? mPreferences.getInt(KEY_SUBTITLE_COLOR, mSubtitleColorDefault) : android.graphics.Color.WHITE;
-        boolean bg = mPreferences != null && mPreferences.getBoolean(KEY_SUBTITLE_OUTLINE, mSubtitleOutlineDefault);
+        boolean bg = mPreferences != null && mPreferences.getBoolean(KEY_SUBTITLE_BG, false);
+        int bgOp = mPreferences != null
+                ? com.meedx.providers.UnifiedSubtitleConfig.normalizeBgOpacity(mPreferences.getInt(KEY_SUBTITLE_BG_OPACITY, 70))
+                : mSubtitleManager.getPhoneBgOpacity();
+        int outlineLvl = mPreferences != null
+                ? Math.max(0, Math.min(3, mPreferences.getInt(KEY_SUBTITLE_OUTLINE_LEVEL, mSubtitleManager.getOutlineLevel())))
+                : mSubtitleManager.getOutlineLevel();
+        int outlineCol = mPreferences != null
+                ? com.meedx.providers.UnifiedSubtitleConfig.normalizeOutlineColor(
+                        mPreferences.getInt(KEY_SUBTITLE_OUTLINE_COLOR, mSubtitleManager.getOutlineColor()))
+                : mSubtitleManager.getOutlineColor();
         long delay = mVideoInfo != null ? mVideoInfo.subtitleDelay : 0L;
-        com.meedx.providers.UnifiedSubtitleConfig.saveAppearance(this, sz, vp, col, bg, delay);
+        com.meedx.providers.UnifiedSubtitleConfig.saveAppearance(this, sz, vp, col, bg, bgOp, outlineLvl, outlineCol, delay);
         com.archos.mediacenter.video.leanback.cinema.CinemaSubtitleSyncBridge.onTvSubtitleConfigChanged(this);
     }
 
@@ -3385,54 +3512,30 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
 
     private void showVideoInfos() {
         mPlayerController.hide();
-
-        Class infoActivity = null;
-
-        try {
-            // When on an actual leanback device (Android TV, etc.) we give no choice -> Leanback!
-            if (getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK) || isChromeOS(mContext)) {
-                infoActivity = getClassLoader().loadClass("com.archos.mediacenter.video.leanback.details.VideoDetailsOverlayActivity");
-            }
-            else {
-                // string definitions are in preference_video.xml and in @array/ui_mode_leanback_entryvalues
-                final String uiMode = PreferenceManager.getDefaultSharedPreferences(this)
-                        .getString(UiChoiceDialog.UI_CHOICE_LEANBACK_KEY, "-");
-
-                if (uiMode.equals(UiChoiceDialog.UI_CHOICE_LEANBACK_TV_VALUE)) {
-                    // User explicitly choose TV mode
-                    infoActivity = getClassLoader().loadClass("com.archos.mediacenter.video.leanback.details.VideoDetailsOverlayActivity");
-                } else { // user did not choose or user explicitly choose tablet mode
-                    infoActivity = VideoInfoActivity.class;
-                }
-            }
-        } catch (ClassNotFoundException ex) {
-            infoActivity = VideoInfoActivity.class; // fallback to dialog
+        final boolean wasPlaying = mPlayer != null && mPlayer.isPlaying();
+        if (wasPlaying) {
+            mPlayer.pause(PlayerController.STATE_OTHER);
         }
-
-        Intent intent = new Intent(this, infoActivity);
-
-        if (mPlayer.getType() == IMediaPlayer.TYPE_AVOS && fileExists()) {
-            intent.setData(Uri.fromFile(mPlayer.getVideoMetadata().getFile()));
-        } else {
-            intent.setData(mUri);
-        }
-
-        if (mPlayer.getType() == IMediaPlayer.TYPE_AVOS) {
-            intent.putExtra(VideoInfoActivity.EXTRA_USE_VIDEO_METADATA, mPlayer.getVideoMetadata());
-        }
-        intent.putExtra(VideoInfoActivity.EXTRA_PLAYER_TYPE, mPlayer.getType());
-        intent.putExtra(VideoInfoActivity.EXTRA_VIDEO_ID, mVideoId);
-        intent.putExtra(VideoInfoActivity.EXTRA_LAUNCHED_FROM_PLAYER, true);
-        // Forward HTTP headers so the info activity can probe the stream with the same headers
-        if (mExtraMap != null && !mExtraMap.isEmpty()) {
-            Bundle headersBundle = new Bundle();
-            for (java.util.Map.Entry<String, String> entry : mExtraMap.entrySet()) {
-                headersBundle.putString(entry.getKey(), entry.getValue());
-            }
-            intent.putExtra("headers", headersBundle);
-            if (log.isDebugEnabled()) log.debug("showVideoInfos: forwarding {} headers to info activity", mExtraMap.size());
-        }
-        startActivity(intent);
+        Uri infoUri = (mPlayer != null && mPlayer.getType() == IMediaPlayer.TYPE_AVOS && fileExists()
+                && mPlayer.getVideoMetadata() != null && mPlayer.getVideoMetadata().getFile() != null)
+                ? Uri.fromFile(mPlayer.getVideoMetadata().getFile())
+                : mUri;
+        com.archos.mediacenter.video.utils.VideoMetadata liveMeta =
+                mPlayer != null ? mPlayer.getVideoMetadata() : null;
+        com.archos.mediacenter.video.leanback.cinema.CinemaMediaMoreDialog.showFromPlayer(
+                this,
+                infoUri,
+                mVideoId,
+                getCinemaPlaybackTitle(),
+                liveMeta,
+                null,
+                this::openUnifiedSubtitleHub,
+                () -> {
+                    mIsInfoActivityDisplayed = false;
+                    if (wasPlaying && mPlayer != null && !isFinishing() && !isDestroyed()) {
+                        mPlayer.start(PlayerController.STATE_NORMAL);
+                    }
+                });
         mIsInfoActivityDisplayed = true;
     }
 
@@ -5189,12 +5292,20 @@ public class PlayerActivity extends AppCompatActivity implements PlayerControlle
                 int size = preferences.getInt(KEY_SUBTITLE_SIZE, mSubtitleSizeDefault);
                 int vpos = preferences.getInt(KEY_SUBTITLE_VPOS, mSubtitleVPosDefault);
                 int color = preferences.getInt(KEY_SUBTITLE_COLOR, mSubtitleColorDefault);
-                boolean outline = preferences.getBoolean(KEY_SUBTITLE_OUTLINE, mSubtitleOutlineDefault);
+                boolean bgEnabled = preferences.getBoolean(KEY_SUBTITLE_BG,
+                        com.meedx.providers.UnifiedSubtitleConfig.opaqueBg(PlayerActivity.this));
+                int bgOpacity = preferences.getInt(KEY_SUBTITLE_BG_OPACITY,
+                        com.meedx.providers.UnifiedSubtitleConfig.bgOpacity(PlayerActivity.this));
+                int outlineLvl = preferences.getInt(KEY_SUBTITLE_OUTLINE_LEVEL,
+                        com.meedx.providers.UnifiedSubtitleConfig.outlineLevel(PlayerActivity.this));
+                int outlineCol = preferences.getInt(KEY_SUBTITLE_OUTLINE_COLOR,
+                        com.meedx.providers.UnifiedSubtitleConfig.outlineColor(PlayerActivity.this));
                 mSubtitleManager.setSize(size);
                 mSubtitleManager.setColor(color);
                 setSubtitleVpos(vpos, "onSubtitleMetadataUpdated");
-                mSubtitleManager.setOutlineState(outline);
-                mSubtitleManager.setPhoneBackground(outline);
+                mSubtitleManager.setOutlineColor(outlineCol);
+                mSubtitleManager.setOutlineLevel(outlineLvl);
+                mSubtitleManager.setPhoneBackground(bgEnabled, bgOpacity);
                 // mVideoInfo.subtitleTrack is the track number with the none track 0<=mVideoInfo.subtitleTrack<=nbTrack, nbTrack for none track
                 // but mSubtitleInfoController is the track number with the none track (i.e. nbTrack + 1) at position 0
                 // at this point mVideoInfo.subtitleTrack is the track number to be used

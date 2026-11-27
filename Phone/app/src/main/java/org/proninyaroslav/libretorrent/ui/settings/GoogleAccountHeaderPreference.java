@@ -37,6 +37,7 @@ public final class GoogleAccountHeaderPreference extends Preference {
     private final Runnable onUpload;
     private final Runnable onRestore;
     private final Runnable onSignOut;
+    private final Runnable onDeleteCloud;
     private final Runnable onSaveLocal;
     private final Runnable onRestoreLocal;
     private String liveStatus = "";
@@ -47,6 +48,7 @@ public final class GoogleAccountHeaderPreference extends Preference {
                                          Runnable onUpload,
                                          Runnable onRestore,
                                          Runnable onSignOut,
+                                         Runnable onDeleteCloud,
                                          Runnable onSaveLocal,
                                          Runnable onRestoreLocal) {
         super(context);
@@ -54,6 +56,7 @@ public final class GoogleAccountHeaderPreference extends Preference {
         this.onUpload = onUpload;
         this.onRestore = onRestore;
         this.onSignOut = onSignOut;
+        this.onDeleteCloud = onDeleteCloud;
         this.onSaveLocal = onSaveLocal;
         this.onRestoreLocal = onRestoreLocal;
         setKey("google_account_cloud_backup");
@@ -211,7 +214,7 @@ public final class GoogleAccountHeaderPreference extends Preference {
             btnRow.addView(signBtn, lp1);
 
             var localBtn = makeBtn(c, ar ? "نسخ محلي" : "Local Backup", false,
-                    () -> showBackupActionsSheet(c, ar, false));
+                    () -> showBackupActions(c, null));
             btnRow.addView(localBtn, new LinearLayout.LayoutParams(0, -2, 1f));
         } else {
             var upBtn = makeBtn(c, ar ? "رفع" : "Upload", true, onUpload);
@@ -225,40 +228,38 @@ public final class GoogleAccountHeaderPreference extends Preference {
             btnRow.addView(restBtn, lp2);
 
             var moreBtn = makeBtn(c, ar ? "المزيد" : "More", false,
-                    () -> showBackupActionsSheet(c, ar, true));
+                    () -> showBackupActions(c, account));
             btnRow.addView(moreBtn, new LinearLayout.LayoutParams(0, -2, 0.9f));
         }
     }
 
-    private void showBackupActionsSheet(Context c, boolean ar, boolean signedIn) {
-        java.util.List<String> labels = new java.util.ArrayList<>();
-        java.util.List<Runnable> actions = new java.util.ArrayList<>();
-        if (signedIn) {
-            labels.add(ar ? "رفع النسخة السحابية الآن (الهاتف + الشاشة)" : "Upload Cloud Backup (Phone + TV)");
-            actions.add(onUpload);
-            labels.add(ar ? "استرجاع من Google وإرسالها للشاشة" : "Restore from Google & Push to TV");
-            actions.add(onRestore);
-        } else {
-            labels.add(ar ? "استرجاع من Google وإرسالها للشاشة" : "Restore from Google & Push to TV");
-            actions.add(onRestore);
+    private void showBackupActions(Context context, GoogleSignInAccount account) {
+        var actions = new java.util.ArrayList<CloudBackupDialog.Action>();
+        if (account != null) {
+            actions.add(new CloudBackupDialog.Action(R.string.cinema_backup_upload_action,
+                    R.string.cinema_backup_upload_description, R.drawable.ic_backup_cloud_upload, onUpload));
         }
-        labels.add(ar ? "حفظ نسخة محلية (الهاتف + الشاشة)" : "Save Local Backup (Phone + TV)");
-        actions.add(onSaveLocal);
-        labels.add(ar ? "استعادة نسخة محلية وإرسالها للشاشة" : "Restore Local Backup & Push to TV");
-        actions.add(onRestoreLocal);
-        if (signedIn) {
-            labels.add(ar ? "تسجيل الخروج من Google" : "Sign Out of Google");
-            actions.add(onSignOut);
+        actions.add(new CloudBackupDialog.Action(R.string.cinema_backup_restore_cloud,
+                R.string.cinema_backup_restore_cloud_description, R.drawable.ic_backup_cloud_restore, onRestore));
+        actions.add(new CloudBackupDialog.Action(R.string.cinema_backup_save_local,
+                R.string.cinema_backup_save_local_description, R.drawable.ic_backup_local_save, onSaveLocal));
+        actions.add(new CloudBackupDialog.Action(R.string.cinema_backup_restore_local,
+                R.string.cinema_backup_restore_local_description, R.drawable.ic_backup_local_restore, onRestoreLocal));
+
+        CharSequence connectedAccount = context.getText(R.string.cinema_backup_no_account);
+        if (account != null) {
+            String email = account.getEmail();
+            connectedAccount = android.text.TextUtils.isEmpty(email)
+                    ? context.getText(R.string.cinema_backup_connected)
+                    : androidx.core.text.BidiFormatter.getInstance().unicodeWrap(email);
+            actions.add(new CloudBackupDialog.Action(R.string.cinema_delete_cloud_backup,
+                    R.string.cinema_backup_delete_description, R.drawable.ic_delete_24px,
+                    CloudBackupDialog.RED, onDeleteCloud));
+            actions.add(new CloudBackupDialog.Action(R.string.cinema_backup_sign_out,
+                    R.string.cinema_backup_sign_out_description, R.drawable.ic_backup_sign_out,
+                    CloudBackupDialog.MUTED, onSignOut));
         }
-        new com.google.android.material.dialog.MaterialAlertDialogBuilder(c)
-                .setTitle(ar ? "خيارات النسخ الاحتياطي" : "Backup & Restore Options")
-                .setItems(labels.toArray(new String[0]), (d, which) -> {
-                    if (which >= 0 && which < actions.size() && actions.get(which) != null) {
-                        actions.get(which).run();
-                    }
-                })
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
+        CloudBackupDialog.showOptions(context, connectedAccount, actions);
     }
 
     private static MaterialButton makeBtn(Context c, String text, boolean primary, Runnable click) {

@@ -45,6 +45,9 @@ final class TvHubConnectionController {
     TextView clipboardBannerUrlView;
     String detectedClipboardUrl;
     String dismissedClipboardUrl;
+    private androidx.appcompat.app.AlertDialog activeAddonInstallDialog;
+    private String activeAddonInstallUrl = "";
+    private long lastAddonPromptAtMs = 0L;
 
     android.widget.ImageView googleAvatarView;
     TextView googleNameView;
@@ -58,7 +61,11 @@ final class TvHubConnectionController {
     static final int CLOUD_UPLOAD = 1;
     static final int CLOUD_RESTORE = 2;
     int pendingCloudMode = CLOUD_SIGN_IN_CHECK;
-    volatile java.util.concurrent.CompletableFuture<org.json.JSONObject> pendingTvBackupFuture;
+    volatile java.util.concurrent.CompletableFuture<Boolean> pendingTvAddonsFuture;
+
+    record TvAddonRef(String id, String manifestUrl, String name) {}
+    private final java.util.List<TvAddonRef> cachedTvAddons = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private volatile boolean tvAddonsLoadedFromDisk = false;
 
     TvHubConnectionController(TvHubActivity host) {
         this.host = host;
@@ -102,15 +109,7 @@ final class TvHubConnectionController {
         com.meedx.providers.LiveTvPreferences.importFavoriteCountriesJson(
                 host, payload.optJSONArray(com.meedx.providers.LiveTvPreferences.FAVORITE_COUNTRIES_FIELD));
         refreshAddonsAndTraktCard();
-        var account = LocalCinemaBackupManager.getSignedInGoogleAccount(host);
-        if (account != null && account.getAccount() != null) {
-            host.watchSyncIo.execute(() -> {
-                try {
-                    var unified = LocalCinemaBackupManager.buildUnifiedBackup(host, null);
-                    LocalCinemaBackupManager.uploadToGoogleDrive(host, account, unified.toString(2));
-                } catch (Exception ignored) {}
-            });
-        }
+        LocalCinemaBackupManager.scheduleDebouncedCloudUpload(host, "live_tv_prefs");
     }
 
     private void refreshFavoriteChannelsSummary() {
@@ -145,17 +144,20 @@ final class TvHubConnectionController {
         refreshAddonsAndTraktCard();
     }
 
-    void onTvBackupData(org.json.JSONObject response) {
-        LocalCinemaBackupManager.cacheTvBackup(host, response);
-        var fut = pendingTvBackupFuture;
-        if (fut != null) fut.complete(response);
+    void onTvBackupData(org.java_websocket.client.WebSocketClient socket, org.json.JSONObject response) {
+        if (LocalCinemaBackupManager.handleRequestedTvBackup(socket, response)) return;
+        LocalCinemaBackupManager.onLiveTvBackupReceived(host, response, true);
+        host.main.post(() -> {
+            if (!host.isDestroyed()) refreshAddonsAndTraktCard();
+        });
     }
 
     void onTvBackupRestored(org.json.JSONObject response) {
         if (response.optBoolean("ok", false)) {
-            LocalCinemaBackupManager.clearPendingTvRestore(host);
+            LocalCinemaBackupManager.onTvRestoreConfirmed(host, response);
             setBackupLiveStatus(host.l("تم استرجاع وتطبيق إعدادات النسخة على الشاشة بنجاح ✓",
                     "TV backup settings restored & applied on TV ✓"), false);
+            refreshAddonsAndTraktCard();
         } else {
             setBackupLiveStatus(host.l("تعذّر تطبيق بعض إعدادات الشاشة: ",
                     "TV restore error: ") + response.optString("error", ""), true);
@@ -183,6 +185,7 @@ final class TvHubConnectionController {
 
     void scanTv() {
         if (host.scanningPairing) return;
+        FloatingTvDpadController.hideForExternalOrCamera();
         host.pendingQrScanLaunch = false;
         host.scanningPairing = true;
         host.suppressNextResumeReconnect = true;
@@ -256,11 +259,17 @@ final class TvHubConnectionController {
         var syncAllLp = new LinearLayout.LayoutParams(-1, -2);
         syncAllLp.topMargin = host.dp(8);
         pairingCard.addView(syncAllToTvBtn, syncAllLp);
-        // Card 2: Trakt Account & Sync
-        var traktCard = host.card(page, host.l("2. حساب ومزامنة Trakt", "2. Trakt Account & Sync"),
+        // Card 2: Trakt Account (Token forwarder to TV — TV handles all Trakt syncing directly)
+        var traktCard = host.card(page,
+                host.getString(org.proninyaroslav.libretorrent.R.string.cinema_trakt_card_title),
                 null, CinemaGlassUi.Accent.TRAKT);
-        traktStatusView = host.label("", 14);
-        traktCard.addView(traktStatusView);
+        var traktDesc = host.label(host.getString(org.proninyaroslav.libretorrent.R.string.cinema_trakt_card_desc), 12);
+        traktDesc.setTextColor(0xffcfc8bc);
+        traktCard.addView(traktDesc);
+        traktStatusView = host.label("", 13);
+        var trStLp = new LinearLayout.LayoutParams(-1, -2);
+        trStLp.topMargin = host.dp(6);
+        traktCard.addView(traktStatusView, trStLp);
         traktLiveStatusView = createLiveStatusBanner();
         var tLiveLp = new LinearLayout.LayoutParams(-1, -2);
         tLiveLp.topMargin = host.dp(8);
@@ -276,12 +285,15 @@ final class TvHubConnectionController {
         b2Lp.topMargin = host.dp(6);
         traktCard.addView(traktCodeConnectBtn, b2Lp);
         var traktActionsRow = host.row(traktCard);
-        traktSyncBtn = host.button(host.l("مزامنة الآن", "Sync Now"), () -> syncTraktNowAsync(false), true);
+        traktSyncBtn = host.button(
+                host.getString(org.proninyaroslav.libretorrent.R.string.cinema_trakt_send_to_tv),
+                () -> sendTraktTokenToTv(true), true);
         traktActionsRow.addView(traktSyncBtn, new LinearLayout.LayoutParams(0, -2, 1));
-        traktDisconnectBtn = host.button(host.l("فصل الحساب", "Disconnect"), () -> {
+        traktDisconnectBtn = host.button(
+                host.getString(org.proninyaroslav.libretorrent.R.string.cinema_trakt_disconnect), () -> {
             com.meedx.providers.TraktSyncClient.signOut(host);
-            sendFullSyncStateToTv(false);
-            setTraktLiveStatus(host.l("تم فصل حساب Trakt ومزامنة الشاشة ✓", "Trakt disconnected & synced to TV ✓"), false);
+            sendTraktTokenToTv(false);
+            setTraktLiveStatus(host.l("تم فصل حساب Trakt وإبلاغ الشاشة ✓", "Trakt disconnected & sent to TV ✓"), false);
             refreshAddonsAndTraktCard();
         }, false);
         var discLp = new LinearLayout.LayoutParams(0, -2, 1);
@@ -368,7 +380,7 @@ final class TvHubConnectionController {
 
         var addonDirRow = host.row(addonsCard);
         var dirBtn = host.button(host.l("دليل إضافات Stremio", "Stremio Directory"),
-                () -> host.openBrowser("https://stremio-addons.net/"), false);
+                () -> host.openInAppBrowser("https://stremio-addons.net/"), false);
         dirBtn.setSingleLine(true);
         dirBtn.setMaxLines(1);
         addonDirRow.addView(dirBtn, new LinearLayout.LayoutParams(0, -2, 1));
@@ -376,8 +388,8 @@ final class TvHubConnectionController {
         // Card 5: Phone Permissions Wizard
         var permCard = host.card(page, host.l("5. معالج صلاحيات الهاتف", "5. Phone Permissions Wizard"));
         permCard.addView(host.label(host.l(
-                "تأكّد من صلاحيات التخزين، العرض فوق التطبيقات، واستثناء البطارية لضمان ثبات البث المباشر والريموت العائم.",
-                "Verify storage, floating remote overlay, notifications, and battery optimization for rock-solid casting."), 13));
+                "تأكّد من صلاحيات التخزين، الإشعارات، الشبكة المحلية، واستثناء البطارية لضمان ثبات البث المباشر في الخلفية.",
+                "Verify storage, notifications, local Wi-Fi, and battery optimization for rock-solid background casting."), 13));
         var permBtnLp = new LinearLayout.LayoutParams(-1, -2);
         permBtnLp.topMargin = host.dp(8);
         permCard.addView(host.button(host.l("فتح معالج الصلاحيات والأذونات", "Open Permissions Wizard"),
@@ -386,56 +398,55 @@ final class TvHubConnectionController {
         refreshAddonsAndTraktCard();
     }
 
-    void sendWatchSyncSnapshot() {
-        host.watchSyncIo.execute(() -> {
-            try {
-                var records = PhoneWatchStore.exportRecentSyncRecords(host, 100);
-                var ws = host.socket;
-                if (records.length() > 0 && ws != null && ws.isOpen()) {
-                    ws.send(new org.json.JSONObject().put("type", "WATCH_SYNC").put("records", records).toString());
-                }
-            } catch (Exception ignored) {}
-        });
+    /** Sends only the Trakt OAuth token / sign-out state directly to the connected TV (zero Trakt list calls on Phone). */
+    boolean sendTraktTokenBlocking() {
+        try {
+            var ws = (host.socket != null && host.socket.isOpen()) ? host.socket : CinemaRemoteBridge.getConnectedSocket();
+            if (ws == null || !ws.isOpen()) {
+                markFullSyncDirty(true);
+                return false;
+            }
+            Context app = host.getApplicationContext();
+            com.meedx.providers.TraktSyncClient.migrateAndCleanCredentials(app);
+            boolean linked = com.meedx.providers.TraktSyncClient.isConnected(app);
+            var pkt = new org.json.JSONObject()
+                    .put("type", "API_KEYS_SYNC")
+                    .put("trakt_id", com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.TRAKT_ID))
+                    .put("trakt_secret", com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.TRAKT_SECRET))
+                    .put("trakt_access_token", com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.TRAKT_ACCESS_TOKEN))
+                    .put("trakt_refresh_token", com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.TRAKT_REFRESH_TOKEN))
+                    .put("trakt_expires_at", com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.TRAKT_EXPIRES_AT))
+                    .put("trakt_username", com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.TRAKT_USERNAME))
+                    .put("trakt_slug", com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.TRAKT_SLUG))
+                    .put("trakt_signout", !linked);
+            ws.send(pkt.toString());
+            return true;
+        } catch (Exception ignored) {
+            markFullSyncDirty(true);
+            return false;
+        }
     }
 
-    void sendWatchSyncRecord(PhoneWatchStore.Entry entry) {
-        if (entry == null) return;
+    void sendTraktTokenToTv(boolean userTriggered) {
         host.watchSyncIo.execute(() -> {
-            try {
-                var obj = PhoneWatchStore.entryToJson(entry);
-                var ws = host.socket;
-                if (obj != null && ws != null && ws.isOpen()) {
-                    ws.send(new org.json.JSONObject().put("type", "WATCH_SYNC")
-                            .put("records", new org.json.JSONArray().put(obj)).toString());
-                }
-            } catch (Exception ignored) {}
-        });
-    }
-
-    void handleWatchSync(org.json.JSONObject msg) {
-        if (msg == null) return;
-        var records = msg.optJSONArray("records");
-        var wl = msg.optJSONArray("watchlist");
-        if ((records == null || records.length() == 0) && wl == null) return;
-        host.watchSyncIo.execute(() -> {
-            boolean anyChanged = false;
-            if (records != null) {
-                for (int i = 0; i < records.length(); i++) {
-                    var rec = records.optJSONObject(i);
-                    if (rec != null && PhoneWatchStore.applyRemoteSyncRecord(host, rec)) {
-                        anyChanged = true;
+            boolean sent = sendTraktTokenBlocking();
+            host.main.post(() -> {
+                if (host.isDestroyed()) return;
+                refreshAddonsAndTraktCard();
+                if (userTriggered) {
+                    if (sent) {
+                        String okMsg = host.getString(org.proninyaroslav.libretorrent.R.string.cinema_trakt_status_connected);
+                        setTraktLiveStatus(okMsg, false);
+                        host.notifyStatus(okMsg);
+                    } else {
+                        String waitMsg = host.l(
+                                "الشاشة غير متصلة حالياً — سيُرسل رمز Trakt للشاشة تلقائياً فور الاتصال.",
+                                "TV is currently offline — Trakt token will be sent to TV on next connection.");
+                        setTraktLiveStatus(waitMsg, true);
+                        host.notifyStatus(waitMsg);
                     }
                 }
-            }
-            if (wl != null) {
-                PhoneWatchStore.saveWatchlist(host, wl);
-                anyChanged = true;
-            }
-            if (anyChanged) {
-                host.main.post(() -> {
-                    if (!host.isDestroyed()) host.library.refreshIfReady();
-                });
-            }
+            });
         });
     }
 
@@ -510,10 +521,8 @@ final class TvHubConnectionController {
         if (traktStatusView != null) {
             boolean linked = com.meedx.providers.TraktSyncClient.isConnected(host);
             traktStatusView.setText(linked
-                    ? host.l("متصل ✓",
-                            "Connected ✓")
-                    : host.l("غير متصل · اختر الربط عبر المتصفح أو برمز التفعيل",
-                            "Disconnected · Connect via Browser or with Code"));
+                    ? host.getString(org.proninyaroslav.libretorrent.R.string.cinema_trakt_status_connected)
+                    : host.getString(org.proninyaroslav.libretorrent.R.string.cinema_trakt_status_disconnected));
             traktStatusView.setTextColor(linked ? 0xff9de0b8 : 0xffefe7d6);
             if (traktConnectBtn != null) {
                 traktConnectBtn.setEnabled(true);
@@ -659,19 +668,6 @@ final class TvHubConnectionController {
         host.getSharedPreferences("cinema_link", Context.MODE_PRIVATE).edit().putBoolean("full_sync_dirty", dirty).apply();
     }
 
-    /** Pushes only locally-pending Trakt changes (no pull, no TV broadcast, no UI refresh). */
-    void pushPendingTraktOnlyAsync() {
-        if (!com.meedx.providers.TraktSyncClient.isConnected(host)) return;
-        host.watchSyncIo.execute(() -> {
-            try {
-                var pending = PhoneWatchStore.listPendingTraktItems(host);
-                if (pending == null || pending.isEmpty()) return;
-                var pushed = com.meedx.providers.TraktSyncClient.pushPending(host, pending);
-                PhoneWatchStore.clearPendingTraktSync(host, pushed);
-            } catch (Exception ignored) {}
-        });
-    }
-
     boolean sendFullSyncStateBlocking() {
         return sendFullSyncStateBlocking(false);
     }
@@ -789,15 +785,161 @@ final class TvHubConnectionController {
 
     void onTvAddonEnabled(String url, boolean enabled) {
         com.meedx.providers.StremioAddons.setEnabled(host, url, enabled);
+        ensureTvAddonsLoaded();
+        String norm = normalizeManifestSafe(url);
+        if (!norm.isEmpty()) {
+            cachedTvAddons.removeIf(r -> norm.equalsIgnoreCase(normalizeManifestSafe(r.manifestUrl())));
+            if (enabled) cachedTvAddons.add(new TvAddonRef("", norm, ""));
+            persistTvAddonsToPrefs();
+        }
         refreshAddonsAndTraktCard();
+        CuratedAddonsSheet.refreshActiveIfShowing();
+    }
+
+    void onTvAddonRemoved(String url) {
+        com.meedx.providers.StremioAddons.remove(host, url);
+        ensureTvAddonsLoaded();
+        String norm = normalizeManifestSafe(url);
+        if (!norm.isEmpty()) {
+            cachedTvAddons.removeIf(r -> norm.equalsIgnoreCase(normalizeManifestSafe(r.manifestUrl())));
+            persistTvAddonsToPrefs();
+        }
+        refreshAddonsAndTraktCard();
+        CuratedAddonsSheet.refreshActiveIfShowing();
+    }
+
+    void handleTvAddonsList(org.json.JSONArray addons) {
+        if (addons == null) return;
+        var next = new java.util.ArrayList<TvAddonRef>();
+        for (int i = 0; i < addons.length(); i++) {
+            var o = addons.optJSONObject(i);
+            if (o == null || !o.optBoolean("enabled", true)) continue;
+            String id = o.optString("id", "").trim();
+            String url = normalizeManifestSafe(o.optString("manifestUrl", o.optString("manifest_url", "")));
+            String name = o.optString("name", "").trim();
+            if (!id.isEmpty() || !url.isEmpty()) {
+                next.add(new TvAddonRef(id, url, name));
+            }
+        }
+        tvAddonsLoadedFromDisk = true;
+        cachedTvAddons.clear();
+        cachedTvAddons.addAll(next);
+        persistTvAddonsToPrefs();
+        com.meedx.providers.UnifiedSubtitleConfig.syncFromTvAddonsJson(host, addons);
+        var fut = pendingTvAddonsFuture;
+        if (fut != null) fut.complete(true);
+        host.main.post(() -> {
+            if (!host.isDestroyed()) CuratedAddonsSheet.refreshActiveIfShowing();
+        });
+    }
+
+    private void ensureTvAddonsLoaded() {
+        if (tvAddonsLoadedFromDisk) return;
+        tvAddonsLoadedFromDisk = true;
+        try {
+            String raw = host.getSharedPreferences("cinema_link", Context.MODE_PRIVATE)
+                    .getString("tv_installed_addons_v1", "");
+            if (raw != null && !raw.isBlank()) {
+                var arr = new org.json.JSONArray(raw);
+                for (int i = 0; i < arr.length(); i++) {
+                    var o = arr.optJSONObject(i);
+                    if (o == null) continue;
+                    cachedTvAddons.add(new TvAddonRef(
+                            o.optString("id", ""),
+                            o.optString("manifestUrl", ""),
+                            o.optString("name", "")));
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void persistTvAddonsToPrefs() {
+        try {
+            var arr = new org.json.JSONArray();
+            for (var r : cachedTvAddons) {
+                arr.put(new org.json.JSONObject()
+                        .put("id", r.id())
+                        .put("manifestUrl", r.manifestUrl())
+                        .put("name", r.name()));
+            }
+            host.getSharedPreferences("cinema_link", Context.MODE_PRIVATE)
+                    .edit().putString("tv_installed_addons_v1", arr.toString()).apply();
+        } catch (Exception ignored) {}
+    }
+
+    static String normalizeManifestSafe(String raw) {
+        if (raw == null || raw.isBlank()) return "";
+        try {
+            return com.meedx.providers.StremioAddons.normalizeManifestUrl(raw).toLowerCase(java.util.Locale.ROOT);
+        } catch (Exception ignored) {
+            return raw.trim().toLowerCase(java.util.Locale.ROOT);
+        }
+    }
+
+    private static String canonicalAddonToken(String id, String url, String name) {
+        String hay = ((id == null ? "" : id) + " " + (url == null ? "" : url) + " " + (name == null ? "" : name))
+                .toLowerCase(java.util.Locale.ROOT);
+        if (hay.contains("?search=")) return "";
+        if (hay.contains("torrentio")) return "torrentio";
+        if (hay.contains("comet.elfhosted") || hay.contains("stremio.comet") || hay.matches(".*\\bcomet\\b.*")) return "comet";
+        if (hay.contains("mediafusion")) return "mediafusion";
+        if (hay.contains("peerflix")) return "peerflix";
+        if (hay.contains("subsense")) return "subsense";
+        if (hay.contains("opensubtitles")) return "opensubtitles";
+        if (hay.contains("cinemeta")) return "cinemeta";
+        if (hay.contains("netflix-catalog") || hay.contains("streaming catalog")) return "streamingcatalogs";
+        if (hay.contains("aiometadata") || hay.contains("aio metadata")) return "aiometadata";
+        if (hay.contains("kitsu")) return "kitsu";
+        if (hay.contains("publicdomainmovies") || hay.contains("public domain movies")) return "publicdomainmovies";
+        if (hay.contains("webstreamr")) return "webstreamr";
+        if (hay.contains("notorrent")) return "notorrent";
+        if (hay.contains("torrentsdb")) return "torrentsdb";
+        if (hay.contains("ultimate-smart-subs") || hay.contains("ultimatesmartsubs")
+                || hay.contains("ultimate smart subs") || hay.contains("uss.ezerche")
+                || hay.contains("turkcealtyazi")) return "uss";
+        if (hay.contains("tvvoo")) return "tvvoo";
+        return "";
+    }
+
+    boolean isCuratedAddonInstalled(com.meedx.providers.StremioAddons.CuratedAddon item) {
+        if (item == null) return false;
+        if (item.configureUrl != null && item.configureUrl.contains("?search=")) return false;
+        ensureTvAddonsLoaded();
+        String targetNormUrl = normalizeManifestSafe(item.manifestUrl);
+        String targetToken = canonicalAddonToken("", item.manifestUrl + " " + item.configureUrl, item.nameEn);
+
+        java.util.List<TvAddonRef> sourceList = cachedTvAddons;
+        if (sourceList.isEmpty()) {
+            var fallback = new java.util.ArrayList<TvAddonRef>();
+            for (var a : com.meedx.providers.StremioAddons.list(host)) {
+                if (a != null && a.enabled) {
+                    fallback.add(new TvAddonRef(a.id, normalizeManifestSafe(a.manifestUrl), a.name));
+                }
+            }
+            sourceList = fallback;
+        }
+        for (var ref : sourceList) {
+            if (!targetNormUrl.isEmpty() && targetNormUrl.equalsIgnoreCase(normalizeManifestSafe(ref.manifestUrl()))) {
+                return true;
+            }
+            if (!targetToken.isEmpty()) {
+                String refToken = canonicalAddonToken(ref.id(), ref.manifestUrl(), ref.name());
+                if (targetToken.equals(refToken)) return true;
+            }
+        }
+        return false;
     }
 
     void handleAddonsSync(org.json.JSONArray addons) {
         if (addons == null) return;
         host.watchSyncIo.execute(() -> {
+            com.meedx.providers.UnifiedSubtitleConfig.syncFromTvAddonsJson(host, addons);
             if (com.meedx.providers.StremioAddons.mergeRemoteJson(host, addons)) {
                 host.main.post(() -> {
-                    if (!host.isDestroyed()) refreshAddonsAndTraktCard();
+                    if (!host.isDestroyed()) {
+                        refreshAddonsAndTraktCard();
+                        CuratedAddonsSheet.refreshActiveIfShowing();
+                    }
                 });
             }
         });
@@ -883,11 +1025,7 @@ final class TvHubConnectionController {
                     if (host.isDestroyed()) return;
                     refreshAddonsAndTraktCard();
                     if (notifyTrakt) {
-                        setTraktLiveStatus(host.l("تمت مزامنة إعدادات وحساب Trakt تلقائياً من الشاشة ✓",
-                                "Synced Trakt account & keys automatically from TV ✓"), false);
-                        if (com.meedx.providers.TraktSyncClient.isConnected(host)) {
-                            syncTraktNowAsync(true);
-                        }
+                        setTraktLiveStatus(host.getString(org.proninyaroslav.libretorrent.R.string.cinema_trakt_status_connected), false);
                     }
                 });
             }
@@ -928,19 +1066,7 @@ final class TvHubConnectionController {
                 : host.l("الشاشة غير متصلة حالياً — جارٍ تحضير نسخة الهاتف + آخر نسخة محفوظة من الشاشة...",
                     "TV disconnected — preparing Phone backup + last cached TV settings..."), false);
         host.watchSyncIo.execute(() -> {
-            org.json.JSONObject liveTv = null;
-            var ws = host.socket;
-            if (ws != null && ws.isOpen()) {
-                var future = new java.util.concurrent.CompletableFuture<org.json.JSONObject>();
-                pendingTvBackupFuture = future;
-                try {
-                    ws.send(new org.json.JSONObject().put("type", "EXPORT_TV_BACKUP").toString());
-                    liveTv = future.get(5500, java.util.concurrent.TimeUnit.MILLISECONDS);
-                } catch (Exception ignored) {
-                } finally {
-                    pendingTvBackupFuture = null;
-                }
-            }
+            org.json.JSONObject liveTv = LocalCinemaBackupManager.fetchLiveTvBackupOverLan(host, 4500);
             try {
                 org.json.JSONObject unified = LocalCinemaBackupManager.buildUnifiedBackup(host, liveTv);
                 String formatted = unified.toString(2);
@@ -1023,28 +1149,25 @@ final class TvHubConnectionController {
 
     void applyUnifiedRestoreJsonBlocking(String content) throws Exception {
         var result = LocalCinemaBackupManager.restoreUnifiedBackup(host, content);
-        var ws = host.socket;
-        boolean pushedNow = false;
-        if (result.tvRestoreCommand != null) {
-            LocalCinemaBackupManager.savePendingTvRestore(host, result.tvRestoreCommand);
-            if (ws != null && ws.isOpen()) {
-                ws.send(result.tvRestoreCommand.toString());
-                pushedNow = true;
-            }
-        }
-        boolean finalPushed = pushedNow;
+        var outcome = LocalCinemaBackupManager.reconcileRestoredTvSettingsBlocking(host, result, host.socket);
         host.main.post(() -> {
             if (host.isDestroyed()) return;
             refreshAddonsAndTraktCard();
             host.library.refreshIfReady();
-            String msg;
-            if (finalPushed) {
-                msg = host.l("تم استرجاع بيانات الهاتف وإرسال إعدادات النسخة إلى الشاشة فوراً ✓",
+            String msg = switch (outcome) {
+                case PUSHED_TO_TV -> host.l(
+                        "تم استرجاع بيانات الهاتف وإرسال إعدادات النسخة إلى الشاشة فوراً ✓",
                         "Phone restored & TV backup pushed immediately to connected TV ✓");
-            } else {
-                msg = host.l("تم استرجاع بيانات الهاتف بنجاح ✓\nحُفظت إعدادات الشاشة في قائمة الانتظار وستنطلق تلقائياً فور اتصالك بالتلفاز.",
-                        "Phone restored ✓\nTV restore queued in pending_tv_restore and will push automatically on next TV connect.");
-            }
+                case PULLED_NEWER_FROM_TV -> host.l(
+                        "تم استرجاع بيانات الهاتف ✓\nإعدادات الشاشة الحية أحدث من النسخة السحابية — تم الحفاظ على إعدادات الشاشة وتحديث السحابة بها تلقائياً ✓",
+                        "Phone restored ✓\nLive TV settings were newer than cloud — preserved TV settings & scheduled cloud update ✓");
+                case ALREADY_IN_SYNC -> host.l(
+                        "تم استرجاع بيانات الهاتف ✓ · إعدادات الشاشة مطابقة ومحدّثة بالفعل ✓",
+                        "Phone restored ✓ · TV settings are already up to date ✓");
+                default -> host.l(
+                        "تم استرجاع بيانات الهاتف بنجاح ✓\nحُفظت إعدادات الشاشة في الانتظار وستُفحص وتُطبّق تلقائياً فور اتصالك بالتلفاز.",
+                        "Phone restored ✓\nTV restore queued and will reconcile automatically on next TV connect.");
+            };
             setBackupLiveStatus(msg, false);
         });
     }
@@ -1151,12 +1274,10 @@ final class TvHubConnectionController {
                     String details = host.l(
                             "تم العثور على نسخة احتياطية سحابية — هل تريد استعادتها الآن؟\n\n"
                                     + "• الصفحات المحفوظة: " + check.savedSitesCount + "\n"
-                                    + "• سجل المشاهدة: " + check.watchCount + "\n"
                                     + "• الإضافات: " + check.addonCount + " · المفاتيح: " + check.apiKeyCount + "\n\n"
                                     + "لن يتم الكتابة فوق نسختك السحابية عند اختيار الإبقاء على البيانات الحالية.",
                             "Cloud backup found — restore it now?\n\n"
                                     + "• Saved browser sites: " + check.savedSitesCount + "\n"
-                                    + "• Watch items: " + check.watchCount + "\n"
                                     + "• Addons: " + check.addonCount + " · API keys: " + check.apiKeyCount + "\n\n"
                                     + "Keeping current data will not overwrite your cloud backup.");
                     new androidx.appcompat.app.AlertDialog.Builder(host)
@@ -1316,21 +1437,42 @@ final class TvHubConnectionController {
 
     boolean handleAddonIntent(android.content.Intent intent) {
         if (intent == null || !android.content.Intent.ACTION_VIEW.equals(intent.getAction())
-                || intent.getData() == null || !"stremio".equalsIgnoreCase(intent.getData().getScheme())) return false;
+                || intent.getData() == null) return false;
+        String scheme = intent.getData().getScheme();
+        if (!"stremio".equalsIgnoreCase(scheme) && !"stremios".equalsIgnoreCase(scheme)) return false;
         String raw = intent.getDataString();
         intent.setData(null);
+        if (host.playbackOpened) host.showPlayback(false);
+        if (host.tabLayout != null && host.tabLayout.getTabCount() > TvHubActivity.CONNECTION_TAB
+                && host.tabLayout.getSelectedTabPosition() != TvHubActivity.CONNECTION_TAB) {
+            var connTab = host.tabLayout.getTabAt(TvHubActivity.CONNECTION_TAB);
+            if (connTab != null) connTab.select();
+        }
         confirmAndInstallAddonOnTv(raw, null);
         return true;
     }
 
-    /** Shows "Install on TV" confirmation and sends the addon directly to Android TV (never installs on Phone). */
+    /** Shows "Install on TV" confirmation once without duplicates and sends the addon directly to Android TV. */
     void confirmAndInstallAddonOnTv(String raw, String displayName) {
-        if (raw == null || raw.isBlank()) return;
+        if (raw == null || raw.isBlank() || host.isFinishing() || host.isDestroyed()) return;
         try {
             String url = com.meedx.providers.StremioAddons.normalizeManifestUrl(raw);
+            long now = android.os.SystemClock.elapsedRealtime();
+            if (activeAddonInstallDialog != null && activeAddonInstallDialog.isShowing()) {
+                if (url.equalsIgnoreCase(activeAddonInstallUrl) || (now - lastAddonPromptAtMs) < 1200L) {
+                    return;
+                }
+                activeAddonInstallDialog.dismiss();
+            } else if (url.equalsIgnoreCase(activeAddonInstallUrl) && (now - lastAddonPromptAtMs) < 1200L) {
+                return;
+            }
+            dismissedClipboardUrl = url;
+            if (clipboardBannerCard != null) clipboardBannerCard.setVisibility(View.GONE);
             String hostName = android.net.Uri.parse(url).getHost();
             String label = (displayName != null && !displayName.isBlank()) ? displayName : (hostName != null ? hostName : url);
-            new androidx.appcompat.app.AlertDialog.Builder(host)
+            activeAddonInstallUrl = url;
+            lastAddonPromptAtMs = now;
+            activeAddonInstallDialog = new androidx.appcompat.app.AlertDialog.Builder(host)
                     .setTitle(host.l("تثبيت على الشاشة", "Install on TV"))
                     .setMessage(host.l(
                             "إرسال وتثبيت الإضافة التالية مباشرةً على تطبيق الشاشة (Android TV)؟\n\n" + label,
@@ -1338,6 +1480,9 @@ final class TvHubConnectionController {
                     .setNegativeButton(android.R.string.cancel, null)
                     .setPositiveButton(host.l("تثبيت على الشاشة", "Install on TV"),
                             (dialog, which) -> sendAddonInstallToTv(url, label))
+                    .setOnDismissListener(d -> {
+                        if (activeAddonInstallDialog == d) activeAddonInstallDialog = null;
+                    })
                     .show();
         } catch (java.io.IOException invalid) {
             android.widget.Toast.makeText(host, org.proninyaroslav.libretorrent.R.string.addon_install_failed,
@@ -1345,14 +1490,14 @@ final class TvHubConnectionController {
         }
     }
 
-    void sendAddonInstallToTv(String manifestUrl, String displayName) {
+    boolean sendAddonInstallToTv(String manifestUrl, String displayName) {
         var ws = (host.socket != null && host.socket.isOpen()) ? host.socket : CinemaRemoteBridge.getConnectedSocket();
         if (ws == null || !ws.isOpen()) {
             String msg = host.l("يرجى الاتصال بالشاشة أولاً لتثبيت الإضافة عليها.",
                     "Connect to your Android TV first to install this addon on TV.");
             setAddonsLiveStatus(msg, true);
             CinemaSnackBanner.show(host, msg);
-            return;
+            return false;
         }
         String label = (displayName != null && !displayName.isBlank()) ? displayName : manifestUrl;
         setAddonsLiveStatus(host.l("جارٍ إرسال وتثبيت " + label + " على الشاشة…",
@@ -1365,20 +1510,32 @@ final class TvHubConnectionController {
             if (clipboardBannerCard != null && manifestUrl.equals(detectedClipboardUrl)) {
                 clipboardBannerCard.setVisibility(View.GONE);
             }
+            return true;
         } catch (Exception e) {
             setAddonsLiveStatus(host.getString(org.proninyaroslav.libretorrent.R.string.addon_install_failed), true);
+            return false;
         }
     }
 
     void onAddonTvInstalled(org.json.JSONObject response) {
         if (response == null) return;
+        String installedUrl = normalizeManifestSafe(response.optString("manifest_url", ""));
         if (response.optBoolean("ok", false)) {
             String name = response.optString("name", "Addon");
+            String id = response.optString("id", "");
+            ensureTvAddonsLoaded();
+            if (!installedUrl.isEmpty()) {
+                cachedTvAddons.removeIf(r -> installedUrl.equalsIgnoreCase(normalizeManifestSafe(r.manifestUrl())));
+                cachedTvAddons.add(new TvAddonRef(id, installedUrl, name));
+                persistTvAddonsToPrefs();
+            }
+            CuratedAddonsSheet.onAddonInstallResult(installedUrl, true);
             String msg = host.l("تم تثبيت «" + name + "» على الشاشة بنجاح ✓",
                     "Installed \"" + name + "\" on TV ✓");
             setAddonsLiveStatus(msg, false);
             CinemaSnackBanner.show(host, msg);
         } else {
+            CuratedAddonsSheet.onAddonInstallResult(installedUrl, false);
             String msg = host.l("تعذّر تثبيت الإضافة على الشاشة.", "Could not install addon on TV.");
             setAddonsLiveStatus(msg, true);
             CinemaSnackBanner.show(host, msg);
@@ -1387,17 +1544,31 @@ final class TvHubConnectionController {
 
     void promptCuratedAddons() {
         host.watchSyncIo.execute(() -> {
+            ensureTvAddonsLoaded();
+            var ws = (host.socket != null && host.socket.isOpen()) ? host.socket : CinemaRemoteBridge.getConnectedSocket();
+            java.util.concurrent.CompletableFuture<Boolean> queryFuture = null;
+            if (ws != null && ws.isOpen()) {
+                queryFuture = new java.util.concurrent.CompletableFuture<>();
+                pendingTvAddonsFuture = queryFuture;
+                try {
+                    ws.send(new org.json.JSONObject().put("type", "GET_TV_ADDONS").toString());
+                } catch (Exception ignored) {
+                    pendingTvAddonsFuture = null;
+                    queryFuture = null;
+                }
+            }
             var curated = com.meedx.providers.StremioAddons.fetchCurated(host);
+            if (queryFuture != null) {
+                try {
+                    queryFuture.get(400, java.util.concurrent.TimeUnit.MILLISECONDS);
+                } catch (Exception ignored) {
+                } finally {
+                    if (pendingTvAddonsFuture == queryFuture) pendingTvAddonsFuture = null;
+                }
+            }
             host.main.post(() -> {
                 if (host.isDestroyed() || host.isFinishing() || curated.isEmpty()) return;
-                var choices = curated.stream().map(item -> new CinemaGlassUi.Choice(
-                        item.name + (item.description.isBlank() ? "" : "\n" + item.description),
-                        org.proninyaroslav.libretorrent.R.drawable.ic_download_24px)).toList();
-                CinemaGlassUi.showChoices(host, org.proninyaroslav.libretorrent.R.string.addon_curated, choices, -1,
-                        index -> {
-                            var picked = curated.get(index);
-                            confirmAndInstallAddonOnTv(picked.manifestUrl, picked.name);
-                        });
+                CuratedAddonsSheet.show(host, this, curated);
             });
         });
     }
@@ -1413,7 +1584,7 @@ final class TvHubConnectionController {
     void startTraktCodeConnect() {
         lastOpenedTraktDeviceCode = "";
         setTraktLiveStatus(host.l("جارٍ إنشاء رمز تفعيل Trakt...", "Requesting Trakt activation code..."), false);
-        com.meedx.providers.TraktSyncClient.startBackgroundDeviceAuth(host, this::sendFullSyncStateBlocking);
+        com.meedx.providers.TraktSyncClient.startBackgroundDeviceAuth(host, this::sendTraktTokenBlocking);
     }
 
     void handleTraktPkceIntent(Intent intent) {
@@ -1428,9 +1599,9 @@ final class TvHubConnectionController {
             var connTab = host.tabLayout.getTabAt(TvHubActivity.CONNECTION_TAB);
             if (connTab != null) connTab.select();
         }
-        setTraktLiveStatus(host.l("جارٍ استكمال ربط حساب Trakt ومزامنة الشاشة...",
-                "Completing Trakt PKCE linking & syncing TV..."), false);
-        com.meedx.providers.TraktSyncClient.handlePkceCallbackAsync(host, data, this::sendFullSyncStateBlocking);
+        setTraktLiveStatus(host.l("جارٍ استكمال ربط حساب Trakt وإرسال الرمز للشاشة...",
+                "Completing Trakt linking & sending token to TV..."), false);
+        com.meedx.providers.TraktSyncClient.handlePkceCallbackAsync(host, data, this::sendTraktTokenBlocking);
     }
 
     void onTraktDeviceAuthSnapshot(com.meedx.providers.TraktSyncClient.DeviceAuthSnapshot snap) {
@@ -1465,14 +1636,12 @@ final class TvHubConnectionController {
                 }
                 case AUTHORIZED -> {
                     lastOpenedTraktDeviceCode = "";
-                    setTraktLiveStatus(host.l("تم ربط حساب Trakt بنجاح ✓",
-                            "Trakt linked successfully ✓"), false);
+                    setTraktLiveStatus(host.getString(org.proninyaroslav.libretorrent.R.string.cinema_trakt_status_connected), false);
                     refreshAddonsAndTraktCard();
                     long now = android.os.SystemClock.uptimeMillis();
                     if (now - lastHandledTraktAuthSyncMs > 4000L) {
                         lastHandledTraktAuthSyncMs = now;
-                        sendFullSyncStateToTv(false);
-                        syncTraktNowAsync(false);
+                        sendTraktTokenToTv(false);
                     }
                 }
                 case EXPIRED, DENIED, ERROR -> {
@@ -1483,52 +1652,6 @@ final class TvHubConnectionController {
                 }
                 case CANCELLED -> setTraktLiveStatus(host.l("تم إلغاء عملية ربط Trakt.", "Trakt linking cancelled."), false);
                 case IDLE -> {}
-            }
-        });
-    }
-
-    void syncTraktNowAsync(boolean silent) {
-        if (!com.meedx.providers.TraktSyncClient.isConnected(host)) {
-            if (!silent) {
-                setTraktLiveStatus(host.l("اربط حساب Trakt من زر التفعيل أعلاه أولاً.",
-                        "Connect your Trakt account above first."), true);
-            }
-            return;
-        }
-        if (!silent) {
-            setTraktLiveStatus(host.l("جارٍ المزامنة مع Trakt (دفع التغييرات وجلب السجل وقائمة المشاهدة)...",
-                    "Syncing with Trakt (pushing progress & pulling history/watchlist)..."), false);
-        }
-        host.watchSyncIo.execute(() -> {
-            try {
-                var pending = PhoneWatchStore.listPendingTraktItems(host);
-                var pushed = com.meedx.providers.TraktSyncClient.pushPending(host, pending);
-                PhoneWatchStore.clearPendingTraktSync(host, pushed);
-                var pulled = com.meedx.providers.TraktSyncClient.pullRecords(host);
-                int applied = PhoneWatchStore.applyTraktPullRecords(host, pulled);
-                var wl = com.meedx.providers.TraktSyncClient.pullWatchlist(host);
-                PhoneWatchStore.saveWatchlist(host, wl);
-                if (applied > 0 || !pushed.isEmpty() || wl.length() > 0) {
-                    sendFullSyncStateBlocking();
-                }
-                host.main.post(() -> {
-                    if (host.isDestroyed()) return;
-                    if (!silent || applied > 0 || !pushed.isEmpty() || wl.length() > 0) {
-                        setTraktLiveStatus(host.l("اكتملت مزامنة Trakt ✓ (رفع: " + pushed.size()
-                                + " · تحديث: " + applied + " · قائمة المشاهدة: " + wl.length() + ")",
-                                "Trakt sync complete ✓ (" + pushed.size() + " pushed, " + applied
-                                + " updated, " + wl.length() + " watchlist)"), false);
-                    }
-                    refreshAddonsAndTraktCard();
-                    host.library.refreshIfReady();
-                });
-            } catch (Exception e) {
-                host.main.post(() -> {
-                    if (!host.isDestroyed() && !silent) {
-                        setTraktLiveStatus(host.l("تعذّرت مزامنة Trakt:\n",
-                                "Trakt sync failed:\n") + readableError(e), true);
-                    }
-                });
             }
         });
     }

@@ -44,6 +44,9 @@ public final class TvHubActivity extends AppCompatActivity {
     private boolean userSelectedTab;
     private static final int LIBRARY_TAB = 0;
     static final int CONNECTION_TAB = 1;
+    private static final int LOCAL_MEDIA_TAB = 2;
+    private static final int TOP_TAB_COUNT = 3;
+    private int lastContentTabIndex = CONNECTION_TAB;
     LinearLayout hub;
     private LinearLayout tabSections;
     ScrollView playbackScreen;
@@ -109,6 +112,105 @@ public final class TvHubActivity extends AppCompatActivity {
     public static boolean isTempTorrentCastActive() {
         var inst = activeInstance;
         return inst != null && inst.activeTempTorrentId != null && !inst.activeTempTorrentId.isEmpty();
+    }
+
+    public static void registerModulePort() {
+        PhoneModuleBridges.registerTvHub(new PhoneModuleBridges.TvHubModulePort() {
+            @Override
+            public void openStremioAddonInstall(Context context, android.net.Uri stremioUri) {
+                if (context == null || stremioUri == null) return;
+                Intent intent = new Intent(Intent.ACTION_VIEW, stremioUri, context, TvHubActivity.class)
+                        .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                                | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                                | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+                if (!(context instanceof android.app.Activity)) {
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                }
+                context.startActivity(intent);
+                if (context instanceof android.app.Activity act) {
+                    act.overridePendingTransition(0, 0);
+                }
+            }
+
+            @Override
+            public void castBrowserMedia(Context context, PhoneModuleBridges.BrowserCastPayload p) {
+                if (context == null || p == null) return;
+                castFromBrowser(context, new BrowserCastRequest(
+                        p.url(), p.audioUrl(), p.format(), p.title(), p.height(), p.live(),
+                        p.referer(), p.origin(), p.userAgent(), p.cookie(), p.authorization(),
+                        p.subtitleUrl(), p.subtitleMime(), p.subtitleLanguage(), p.subtitleContent(),
+                        p.subtitleReferer(), p.subtitleOrigin(), p.subtitleUserAgent(),
+                        p.subtitleCookie(), p.subtitleAuthorization(),
+                        p.secondarySubtitleUrl(), p.secondarySubtitleMime(), p.secondarySubtitleLanguage(),
+                        p.secondarySubtitleContent(),
+                        p.secondarySubtitleReferer(), p.secondarySubtitleOrigin(), p.secondarySubtitleUserAgent(),
+                        p.secondarySubtitleCookie(), p.secondarySubtitleAuthorization(),
+                        p.subtitleCatalogJson(), p.suppressAutoSubtitles(),
+                        PhoneModuleBridges.hostShell().browserReturnTabId(),
+                        p.pauseCallback()));
+            }
+
+            @Override
+            public void castDirectStreamUrl(Context context, String url, String format, String title,
+                                            String referer, String userAgent, String cookie) {
+                if (context == null) return;
+                castFromBrowser(context, url, null, format, title, 0,
+                        null, referer, "", userAgent, cookie, null);
+            }
+
+            @Override
+            public void castLocalVideoFile(Context context, String filePath, String title) {
+                castDownloadedFile(context, filePath, title);
+            }
+
+            @Override
+            public void castCapturedTorrent(Context context, String magnetUri, String torrentUrl,
+                                            String title, String referer, String userAgent, String cookie) {
+                castTorrentFromBrowser(context, magnetUri, torrentUrl, title, referer, userAgent, cookie);
+            }
+
+            @Override
+            public void updateActiveCastTitle(Context context, String title) {
+                updateActiveBrowserCastTitle(context, title);
+            }
+
+            @Override
+            public String registerInMemorySubtitle(String content, String mime) {
+                String path = PhoneVideoServer.registerInMemorySubtitle(content, mime);
+                return path != null ? path : "";
+            }
+
+            @Override
+            public boolean isDualSubtitlesEnabled(Context context) {
+                return TvHubSubtitlesController.dualEnabled(context);
+            }
+
+            @Override
+            public void setDualSubtitlesEnabled(Context context, boolean enabled) {
+                TvHubSubtitlesController.setDualEnabled(context, enabled);
+            }
+
+            @Override
+            public boolean isTempTorrentCastActive() {
+                return TvHubActivity.isTempTorrentCastActive();
+            }
+
+            @Override
+            public void notifyAudioSettingsChanged(Context context) {
+                TvHubActivity.notifyAudioSettingsChanged(context);
+            }
+
+            @Override
+            public void notifyLibraryDownloadUpdated(Context context, String filePath) {
+                if (context != null) {
+                    CinemaStorage.migrateLegacyDownloadingFolder(context);
+                }
+                var inst = activeInstance;
+                if (inst != null && !inst.isDestroyed()) {
+                    inst.main.post(() -> inst.library.onExternalDownloadCompleted(filePath));
+                }
+            }
+        });
     }
 
     boolean hasActiveCastSession() {
@@ -325,12 +427,7 @@ public final class TvHubActivity extends AppCompatActivity {
 
     void openInAppBrowser(String url) {
         if (url == null || url.isBlank()) return;
-        startActivity(new Intent(this, org.proninyaroslav.libretorrent.MainActivity.class)
-                .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_NO_ANIMATION)
-                .putExtra(org.proninyaroslav.libretorrent.MainActivity.EXTRA_SELECT_TAB,
-                        org.proninyaroslav.libretorrent.R.id.cinema_browser_nav)
-                .putExtra("open_url", url));
-        overridePendingTransition(0, 0);
+        PhoneModuleBridges.hostShell().openHostTab(this, PhoneModuleBridges.HostTab.BROWSER, url);
     }
 
     private String webVideo;
@@ -361,6 +458,7 @@ public final class TvHubActivity extends AppCompatActivity {
     private String webCookie;
     private String webAuthorization;
     private boolean webCastLive;
+    private boolean webSuppressAutoSubs;
     private int webHeight;
     String activeCastId = "";
     String browserCastTitle;
@@ -377,8 +475,30 @@ public final class TvHubActivity extends AppCompatActivity {
             String secondarySubtitleContent,
             String secondarySubtitleReferer, String secondarySubtitleOrigin, String secondarySubtitleUserAgent,
             String secondarySubtitleCookie, String secondarySubtitleAuthorization,
-            String subtitleCatalogJson, int returnTabId,
+            String subtitleCatalogJson, boolean suppressAutoSubtitles, int returnTabId,
             Runnable pause) {
+        BrowserCastRequest(
+                String url, String audioUrl, String format, String title, int height, boolean live,
+                String referer, String origin, String userAgent, String cookie, String authorization,
+                String subtitleUrl, String subtitleMime, String subtitleLanguage, String subtitleContent,
+                String subtitleReferer, String subtitleOrigin, String subtitleUserAgent,
+                String subtitleCookie, String subtitleAuthorization,
+                String secondarySubtitleUrl, String secondarySubtitleMime, String secondarySubtitleLanguage,
+                String secondarySubtitleContent,
+                String secondarySubtitleReferer, String secondarySubtitleOrigin, String secondarySubtitleUserAgent,
+                String secondarySubtitleCookie, String secondarySubtitleAuthorization,
+                String subtitleCatalogJson, int returnTabId,
+                Runnable pause) {
+            this(url, audioUrl, format, title, height, live,
+                    referer, origin, userAgent, cookie, authorization,
+                    subtitleUrl, subtitleMime, subtitleLanguage, subtitleContent,
+                    subtitleReferer, subtitleOrigin, subtitleUserAgent, subtitleCookie, subtitleAuthorization,
+                    secondarySubtitleUrl, secondarySubtitleMime, secondarySubtitleLanguage, secondarySubtitleContent,
+                    secondarySubtitleReferer, secondarySubtitleOrigin, secondarySubtitleUserAgent,
+                    secondarySubtitleCookie, secondarySubtitleAuthorization,
+                    subtitleCatalogJson, false, returnTabId, pause);
+        }
+
         BrowserCastRequest(
                 String url, String audioUrl, String format, String title, int height, boolean live,
                 String referer, String origin, String userAgent, String cookie, String authorization,
@@ -397,7 +517,7 @@ public final class TvHubActivity extends AppCompatActivity {
                     secondarySubtitleUrl, secondarySubtitleMime, secondarySubtitleLanguage, secondarySubtitleContent,
                     secondarySubtitleReferer, secondarySubtitleOrigin, secondarySubtitleUserAgent,
                     secondarySubtitleCookie, secondarySubtitleAuthorization,
-                    "", 0, pause);
+                    "", false, 0, pause);
         }
     }
 
@@ -461,7 +581,25 @@ public final class TvHubActivity extends AppCompatActivity {
                 .putExtra("web_sub2_cookie", req.secondarySubtitleCookie())
                 .putExtra("web_sub2_auth", req.secondarySubtitleAuthorization())
                 .putExtra("web_sub_catalog", req.subtitleCatalogJson() == null ? "" : req.subtitleCatalogJson())
+                .putExtra("web_suppress_auto_subs", req.suppressAutoSubtitles())
                 .putExtra("return_to_nav_tab", req.returnTabId()));
+    }
+
+    static void castTorrentFromBrowser(Context context, String magnetUri, String torrentUrl,
+                                       String title, String referer, String userAgent, String cookie) {
+        if (context == null) return;
+        context.startActivity(new Intent(context, TvHubActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                .putExtra("browser_magnet_cast", magnetUri == null ? "" : magnetUri)
+                .putExtra("browser_torrent_url_cast", torrentUrl == null ? "" : torrentUrl)
+                .putExtra("browser_torrent_title", cleanCastTitle(title))
+                .putExtra("browser_torrent_referer", referer == null ? "" : referer)
+                .putExtra("browser_torrent_ua", userAgent == null ? "" : userAgent)
+                .putExtra("browser_torrent_cookie", cookie == null ? "" : cookie)
+                .putExtra("return_to_nav_tab", PhoneModuleBridges.hostShell().browserReturnTabId()));
+        if (context instanceof android.app.Activity act) {
+            act.overridePendingTransition(0, 0);
+        }
     }
 
     public static void openPlaybackFromTab(Context context, int navTabId) {
@@ -483,8 +621,12 @@ public final class TvHubActivity extends AppCompatActivity {
 
     private static volatile TvHubActivity activeInstance;
 
+    private static final java.util.regex.Pattern CAST_DECOY_SPAM_RE = java.util.regex.Pattern.compile(
+            "(?i)\\b(?:business\\s+loans?|personal\\s+loans?|student\\s+loans?|auto\\s+loans?|home\\s+loans?|payday\\s+loans?|small\\s+business\\s+funding|mortgages?|refinanc(?:e|ing)|insurance|credit\\s+cards?|credit\\s+scores?|tips\\s+for\\s+a\\s+successful|\\d+\\s+tips\\s+(?:for|to)\\s+|investment|investing|wealth\\s+management|retirement\\s+planning|tax\\s+deductions?|forex|make\\s+money|earn\\s+money|work\\s+from\\s+home|passive\\s+income|binary\\s+options?|day\\s+trading|stock\\s+(?:market|trading)|crypto(?:currency)?|bitcoin|casino|betting|sportsbook|slot\\s+machines?|sponsored(?:\\s+ad|\\s+content)?|advertisement|skip\\s+ads?|1xbet|melbet|mostbet|linebet|betwinner|olymp\\s*trade|iq\\s*option|binomo|attention\\s+required|just\\s+a\\s+moment|cloudflare)\\b");
+
     static String cleanCastTitle(String raw) {
         if (raw == null) return "";
+        if (CAST_DECOY_SPAM_RE.matcher(raw).find()) return "";
         String t = raw.replaceAll("\\s+", " ").trim()
                 .replaceFirst("(?i)^(?:watch|مشاهدة(?:\\s+و\\s*تحميل)?|تحميل(?:\\s+و\\s*مشاهدة)?|فيلم|مسلسل|انمي|أنمي)\\s+", "")
                 .replaceFirst("(?i)\\s*(?:[|–—•·:\\-]\\s*)+(?:shabakaty\\s*)?(?:cinemana|shabakaty|youtube|egybest|faselhd|mycima|wecima|e?\\.?cimalight(?:\\.co)?|arabseed|akoam|شبكتي|سينمانا|سيما\\s*لايت|ايجي\\s*بست|فاصل\\s*إعلاني|ماي\\s*سيما|اون\\s*لاين|أون\\s*لاين).*$", "")
@@ -495,7 +637,9 @@ public final class TvHubActivity extends AppCompatActivity {
         String low = t.toLowerCase(java.util.Locale.ROOT);
         if (low.equals("cinemana") || low.equals("shabakaty") || low.equals("youtube")
                 || low.equals("shabakaty cinemana") || low.equals("سينمانا") || low.equals("شبكتي")
-                || low.equals("browser video") || low.equals("video on tv")) {
+                || low.equals("elif.news") || low.equals("elif news")
+                || low.equals("browser video") || low.equals("video on tv")
+                || CAST_DECOY_SPAM_RE.matcher(t).find()) {
             return "";
         }
         return t;
@@ -584,15 +728,14 @@ public final class TvHubActivity extends AppCompatActivity {
                 .putExtra("torrent_cast_id", id).putExtra("torrent_cast_index", index)
                 .putExtra("torrent_cast_title", title).putExtra("torrent_cast_temporary", temporary)
                 .putExtra("return_to_nav_tab",
-                        context instanceof org.proninyaroslav.libretorrent.MainActivity
-                                ? org.proninyaroslav.libretorrent.R.id.home_nav : 0));
+                        PhoneModuleBridges.hostShell().resolveReturnTabForContext(context)));
     }
 
     @Override
     protected void onCreate(Bundle state) {
         activeInstance = this;
         super.onCreate(state);
-        org.proninyaroslav.libretorrent.MainActivity.applyTabWindowTransitions(this);
+        PhoneModuleBridges.hostShell().applyWindowTransitions(this);
         CinemaRemoteBridge.attachHub(this);
         var screenFilter = new android.content.IntentFilter();
         screenFilter.addAction(Intent.ACTION_SCREEN_OFF);
@@ -603,6 +746,7 @@ public final class TvHubActivity extends AppCompatActivity {
         music.loadAudioPrefs();
         com.meedx.providers.TraktSyncClient.migrateAndCleanCredentials(this);
         CinemaCacheManager.performStartupMaintenance(this);
+        LocalCinemaBackupManager.initAutoSync(this);
         connection.subscribeTrakt();
         getWindow().getDecorView().setLayoutDirection(getResources().getConfiguration().getLayoutDirection());
         var scroll = new TabScrollView();
@@ -648,9 +792,11 @@ public final class TvHubActivity extends AppCompatActivity {
         var tabs = new com.google.android.material.tabs.TabLayout(this);
         tabs.setTabMode(com.google.android.material.tabs.TabLayout.MODE_FIXED);
         tabs.setTabGravity(com.google.android.material.tabs.TabLayout.GRAVITY_FILL);
+        tabs.setPaddingRelative(dp(4), 0, dp(4), 0);
+        tabs.setHorizontalScrollBarEnabled(false);
         tabs.setSelectedTabIndicatorColor(GOLD);
         tabs.setTabTextColors(0xffc9c7c4, GOLD);
-        shell.addView(tabs, new LinearLayout.LayoutParams(-1, dp(56)));
+        shell.addView(tabs, new LinearLayout.LayoutParams(-1, dp(52)));
         shell.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         scroll.setFillViewport(true);
         playbackShortcut = createMiniCastingBar();
@@ -685,10 +831,7 @@ public final class TvHubActivity extends AppCompatActivity {
             if (suppressBottomNavCallback) return true;
             int id = item.getItemId();
             if (id == org.proninyaroslav.libretorrent.R.id.cinema_hub_nav) return true;
-            startActivity(new Intent(this, org.proninyaroslav.libretorrent.MainActivity.class)
-                    .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_NO_ANIMATION)
-                    .putExtra(org.proninyaroslav.libretorrent.MainActivity.EXTRA_SELECT_TAB, id));
-            overridePendingTransition(0, 0);
+            PhoneModuleBridges.hostShell().openHostTabById(this, id);
             return false;
         });
         shell.addView(bottomNavView, new LinearLayout.LayoutParams(-1, -2));
@@ -710,15 +853,23 @@ public final class TvHubActivity extends AppCompatActivity {
 
         buildMedia(mediaPage);
         var panels = new LinearLayout[]{library.libraryPage, page, mediaPage};
-        for (String title : new String[]{getString(org.proninyaroslav.libretorrent.R.string.cinema_library), getString(org.proninyaroslav.libretorrent.R.string.cinema_connection), getString(org.proninyaroslav.libretorrent.R.string.cinema_local_media)}) {
+        String[] tabTitles = new String[]{
+                getString(org.proninyaroslav.libretorrent.R.string.cinema_library),
+                getString(org.proninyaroslav.libretorrent.R.string.cinema_connection),
+                getString(org.proninyaroslav.libretorrent.R.string.cinema_local_media)
+        };
+        for (String title : tabTitles) {
             var tab = tabs.newTab().setText(title);
-            TextView tabLabel = label(title, 17);
+            TextView tabLabel = label(title, 14);
+            tabLabel.setTextSize(14f);
+            tabLabel.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
             tabLabel.setGravity(Gravity.CENTER);
             tabLabel.setSingleLine(true);
-            tabLabel.setHorizontallyScrolling(false);
+            tabLabel.setMaxLines(1);
+            tabLabel.setEllipsize(android.text.TextUtils.TruncateAt.END);
             tabLabel.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
-            tabLabel.setAutoSizeTextTypeUniformWithConfiguration(11, 17, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
-            tab.view.setPaddingRelative(dp(4), 0, dp(4), 0);
+            tab.view.setMinimumWidth(0);
+            tab.view.setPaddingRelative(dp(6), 0, dp(6), 0);
             tabLabel.setTextColor(new android.content.res.ColorStateList(
                     new int[][]{{android.R.attr.state_selected}, {}}, new int[]{GOLD, 0xffc9c7c4}));
             tab.setCustomView(tabLabel);
@@ -726,15 +877,18 @@ public final class TvHubActivity extends AppCompatActivity {
         }
         tabs.addOnTabSelectedListener(new com.google.android.material.tabs.TabLayout.OnTabSelectedListener() {
             @Override public void onTabSelected(com.google.android.material.tabs.TabLayout.Tab tab) {
-                for (int i = 0; i < panels.length; i++) panels[i].setVisibility(i == tab.getPosition()
+                int pos = tab.getPosition();
+                if (pos < 0 || pos >= panels.length) return;
+                lastContentTabIndex = pos;
+                for (int i = 0; i < panels.length; i++) panels[i].setVisibility(i == pos
                         ? android.view.View.VISIBLE : android.view.View.GONE);
                 userSelectedTab = true;
-                if (tab.getPosition() == LIBRARY_TAB) library.showLibrary();
-                if (tab.getPosition() == CONNECTION_TAB) {
+                if (pos == LIBRARY_TAB) library.showLibrary();
+                if (pos == CONNECTION_TAB) {
                     reconnectIfNeededOnForeground();
                     connection.refreshAddonsAndTraktCard();
                 }
-                if (tab.getPosition() == 2 && localMedia != null) localMedia.refresh();
+                if (pos == LOCAL_MEDIA_TAB && localMedia != null) localMedia.refresh();
                 music.revealMusicMiniBar();
                 scroll.scrollTo(0, 0);
             }
@@ -742,7 +896,10 @@ public final class TvHubActivity extends AppCompatActivity {
             @Override public void onTabReselected(com.google.android.material.tabs.TabLayout.Tab tab) {}
         });
         for (int i = 1; i < panels.length; i++) panels[i].setVisibility(android.view.View.GONE);
-        tabs.selectTab(tabs.getTabAt(state == null ? CONNECTION_TAB : Math.min(tabs.getTabCount() - 1, Math.max(0, state.getInt("hub_tab", CONNECTION_TAB)))));
+        int initialContentTab = state == null ? CONNECTION_TAB
+                : Math.min(panels.length - 1, Math.max(0, state.getInt("hub_tab", CONNECTION_TAB)));
+        lastContentTabIndex = initialContentTab;
+        tabs.selectTab(tabs.getTabAt(initialContentTab));
         userSelectedTab = state != null;
         library.showLibrary();
         tabs.setId(android.view.View.generateViewId());
@@ -776,6 +933,7 @@ public final class TvHubActivity extends AppCompatActivity {
             reconnectIfNeededOnForeground();
         }
         handleLocalVideoIntent(getIntent());
+        handleBrowserTorrentCastIntent(getIntent());
         main.post(() -> PhonePermissionsWizardDialog.maybeShowFirstLaunch(this));
         if (webVideo != null && socket == null) notifyStatus(l("امسح رمز QR الخاص بالشاشة أولاً", "Scan the TV pairing QR first"));
         if (startQrScan) {
@@ -966,7 +1124,7 @@ public final class TvHubActivity extends AppCompatActivity {
                         int direction = distance < 0 ? 1 : -1;
                         if (getLayoutDirection() == LAYOUT_DIRECTION_RTL) direction = -direction;
                         int next = tabLayout.getSelectedTabPosition() + direction;
-                        if (next >= 0 && next < tabLayout.getTabCount()) {
+                        if (next >= 0 && next < TOP_TAB_COUNT) {
                             tabLayout.selectTab(tabLayout.getTabAt(next));
                         }
                         dragAxis = 0;
@@ -989,7 +1147,8 @@ public final class TvHubActivity extends AppCompatActivity {
 
     @Override protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state);
-        state.putInt("hub_tab", tabLayout.getSelectedTabPosition());
+        int selected = tabLayout != null ? tabLayout.getSelectedTabPosition() : lastContentTabIndex;
+        state.putInt("hub_tab", Math.min(TOP_TAB_COUNT - 1, Math.max(0, selected)));
     }
 
     @Override protected void onResume() {
@@ -1365,10 +1524,7 @@ public final class TvHubActivity extends AppCompatActivity {
             hub.setVisibility(android.view.View.VISIBLE);
             playbackScreen.setVisibility(android.view.View.GONE);
             updateTabBottomPadding();
-            startActivity(new Intent(this, org.proninyaroslav.libretorrent.MainActivity.class)
-                    .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_NO_ANIMATION)
-                    .putExtra(org.proninyaroslav.libretorrent.MainActivity.EXTRA_SELECT_TAB, backTab));
-            overridePendingTransition(0, 0);
+            PhoneModuleBridges.hostShell().openHostTabById(this, backTab);
             return;
         }
         hub.setVisibility(open ? android.view.View.GONE : android.view.View.VISIBLE);
@@ -1396,13 +1552,11 @@ public final class TvHubActivity extends AppCompatActivity {
         String old = activeTempTorrentId;
         if (old != null && !old.isEmpty() && !old.equals(keepId)) {
             activeTempTorrentId = "";
-            org.proninyaroslav.libretorrent.core.model.TorrentEngine.getInstance(getApplicationContext())
-                    .deleteTemporaryCast(old);
+            PhoneModuleBridges.torrentCast().deleteTemporaryCast(old);
         }
         if (pendingTemp != null && !pendingTemp.isEmpty() && !pendingTemp.equals(keepId)
                 && !pendingTemp.equals(old)) {
-            org.proninyaroslav.libretorrent.core.model.TorrentEngine.getInstance(getApplicationContext())
-                    .deleteTemporaryCast(pendingTemp);
+            PhoneModuleBridges.torrentCast().deleteTemporaryCast(pendingTemp);
         }
     }
 
@@ -2196,6 +2350,7 @@ public final class TvHubActivity extends AppCompatActivity {
         webCookie = intent.getStringExtra("web_cookie");
         webAuthorization = intent.getStringExtra("web_auth");
         webCastLive = intent.getBooleanExtra("web_live", false);
+        webSuppressAutoSubs = intent.getBooleanExtra("web_suppress_auto_subs", false);
         setWebLive(webCastLive);
         webHeight = intent.getIntExtra("web_height", 0);
         returnToNavTab = intent.getIntExtra("return_to_nav_tab", 0);
@@ -2261,6 +2416,7 @@ public final class TvHubActivity extends AppCompatActivity {
                     .put("secondary_subtitle_url", castSub2Url)
                     .put("secondary_subtitle_mime", webSecondarySubtitleMime != null ? webSecondarySubtitleMime : "")
                     .put("secondary_subtitle_language", webSecondarySubtitleLang != null ? webSecondarySubtitleLang : "")
+                    .put("suppress_auto_subtitles", webSuppressAutoSubs)
                     .put("format", webFormat).put("height", webHeight)
                     .put("is_live", webCastLive)
                     .put("exclude_from_history", true)
@@ -2334,9 +2490,61 @@ public final class TvHubActivity extends AppCompatActivity {
             main.post(this::launchSubtitlePicker);
         }
         handleLocalVideoIntent(intent);
+        handleBrowserTorrentCastIntent(intent);
         connection.handleTraktPkceIntent(intent);
         if (connection.handleAddonIntent(intent) && tabLayout != null) tabLayout.selectTab(tabLayout.getTabAt(CONNECTION_TAB));
         handleSyncSettingsIntent(intent);
+    }
+
+    private void handleBrowserTorrentCastIntent(Intent intent) {
+        if (intent == null) return;
+        String magnet = intent.getStringExtra("browser_magnet_cast");
+        String torUrl = intent.getStringExtra("browser_torrent_url_cast");
+        if ((magnet == null || magnet.isBlank()) && (torUrl == null || torUrl.isBlank())) return;
+        String title = intent.getStringExtra("browser_torrent_title");
+        String referer = intent.getStringExtra("browser_torrent_referer");
+        String ua = intent.getStringExtra("browser_torrent_ua");
+        String cookie = intent.getStringExtra("browser_torrent_cookie");
+        intent.removeExtra("browser_magnet_cast");
+        intent.removeExtra("browser_torrent_url_cast");
+        intent.removeExtra("browser_torrent_title");
+        intent.removeExtra("browser_torrent_referer");
+        intent.removeExtra("browser_torrent_ua");
+        intent.removeExtra("browser_torrent_cookie");
+        if (intent.hasExtra("return_to_nav_tab")) {
+            returnToNavTab = intent.getIntExtra("return_to_nav_tab", 0);
+        }
+        String shownTitle = (title != null && !title.isBlank()) ? title : l("بث تورنت على الشاشة", "Torrent on TV");
+        pendingCastTitle = shownTitle;
+        playbackTitle.setText(l("جارٍ تحضير بث التورنت للشاشة…", "Preparing torrent stream for TV…"));
+        showPlayback(true);
+        Runnable startTask = () -> watchSyncIo.execute(() -> {
+            String resolvedMagnet = (magnet != null && magnet.startsWith("magnet:?")) ? magnet.trim() : "";
+            if (resolvedMagnet.isEmpty() && torUrl != null && torUrl.startsWith("http")) {
+                java.io.File fetched = PhoneModuleBridges.browser().fetchTorrentFileWithHeaders(
+                        TvHubActivity.this, torUrl, referer, ua, cookie);
+                if (fetched != null && fetched.isFile() && fetched.length() > 32) {
+                    resolvedMagnet = PhoneModuleBridges.torrentCast().parseTorrentFileToMagnet(fetched);
+                }
+            }
+            final String finalMagnet = resolvedMagnet;
+            main.post(() -> {
+                if (isDestroyed()) return;
+                if (finalMagnet == null || !com.meedx.providers.StremioAddons.isTorrentMagnet(finalMagnet)) {
+                    notifyStatus(getString(org.proninyaroslav.libretorrent.R.string.addon_torrent_failed));
+                    return;
+                }
+                playAddonTorrent(finalMagnet, -1, shownTitle, "", 0, 0);
+            });
+        });
+        if (connected && socket != null && socket.isOpen()) {
+            startTask.run();
+        } else if (hasValidPairedTvEndpoint()) {
+            reconnectPlay = startTask;
+            reconnectIfNeededOnForeground();
+        } else {
+            notifyStatus(l("امسح رمز QR الخاص بالشاشة أولاً للبث", "Scan the TV pairing QR first"));
+        }
     }
 
     private void handleLocalVideoIntent(Intent intent) {
@@ -2487,9 +2695,11 @@ public final class TvHubActivity extends AppCompatActivity {
                                     linkPrefs.edit().putString("pairing", pairingPayload).apply();
                                     if (!lightweightReconnect) library.syncPublishedFolders();
                                     else library.resumePublishedFolders();
-                                    if (!lightweightReconnect) {
-                                        connection.flushPendingTvRestore();
-                                    }
+                                    LocalCinemaBackupManager.onTvHandshakeConnected(
+                                            TvHubActivity.this,
+                                            this,
+                                            response.optLong("tv_settings_updated_at", 0L),
+                                            response.optString("tv_settings_hash", ""));
                                     Runnable deferredPlay = reconnectPlay;
                                     reconnectPlay = null;
                                     if (deferredPlay != null) deferredPlay.run();
@@ -2497,17 +2707,15 @@ public final class TvHubActivity extends AppCompatActivity {
                                     if (pendingTorrentCast) prepareTorrentCast();
                                     if (webVideo != null) dispatchWebCast();
                                 }
-                                case "WATCH_SYNC" -> connection.handleWatchSync(response);
+                                case "WATCH_SYNC" -> { /* TV is authoritative for watch/Trakt lists; Phone does not cache them */ }
                                 case "ADDONS_SYNC" -> connection.handleAddonsSync(response.optJSONArray("addons"));
+                                case "TV_ADDONS_LIST" -> connection.handleTvAddonsList(response.optJSONArray("addons"));
                                 case "REQUEST_ADDONS_SYNC" -> connection.sendAddonsSyncSnapshot();
                                 case "ADDONS_ACK" -> connection.onAddonsAck(response.optInt("count"));
                                 case "ADDON_TV_INSTALLED" -> connection.onAddonTvInstalled(response);
                                 case "ADDON_ENABLED" -> connection.onTvAddonEnabled(response.optString("manifest_url"),
                                         response.optBoolean("enabled"));
-                                case "ADDON_REMOVED" -> {
-                                    com.meedx.providers.StremioAddons.remove(TvHubActivity.this, response.optString("manifest_url"));
-                                    connection.refreshAddonsAndTraktCard();
-                                }
+                                case "ADDON_REMOVED" -> connection.onTvAddonRemoved(response.optString("manifest_url"));
                                 case "PLAY_ADDON_TORRENT" -> playAddonTorrent(response.optString("magnet"),
                                         response.optInt("file_index", -1), response.optString("title"),
                                         response.optString("imdb_id"), response.optInt("season"), response.optInt("episode"));
@@ -2518,7 +2726,12 @@ public final class TvHubActivity extends AppCompatActivity {
                                         connection.onFavoriteChannels(response.optJSONObject(com.meedx.providers.LiveChannelFavorites.FIELD));
                                 case com.meedx.providers.LiveTvPreferences.PREFS_PACKET ->
                                         connection.onLiveTvPreferencesSynced(response);
-                                case "TV_BACKUP_DATA" -> connection.onTvBackupData(response);
+                                case "TV_SETTINGS_CHANGED" -> LocalCinemaBackupManager.onTvSettingsChangedNotification(
+                                        TvHubActivity.this,
+                                        this,
+                                        response.optLong("tv_settings_updated_at", 0L),
+                                        response.optString("tv_settings_hash", ""));
+                                case "TV_BACKUP_DATA" -> connection.onTvBackupData(this, response);
                                 case "TV_BACKUP_RESTORED" -> connection.onTvBackupRestored(response);
                                 case "REMOTE_STATUS" -> CinemaRemoteBridge.updateRemoteCapabilities(
                                         response.optBoolean("adb_enabled", false),
@@ -2744,7 +2957,7 @@ public final class TvHubActivity extends AppCompatActivity {
                 }
             };
             client.setConnectionLostTimeout(12);
-            var wifi = pairingWifi(java.net.InetAddress.getByName(host));
+            var wifi = CinemaRemoteBridge.pairingWifi(this, java.net.InetAddress.getByName(host));
             if (wifi != null) client.setSocketFactory(wifi.getSocketFactory());
             android.util.Log.i("CinemaPairing", "Connecting to " + host + ":" + port
                     + (wifi == null ? " via default network" : " via Wi-Fi"));
@@ -2762,26 +2975,6 @@ public final class TvHubActivity extends AppCompatActivity {
                 notifyStatus("Invalid Local Cinema pairing code");
             }
         }
-    }
-
-    private android.net.Network pairingWifi(java.net.InetAddress target) {
-        var manager = getSystemService(android.net.ConnectivityManager.class);
-        if (manager == null) return null;
-        android.net.Network fallback = null;
-        for (var network : manager.getAllNetworks()) {
-            var capabilities = manager.getNetworkCapabilities(network);
-            if (capabilities == null || !capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
-                    || capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) continue;
-            if (fallback == null || network.equals(manager.getActiveNetwork())) fallback = network;
-            var properties = manager.getLinkProperties(network);
-            if (properties == null) continue;
-            for (var address : properties.getLinkAddresses()) {
-                if (address.getAddress() instanceof java.net.Inet4Address
-                        && new android.net.IpPrefix(address.getAddress(), address.getPrefixLength()).contains(target))
-                    return network;
-            }
-        }
-        return fallback;
     }
 
     private void clearPairingTimeout() {
@@ -2951,8 +3144,6 @@ public final class TvHubActivity extends AppCompatActivity {
                 || PhoneWatchStore.isExcludedNonLibrary(targetKey, targetKind, targetTitle, targetUri)) {
             return;
         }
-        var before = PhoneWatchStore.getEntry(this, targetKey);
-        boolean wasWatched = before != null && before.watched;
         PhoneWatchStore.saveProgress(this, targetKey, targetKind, targetTitle, targetUri,
                 targetTorrentId, targetFileIdx, targetFormat, remoteType,
                 !remoteImdb.isEmpty() ? remoteImdb : activeWatchImdbId,
@@ -2960,11 +3151,6 @@ public final class TvHubActivity extends AppCompatActivity {
                 remoteSeason > 0 ? remoteSeason : activeWatchSeason,
                 remoteEpisode > 0 ? remoteEpisode : activeWatchEpisode,
                 position, duration, remoteWatched);
-        var after = PhoneWatchStore.getEntry(this, targetKey);
-        if (after != null && after.watched && !wasWatched) {
-            connection.sendWatchSyncRecord(after);
-            connection.pushPendingTraktOnlyAsync();
-        }
     }
 
     private void pickVideo() {
@@ -3108,18 +3294,16 @@ public final class TvHubActivity extends AppCompatActivity {
     }
 
     void playAddonTorrent(String magnet, int fileIndex, String title, String imdb, int season, int episode) {
+        var torrentPort = PhoneModuleBridges.torrentCast();
         if (!connected || socket == null || !socket.isOpen() || fetchingAddonTorrent
+                || !torrentPort.isAvailable()
                 || !com.meedx.providers.StremioAddons.isTorrentMagnet(magnet)) return;
         var requestingSocket = socket;
         fetchingAddonTorrent = true;
-        var engine = org.proninyaroslav.libretorrent.core.model.TorrentEngine.getInstance(getApplicationContext());
         watchSyncIo.execute(() -> {
-            org.proninyaroslav.libretorrent.core.model.TorrentEngine.AddonTorrent prepared = null;
+            PhoneModuleBridges.PreparedAddonTorrent prepared = null;
             try {
-                if (!engine.isRunning()) engine.start();
-                long until = android.os.SystemClock.elapsedRealtime() + 6000;
-                while (!engine.isRunning() && android.os.SystemClock.elapsedRealtime() < until) Thread.sleep(100);
-                prepared = engine.openAddonTorrent(magnet, fileIndex);
+                prepared = torrentPort.openAddonTorrent(magnet, fileIndex);
             } catch (Exception error) {
                 if (error instanceof InterruptedException) Thread.currentThread().interrupt();
             }
@@ -3127,7 +3311,7 @@ public final class TvHubActivity extends AppCompatActivity {
             main.post(() -> {
                 fetchingAddonTorrent = false;
                 if (isDestroyed() || socket != requestingSocket || !requestingSocket.isOpen()) {
-                    if (result != null && result.temporary()) engine.deleteTemporaryCast(result.id());
+                    if (result != null && result.temporary()) torrentPort.deleteTemporaryCast(result.id());
                     return;
                 }
                 if (result == null) {
@@ -3151,27 +3335,34 @@ public final class TvHubActivity extends AppCompatActivity {
 
     private void prepareTorrentCast() {
         if (!pendingTorrentCast) return;
+        var torrentPort = PhoneModuleBridges.torrentCast();
+        if (!torrentPort.isAvailable()) {
+            torrentCastFailed("Torrent engine unavailable");
+            return;
+        }
         syncCastKeepAliveService();
         String id = getIntent().getStringExtra("torrent_cast_id");
         int index = getIntent().getIntExtra("torrent_cast_index", -1);
         String title = getIntent().getStringExtra("torrent_cast_title");
-        var engine = org.proninyaroslav.libretorrent.core.model.TorrentEngine.getInstance(getApplicationContext());
-        if (!engine.isRunning()) engine.start();
+        boolean temporary = getIntent().getBooleanExtra("torrent_cast_temporary", false);
+        torrentPort.ensureStarted();
         int generation = ++torrentCastGeneration;
         playbackTitle.setText(getString(org.proninyaroslav.libretorrent.R.string.cinema_cast_preparing_buffer, 0));
         new Thread(() -> {
             long deadline = android.os.SystemClock.elapsedRealtime() + 90000;
             try {
                 while (generation == torrentCastGeneration && android.os.SystemClock.elapsedRealtime() < deadline) {
-                    var stream = engine.getStream(id, index);
-                    if (stream != null && stream.fileSize > 0) {
-                        int percent = engine.prepareCastStream(stream);
+                    int percent = torrentPort.prepareBufferPercent(id, index);
+                    if (percent >= 0) {
                         if (percent == 100) {
-                            main.post(() -> {
-                                if (generation == torrentCastGeneration && !isDestroyed())
-                                    launchTorrentCast(engine, stream, title);
-                            });
-                            return;
+                            var readyStream = torrentPort.resolveReadyStream(id, index, temporary);
+                            if (readyStream != null) {
+                                main.post(() -> {
+                                    if (generation == torrentCastGeneration && !isDestroyed())
+                                        launchTorrentCast(readyStream, title);
+                                });
+                                return;
+                            }
                         }
                         main.post(() -> {
                             if (generation == torrentCastGeneration)
@@ -3191,8 +3382,7 @@ public final class TvHubActivity extends AppCompatActivity {
         }, "cinema-torrent-buffer").start();
     }
 
-    private void launchTorrentCast(org.proninyaroslav.libretorrent.core.model.TorrentEngine engine,
-            org.proninyaroslav.libretorrent.core.model.stream.TorrentStream stream, String title) {
+    private void launchTorrentCast(PhoneModuleBridges.ByteRangeStreamSource stream, String title) {
         if (!connected || socket == null || !socket.isOpen()) {
             torrentCastFailed("TV is disconnected");
             return;
@@ -3200,22 +3390,22 @@ public final class TvHubActivity extends AppCompatActivity {
         try {
             music.stopMusicForVideo(true);
             boolean temporary = getIntent().getBooleanExtra("torrent_cast_temporary", false);
-            cleanupPreviousTemporaryTorrent(temporary ? stream.torrentId : "");
+            cleanupPreviousTemporaryTorrent(temporary ? stream.streamId() : "");
             String host = socket.getLocalSocketAddress().getAddress().getHostAddress();
             if (videoServer != null) videoServer.stop();
-            videoServer = new PhoneVideoServer(host, engine, stream, title, temporary);
-            activeTempTorrentId = temporary ? stream.torrentId : "";
+            videoServer = PhoneVideoServer.forRangeStream(host, stream, title);
+            activeTempTorrentId = temporary ? stream.streamId() : "";
             activeWatchExcluded = false;
             videoServer.start();
             pendingTorrentCast = false;
             library.libraryPlaybackPath = videoServer.path;
             library.libraryPlaybackKey = null;
-            activeWatchKey = "torrent:" + stream.torrentId + ":" + stream.selectedFileIndex;
+            activeWatchKey = "torrent:" + stream.streamId() + ":" + stream.fileIndex();
             activeWatchKind = "torrent";
             activeWatchTitle = title;
             activeWatchUri = "";
-            activeWatchTorrentId = stream.torrentId;
-            activeWatchFileIndex = stream.selectedFileIndex;
+            activeWatchTorrentId = stream.streamId();
+            activeWatchFileIndex = stream.fileIndex();
             activeWatchFormat = "torrent";
             boolean addonTorrent = getIntent().getBooleanExtra("torrent_addon", false);
             activeWatchImdbId = addonTorrent ? getIntent().getStringExtra("torrent_addon_imdb") : "";
@@ -3265,8 +3455,7 @@ public final class TvHubActivity extends AppCompatActivity {
     private void discardPendingTorrent() {
         if (!getIntent().getBooleanExtra("torrent_cast_temporary", false)) return;
         String id = getIntent().getStringExtra("torrent_cast_id");
-        org.proninyaroslav.libretorrent.core.model.TorrentEngine.getInstance(getApplicationContext())
-                .deleteTemporaryCast(id);
+        PhoneModuleBridges.torrentCast().deleteTemporaryCast(id);
     }
 
     String videoTitle(android.net.Uri uri) {

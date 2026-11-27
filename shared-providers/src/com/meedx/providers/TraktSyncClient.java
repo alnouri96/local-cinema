@@ -1053,9 +1053,15 @@ public final class TraktSyncClient {
     }
 
     public static boolean removePlaybackProgress(Context context, String imdbId, long tmdbId, int season, int episode) {
+        return removePlaybackProgress(context, imdbId, tmdbId, season, episode, "");
+    }
+
+    public static boolean removePlaybackProgress(Context context, String imdbId, long tmdbId,
+                                                 int season, int episode, String fallbackTitle) {
         if (context == null || !isConnected(context)) return false;
         boolean hasImdb = imdbId != null && imdbId.matches("tt[0-9]+");
-        if (!hasImdb && tmdbId <= 0) return false;
+        String normFallback = normalizeMatchTitle(fallbackTitle);
+        if (!hasImdb && tmdbId <= 0 && normFallback.isEmpty()) return false;
         boolean removedAny = false;
         try {
             String clientId = resolveClientId(context);
@@ -1069,11 +1075,12 @@ public final class TraktSyncClient {
                 String type = row.optString("type", "movie");
                 JSONObject target = "episode".equals(type) ? row.optJSONObject("show") : row.optJSONObject("movie");
                 JSONObject ids = target != null ? target.optJSONObject("ids") : null;
-                if (ids == null) continue;
-                String rowImdb = ids.optString("imdb", "");
-                long rowTmdb = ids.optLong("tmdb", 0L);
+                String rowImdb = ids != null ? ids.optString("imdb", "") : "";
+                long rowTmdb = ids != null ? ids.optLong("tmdb", 0L) : 0L;
+                String rowTitle = target != null ? normalizeMatchTitle(target.optString("title", "")) : "";
                 boolean idMatch = (hasImdb && imdbId.equalsIgnoreCase(rowImdb))
-                        || (tmdbId > 0 && tmdbId == rowTmdb);
+                        || (tmdbId > 0 && tmdbId == rowTmdb)
+                        || (!hasImdb && tmdbId <= 0 && !normFallback.isEmpty() && normFallback.equals(rowTitle));
                 if (!idMatch) continue;
                 if ("episode".equals(type) && (season > 0 || episode > 0)) {
                     JSONObject ep = row.optJSONObject("episode");
@@ -1094,6 +1101,16 @@ public final class TraktSyncClient {
             }
         } catch (Exception ignored) {}
         return removedAny;
+    }
+
+    private static String normalizeMatchTitle(String raw) {
+        if (raw == null || raw.isBlank()) return "";
+        return raw.replaceFirst("(?i)\\.(mp4|mkv|avi|mov|m4v|webm|ts|wmv)$", "")
+                .replaceAll("(?i)\\b(?:[0-9]{3,4}p|4k|uhd|web[- ]?(?:dl|rip)|bluray|brrip|hdr(?:10)?|[xh]26[45]|hevc|aac|dub|sub|repack)\\b", " ")
+                .replaceAll("[^\\p{L}\\p{N}]+", " ")
+                .trim()
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("\\s+", " ");
     }
 
     /** Immediately scrobbles playback state (start, pause, stop) to Trakt. */

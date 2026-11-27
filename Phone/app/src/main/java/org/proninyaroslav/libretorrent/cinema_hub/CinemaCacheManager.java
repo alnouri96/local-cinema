@@ -1,11 +1,8 @@
 package org.proninyaroslav.libretorrent.cinema_hub;
 
 import android.content.Context;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
-
-import org.proninyaroslav.libretorrent.core.model.TorrentEngine;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -71,29 +68,15 @@ public final class CinemaCacheManager {
      * and disabling smart-size 1 GB ballooning.
      */
     public static String ensureGeckoConfigFile(Context context) {
-        if (context == null) return null;
-        try {
-            File cfg = new File(context.getApplicationContext().getFilesDir(), GECKO_CONFIG_FILENAME);
-            String yaml = "prefs:\n"
-                    + "  browser.cache.disk.enable: true\n"
-                    + "  browser.cache.disk.capacity: 102400\n"
-                    + "  browser.cache.disk.smart_size.enabled: false\n"
-                    + "  browser.cache.disk.max_entry_size: 20480\n"
-                    + "  browser.cache.offline.capacity: 32768\n"
-                    + "  media.cache_size: 32768\n"
-                    + "  toolkit.telemetry.enabled: false\n"
-                    + "  datareporting.healthreport.uploadEnabled: false\n";
-            byte[] wanted = yaml.getBytes(StandardCharsets.UTF_8);
-            if (!cfg.isFile() || cfg.length() != wanted.length) {
-                try (FileOutputStream out = new FileOutputStream(cfg, false)) {
-                    out.write(wanted);
-                    out.flush();
-                }
-            }
-            return cfg.getAbsolutePath();
-        } catch (Exception ignored) {
-            return null;
-        }
+        return PhoneModuleBridges.browser().ensureRuntimeConfigFile(context);
+    }
+
+    public static String formatBytes(long bytes) {
+        long safe = Math.max(0L, bytes);
+        if (safe < 1024L) return safe + " B";
+        if (safe < 1048576L) return String.format(Locale.US, "%.1f KB", safe / 1024.0);
+        if (safe < 1073741824L) return String.format(Locale.US, "%.1f MB", safe / 1048576.0);
+        return String.format(Locale.US, "%.2f GB", safe / 1073741824.0);
     }
 
     /**
@@ -108,9 +91,10 @@ public final class CinemaCacheManager {
         IO.execute(() -> {
             try {
                 ensureGeckoConfigFile(app);
-                boolean castActive = CinemaRemoteBridge.isCastActive() || TvHubActivity.isTempTorrentCastActive();
+                CinemaStorage.migrateLegacyDownloadingFolder(app);
+                boolean castActive = CinemaRemoteBridge.isCastActive() || PhoneModuleBridges.tvHub().isTempTorrentCastActive();
                 if (!castActive) {
-                    TorrentEngine.getInstance(app).purgeOrphanedTemporaryCastsAsync();
+                    PhoneModuleBridges.torrentCast().purgeOrphanedTemporaryCastsAsync();
                     deleteChildren(app.getExternalFilesDir("torrent-casts"));
                     PhoneVideoServer.clearIdleBuffers();
                 }
@@ -120,7 +104,7 @@ public final class CinemaCacheManager {
                 }
                 pruneStaleExtensionTempFiles(app.getCacheDir());
                 com.meedx.updates.AppUpdates.pruneStaleUpdateApks(app, org.proninyaroslav.libretorrent.BuildConfig.VERSION_CODE);
-                BrowserDownloadManager.get(app).purgeOrphanedStagingFiles();
+                PhoneModuleBridges.browser().purgeOrphanedDownloadStaging(app);
 
                 // Enforce Browser Cache cap (120 MB)
                 List<File> geckoCacheDirs = collectGeckoCacheDirs(app);
@@ -171,7 +155,7 @@ public final class CinemaCacheManager {
         if (extRoot != null) {
             tempStreams += dirSize(new File(extRoot, "temp"));
         }
-        tempStreams += BrowserDownloadManager.get(app).computeOrphanedStagingBytes();
+        tempStreams += PhoneModuleBridges.browser().computeOrphanedDownloadStagingBytes(app);
         tempStreams += PhoneVideoServer.estimatedMemoryBufferBytes();
 
         return new StorageBreakdown(appImageCache, browserCache, tempStreams);
@@ -184,7 +168,7 @@ public final class CinemaCacheManager {
     public static void clearAllCachesAsync(Context context, Consumer<Long> onDone) {
         if (context == null) return;
         final Context app = context.getApplicationContext();
-        MAIN.post(CinemaBrowser::clearBrowserCacheOnly);
+        MAIN.post(() -> PhoneModuleBridges.browser().clearBrowserCacheOnly());
         IO.execute(() -> {
             StorageBreakdown before = computeBreakdownBlocking(app);
             try {
@@ -199,16 +183,16 @@ public final class CinemaCacheManager {
                 }
 
                 // 3. Temp Stream Files (torrent-casts, temp, orphaned download staging remnants, proxy buffers)
-                boolean activeTempCast = TvHubActivity.isTempTorrentCastActive();
+                boolean activeTempCast = PhoneModuleBridges.tvHub().isTempTorrentCastActive();
                 if (!activeTempCast) {
-                    TorrentEngine.getInstance(app).purgeOrphanedTemporaryCastsAsync();
+                    PhoneModuleBridges.torrentCast().purgeOrphanedTemporaryCastsAsync();
                     deleteChildren(app.getExternalFilesDir("torrent-casts"));
                 }
                 File extRoot = app.getExternalFilesDir(null);
                 if (extRoot != null) {
                     deleteChildren(new File(extRoot, "temp"));
                 }
-                BrowserDownloadManager.get(app).purgeOrphanedStagingFiles();
+                PhoneModuleBridges.browser().purgeOrphanedDownloadStaging(app);
                 if (!CinemaRemoteBridge.isCastActive()) {
                     PhoneVideoServer.clearIdleBuffers();
                 }

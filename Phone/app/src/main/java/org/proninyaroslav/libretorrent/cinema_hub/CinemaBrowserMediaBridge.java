@@ -21,6 +21,23 @@ import org.proninyaroslav.libretorrent.R;
  */
 final class CinemaBrowserMediaBridge {
     private static final String VIDEO_EXTENSION = "video-discovery@localcinema";
+    private static final java.util.regex.Pattern STORYBOARD_SUB_HINT_PATTERN = java.util.regex.Pattern.compile(
+            "(?i)(?:#xywh=\\s*\\d+|\\.(?:jpe?g|png|webp|gif|bmp|avif|svg)(?:$|[?#])|(?:^|[/_.-])(?:storyboard|sprites?|thumbnails?|thumbs|trickplay|preview[_-]?vtt|bif)(?:$|[/_.-]))");
+    private static final java.util.regex.Pattern IMAGE_CUE_LINE_PATTERN = java.util.regex.Pattern.compile(
+            "(?i)^(?:https?://\\S+|/?[^\\s<>\"'{}|^`\\\\]+)\\.(?:jpe?g|png|webp|gif|bmp|avif|svg)(?:[?#]\\S*)?$");
+    private static final java.util.regex.Pattern AD_STREAM_HOST_PATTERN = java.util.regex.Pattern.compile(
+            "(?i)(?:^|\\.)(doubleclick\\.net|googlesyndication\\.com|googleadservices\\.com|imasdk\\.googleapis\\.com|2mdn\\.net|adnxs\\.com|rubiconproject\\.com|pubmatic\\.com|criteo\\.com|taboola\\.com|outbrain\\.com|exoclick\\.com|exosrv\\.com|magsrv\\.com|tsyndicate\\.com|propellerads\\.com|popads\\.net|popcash\\.net|juicyads\\.com|a-ads\\.com|adsterra\\.com|hilltopads\\.net|clickadu\\.com|galaksion\\.com|bidgear\\.com|springserve\\.com|spotxchange\\.com|innovid\\.com|flashtalking\\.com|teads\\.tv|smartadserver\\.com|adform\\.net|vidoomy\\.com|aniview\\.com|connatix\\.com)$");
+    private static final java.util.regex.Pattern AD_STREAM_PATH_PATTERN = java.util.regex.Pattern.compile(
+            "(?i)(?:/|^)(?:vast|preroll|midroll|postroll|adserver|adbreak|ad_break|advert|ads_video|ima3)(?:/|\\.|\\?|$)");
+    private static final java.util.regex.Pattern CLOAKED_WRAPPER_HOST_PATTERN = java.util.regex.Pattern.compile(
+            "(?i)(?:^|\\.)(elif\\.news)$");
+    private static final java.util.regex.Pattern AD_TITLE_SPAM_PATTERN = java.util.regex.Pattern.compile(
+            "(?i)(?:\\b(?:forex(?:\\s+trading)?|make\\s+money(?:\\s+from\\s+home|\\s+online)?|work\\s+from\\s+home|passive\\s+income|earn\\s+money(?:\\s+online)?|binary\\s+options?|day\\s+trading|stock\\s+(?:market|trading)|crypto(?:currency)?\\s*(?:trading|exchange|invest\\w*)?|bitcoin\\s+trading|online\\s+casino|casino\\s+(?:bonus|games|online)|sports?\\s+betting|betting\\s+odds|slot\\s+machines?|(?:business|personal|student|auto|home|payday|small\\s+business)\\s+loans?|small\\s+business\\s+funding|mortgage(?:\\s+rates?|\\s+loans?|\\s+refinanc\\w*)?|refinanc(?:e|ing)\\s+your\\s+(?:home|loan|mortgage)|insurance\\s+(?:quotes?|plans?|policies|policy)|health\\s+insurance|life\\s+insurance|car\\s+insurance|auto\\s+insurance|credit\\s+cards?(?:\\s+rewards?|\\s+offers?)?|credit\\s+scores?|investment\\s+(?:tips|strategies|guide)|wealth\\s+management|retirement\\s+planning|tax\\s+deductions?|tips\\s+for\\s+a\\s+successful|sponsored(?:\\s+ad|\\s+content)?|advertisement|skip\\s+ads?|1xbet|melbet|mostbet|linebet|betwinner|olymp\\s*trade|iq\\s*option|binomo|attention\\s+required|just\\s+a\\s+moment|cloudflare)\\b|\\b\\d+\\s+tips\\s+(?:for|to)\\s+(?:a\\s+)?(?:successful|better|grow|boost|improve|get|choose|find)\\b)");
+    private static final java.util.Set<String> GENERIC_MEDIA_SEGMENTS = java.util.Set.of(
+            "master", "index", "playlist", "chunklist", "manifest", "video", "stream", "hls", "dash",
+            "live", "media", "play", "embed", "player", "watch", "movie", "movies", "series", "tv",
+            "episode", "episodes", "files", "cdn", "storage", "uploads", "videos", "content", "v", "e",
+            "2160p", "1440p", "1080p", "720p", "480p", "360p", "240p", "hd", "fhd", "uhd", "4k", "sd", "auto");
 
     private final CinemaBrowser host;
 
@@ -40,10 +57,14 @@ final class CinemaBrowserMediaBridge {
     private final java.util.Map<GeckoSession, java.util.Set<String>> audibleFrames =
             new java.util.HashMap<>();
     private final java.util.Map<GeckoSession, String> sessionCleanTitles = new java.util.HashMap<>();
+    private final java.util.Map<GeckoSession, String> lastVerifiedSessionTitles = new java.util.HashMap<>();
     private final java.util.Set<GeckoSession> topFrameTitledSessions = new java.util.HashSet<>();
     private final java.util.Set<GeckoSession> allowBackgroundAudioTabs = new java.util.HashSet<>();
     private GeckoSession lastCastSession;
     private String lastBroadcastTitle = "";
+    private String lastCastCanonicalUrl = "";
+    private boolean lastCastWasAdaptive = false;
+    private long lastCastTimestampMs = 0L;
 
     private final java.util.Map<GeckoSession, java.util.Map<String, org.json.JSONArray>> frameSnapshots =
             new java.util.HashMap<>();
@@ -56,6 +77,11 @@ final class CinemaBrowserMediaBridge {
 
     private final java.util.Map<GeckoSession, java.util.Map<String, org.json.JSONArray>> frameSubtitleSnapshots =
             new java.util.HashMap<>();
+    private final java.util.Map<GeckoSession, java.util.Map<String, org.json.JSONArray>> frameTorrentSnapshots =
+            new java.util.HashMap<>();
+    private final java.util.Map<GeckoSession, java.util.List<TorrentGrabOption>> sessionTorrents =
+            new java.util.HashMap<>();
+    private final java.util.Set<GeckoSession> hardcodedSubSessions = new java.util.HashSet<>();
     private final java.util.Map<GeckoSession, java.util.Map<String, org.json.JSONArray>> probedHlsSubtitles =
             new java.util.HashMap<>();
     private final java.util.Map<GeckoSession, java.util.List<SubtitleOption>> sessionSubtitles =
@@ -83,7 +109,7 @@ final class CinemaBrowserMediaBridge {
             LinearLayout card,
             TextView formatView,
             TextView subBtn,
-            TextView dlBtn) {}
+            View dlBtn) {}
 
     private record SubProbeMeta(long sizeBytes, String language, boolean isDual) {}
 
@@ -91,6 +117,11 @@ final class CinemaBrowserMediaBridge {
             String url, String mime, String language, String label,
             long sizeBytes, String content, boolean isDual,
             String referer, String origin, String userAgent, String cookie, String authorization) {}
+
+    record TorrentGrabOption(
+            String key, String hash, String magnetUri, String torrentUrl, String uri,
+            String kind, String title, String quality, String sizeText, long sizeBytes,
+            int seeds, String referer, String userAgent, String cookie) {}
 
     private static final SubtitleOption SUBTITLE_OFF =
             new SubtitleOption("", "", "", "", 0L, "", false, "", "", "", "", "");
@@ -245,14 +276,108 @@ final class CinemaBrowserMediaBridge {
         return sessionCleanTitles.getOrDefault(tab, "");
     }
 
+    String getLastVerifiedSessionTitle(GeckoSession tab) {
+        return lastVerifiedSessionTitles.getOrDefault(tab, "");
+    }
+
+    String resolveActiveSessionTitle(GeckoSession tab) {
+        if (tab == null) return "";
+        return resolveBestSessionTitle(tab, videoOptions(tab), torrentOptions(tab));
+    }
+
+    static boolean isCloakedWrapperUrl(String rawUrl) {
+        if (rawUrl == null || rawUrl.isBlank()) return false;
+        try {
+            String h = Uri.parse(rawUrl.trim()).getHost();
+            return h != null && CLOAKED_WRAPPER_HOST_PATTERN.matcher(h).find();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    static boolean isOptionDownloadable(VideoOption option) {
+        if (option == null) return false;
+        String u = option.url();
+        if (u == null || !u.startsWith("http")) return false;
+        String k = option.kind() == null ? "" : option.kind().toLowerCase(java.util.Locale.ROOT);
+        return !"dash".equals(k) && !"drm".equals(k) && !"embedded".equals(k);
+    }
+
     void onTitleChanged(GeckoSession session, String title) {
-        if (session == lastCastSession && sessionCleanTitles.getOrDefault(session, "").isBlank()) {
-            String cleaned = cleanVideoTitle(title);
-            if (!cleaned.isBlank() && !cleaned.equals(lastBroadcastTitle)) {
-                lastBroadcastTitle = cleaned;
-                TvHubActivity.updateActiveBrowserCastTitle(host.context, cleaned);
+        String pageUrl = session != null ? java.util.Objects.toString(host.locations.get(session), "") : "";
+        if (isCloakedWrapperUrl(pageUrl)) return;
+        String cleaned = cleanVideoTitle(title);
+        if (!cleaned.isBlank() && !topFrameTitledSessions.contains(session)) {
+            sessionCleanTitles.put(session, cleaned);
+            lastVerifiedSessionTitles.put(session, cleaned);
+        }
+        if (session == lastCastSession && !cleaned.isBlank() && !cleaned.equals(lastBroadcastTitle)) {
+            lastBroadcastTitle = cleaned;
+            PhoneModuleBridges.tvHub().updateActiveCastTitle(host.context, cleaned);
+        }
+    }
+
+    boolean isSheetShowing() {
+        return videoSheetDialog != null && videoSheetDialog.isShowing();
+    }
+
+    static boolean isStoryboardOrImageSubtitle(String url, String label, String content) {
+        if (url != null && STORYBOARD_SUB_HINT_PATTERN.matcher(url).find()) return true;
+        if (label != null && STORYBOARD_SUB_HINT_PATTERN.matcher(label).find()) return true;
+        return content != null && !content.isBlank() && isStoryboardVttBody(content);
+    }
+
+    static boolean isStoryboardVttBody(String rawText) {
+        if (rawText == null || rawText.isBlank()) return false;
+        boolean sawStoryboard = false;
+        boolean sawDialogue = false;
+        for (String raw : rawText.replace("\uFEFF", "").replace("\r\n", "\n").replace('\r', '\n').split("\n")) {
+            String t = raw.trim();
+            if (t.isEmpty()) continue;
+            String up = t.toUpperCase(java.util.Locale.ROOT);
+            if (up.startsWith("WEBVTT") || up.startsWith("NOTE") || up.startsWith("STYLE")
+                    || up.startsWith("REGION") || t.matches("^\\d+$") || t.contains("-->")) {
+                continue;
+            }
+            String stripped = t.replaceAll("<[^>]+>", "").trim();
+            if (stripped.toLowerCase(java.util.Locale.ROOT).contains("#xywh=")
+                    || IMAGE_CUE_LINE_PATTERN.matcher(stripped).matches()) {
+                sawStoryboard = true;
+            } else if (!stripped.isEmpty()) {
+                sawDialogue = true;
+                break;
             }
         }
+        return sawStoryboard && !sawDialogue;
+    }
+
+    static boolean isAdMediaStreamUrl(String rawUrl) {
+        if (rawUrl == null || rawUrl.isBlank()) return false;
+        try {
+            Uri u = Uri.parse(rawUrl.trim());
+            String h = u.getHost();
+            if (h != null && AD_STREAM_HOST_PATTERN.matcher(h).find()) return true;
+            String p = u.getPath();
+            if (p != null && AD_STREAM_PATH_PATTERN.matcher(p).find()) return true;
+            String q = u.getEncodedQuery();
+            return q != null && q.matches("(?i).*(?:^|&)(?:ad_tag|adtag|vast|preroll|ad_url|ad_type)=.*");
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    static String deriveOriginFromReferer(String referer) {
+        if (referer == null || referer.isBlank()) return "";
+        try {
+            Uri u = Uri.parse(referer.trim());
+            String scheme = u.getScheme();
+            String auth = u.getEncodedAuthority();
+            if (("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
+                    && auth != null && !auth.isBlank() && u.getUserInfo() == null) {
+                return scheme.toLowerCase(java.util.Locale.ROOT) + "://" + auth;
+            }
+        } catch (Exception ignored) {}
+        return "";
     }
 
     void clearSessionDiscoveryState(GeckoSession target) {
@@ -261,6 +386,9 @@ final class CinemaBrowserMediaBridge {
         probedHlsCache.remove(target);
         videos.remove(target);
         frameSubtitleSnapshots.remove(target);
+        frameTorrentSnapshots.remove(target);
+        sessionTorrents.remove(target);
+        hardcodedSubSessions.remove(target);
         probedHlsSubtitles.remove(target);
         sessionSubtitles.remove(target);
         selectedPrimarySubs.remove(target);
@@ -287,6 +415,9 @@ final class CinemaBrowserMediaBridge {
         frameSnapshots.remove(tab);
         probedHlsCache.remove(tab);
         frameSubtitleSnapshots.remove(tab);
+        frameTorrentSnapshots.remove(tab);
+        sessionTorrents.remove(tab);
+        hardcodedSubSessions.remove(tab);
         probedHlsSubtitles.remove(tab);
         sessionSubtitles.remove(tab);
         selectedPrimarySubs.remove(tab);
@@ -296,9 +427,14 @@ final class CinemaBrowserMediaBridge {
         mediaSessionPlaying.remove(tab);
         audibleFrames.remove(tab);
         sessionCleanTitles.remove(tab);
+        lastVerifiedSessionTitles.remove(tab);
         topFrameTitledSessions.remove(tab);
         allowBackgroundAudioTabs.remove(tab);
-        if (lastCastSession == tab) lastCastSession = null;
+        if (lastCastSession == tab) {
+            lastCastSession = null;
+            lastCastCanonicalUrl = "";
+            lastCastTimestampMs = 0L;
+        }
     }
 
     void clearAllOnDispose() {
@@ -317,6 +453,9 @@ final class CinemaBrowserMediaBridge {
         probedHlsCache.clear();
         hlsProbeInFlight.clear();
         frameSubtitleSnapshots.clear();
+        frameTorrentSnapshots.clear();
+        sessionTorrents.clear();
+        hardcodedSubSessions.clear();
         probedHlsSubtitles.clear();
         sessionSubtitles.clear();
         selectedPrimarySubs.clear();
@@ -328,6 +467,7 @@ final class CinemaBrowserMediaBridge {
         mediaSessionPlaying.clear();
         audibleFrames.clear();
         sessionCleanTitles.clear();
+        lastVerifiedSessionTitles.clear();
         topFrameTitledSessions.clear();
         allowBackgroundAudioTabs.clear();
         lastCastSession = null;
@@ -383,12 +523,20 @@ final class CinemaBrowserMediaBridge {
                         String frameKey = frameBase;
                         org.json.JSONArray incoming;
                         org.json.JSONArray incomingSubs = null;
+                        org.json.JSONArray incomingTorrents = null;
                         String trimmed = json.trim();
                         if (trimmed.startsWith("{")) {
                             var obj = new org.json.JSONObject(trimmed);
-                            if ("openVideoSheet".equals(obj.optString("action", ""))) {
+                            String act = obj.optString("action", "");
+                            if ("openVideoSheet".equals(act)) {
                                 if (sender.session == host.active) showVideos();
                                 return;
+                            }
+                            if ("scrollState".equals(act)) {
+                                return;
+                            }
+                            if (obj.optBoolean("hardcodedSubtitles", false)) {
+                                hardcodedSubSessions.add(sender.session);
                             }
                             String tok = obj.optString("frameToken", "");
                             if (!tok.isEmpty()) frameKey = "tok:" + tok;
@@ -397,23 +545,53 @@ final class CinemaBrowserMediaBridge {
                             if (frameAudible) audSet.add(frameKey);
                             else audSet.remove(frameKey);
 
-                            boolean isTopFrame = obj.optBoolean("isTopFrame", false);
-                            String metaTitle = cleanVideoTitle(obj.optString("metaTitle", ""));
-                            if (!metaTitle.isBlank()) {
-                                boolean hadTop = topFrameTitledSessions.contains(sender.session);
-                                if (isTopFrame || !hadTop) {
-                                    sessionCleanTitles.put(sender.session, metaTitle);
-                                    if (isTopFrame) topFrameTitledSessions.add(sender.session);
-                                    if (sender.session == lastCastSession && !metaTitle.equals(lastBroadcastTitle)) {
-                                        lastBroadcastTitle = metaTitle;
-                                        TvHubActivity.updateActiveBrowserCastTitle(host.context, metaTitle);
-                                    }
-                                }
-                            }
-
                             incoming = obj.optJSONArray("items");
                             if (incoming == null) incoming = new org.json.JSONArray();
                             incomingSubs = obj.optJSONArray("subtitles");
+                            incomingTorrents = obj.optJSONArray("torrents");
+
+                            boolean isTopFrame = obj.optBoolean("isTopFrame", false);
+                            boolean topCloaked = obj.optBoolean("topCloaked", false);
+                            String topPageUrl = java.util.Objects.toString(host.locations.get(sender.session), "");
+                            boolean hostCloaked = isCloakedWrapperUrl(topPageUrl)
+                                    || (isTopFrame && isCloakedWrapperUrl(sender.url));
+                            String metaTitle = cleanVideoTitle(obj.optString("metaTitle", ""));
+                            if (isTopFrame) {
+                                if (!metaTitle.isBlank() && !topCloaked && !hostCloaked) {
+                                    sessionCleanTitles.put(sender.session, metaTitle);
+                                    lastVerifiedSessionTitles.put(sender.session, metaTitle);
+                                    topFrameTitledSessions.add(sender.session);
+                                    if (sender.session == lastCastSession && !metaTitle.equals(lastBroadcastTitle)) {
+                                        lastBroadcastTitle = metaTitle;
+                                        PhoneModuleBridges.tvHub().updateActiveCastTitle(host.context, metaTitle);
+                                    }
+                                } else {
+                                    topFrameTitledSessions.remove(sender.session);
+                                    if (!metaTitle.isBlank() && !hostCloaked) {
+                                        sessionCleanTitles.put(sender.session, metaTitle);
+                                        if (sender.session == lastCastSession && !metaTitle.equals(lastBroadcastTitle)) {
+                                            lastBroadcastTitle = metaTitle;
+                                            PhoneModuleBridges.tvHub().updateActiveCastTitle(host.context, metaTitle);
+                                        }
+                                    }
+                                }
+                            } else if (!obj.optBoolean("adPlaying", false)
+                                    && !metaTitle.isBlank()
+                                    && (incoming.length() > 0 || frameAudible)) {
+                                String curClean = sessionCleanTitles.getOrDefault(sender.session, "");
+                                boolean childHasRichEpisodeTitle = metaTitle.matches("(?s).*[\\u0600-\\u06FF]{2,}.*")
+                                        || metaTitle.matches("(?i).*\\bS\\d{1,2}E\\d{1,3}\\b.*");
+                                boolean curIsWeakLatin = curClean.isBlank()
+                                        || (!curClean.matches("(?s).*[\\u0600-\\u06FF].*") && childHasRichEpisodeTitle);
+                                if (!topFrameTitledSessions.contains(sender.session) || hostCloaked || curIsWeakLatin) {
+                                    sessionCleanTitles.put(sender.session, metaTitle);
+                                    lastVerifiedSessionTitles.put(sender.session, metaTitle);
+                                    if (sender.session == lastCastSession && !metaTitle.equals(lastBroadcastTitle)) {
+                                        lastBroadcastTitle = metaTitle;
+                                        PhoneModuleBridges.tvHub().updateActiveCastTitle(host.context, metaTitle);
+                                    }
+                                }
+                            }
                         } else {
                             incoming = new org.json.JSONArray(trimmed);
                         }
@@ -460,8 +638,23 @@ final class CinemaBrowserMediaBridge {
                             tabSubFrames.put(frameKey, boundedSubs);
                         }
 
+                        var tabTorFrames = frameTorrentSnapshots.computeIfAbsent(sender.session,
+                                ignored -> new java.util.LinkedHashMap<>());
+                        if (incomingTorrents == null || incomingTorrents.length() == 0) {
+                            tabTorFrames.remove(frameKey);
+                        } else {
+                            var boundedTorrents = new org.json.JSONArray();
+                            for (int i = 0; i < incomingTorrents.length() && i < 35; i++) {
+                                var tor = incomingTorrents.optJSONObject(i);
+                                if (tor != null) boundedTorrents.put(tor);
+                            }
+                            tabTorFrames.put(frameKey, boundedTorrents);
+                        }
+
                         rebuildSessionSubtitles(sender.session);
+                        rebuildSessionTorrents(sender.session);
                         rebuildSessionVideos(sender.session);
+                        maybeAutoSwitchPostPrerollCast(sender.session);
                         updateDiscovery();
                         if (sender.session == host.active) {
                             if (videoSheetDialog != null && videoSheetDialog.isShowing()) {
@@ -496,6 +689,71 @@ final class CinemaBrowserMediaBridge {
         else sessionSubtitles.put(session, new java.util.ArrayList<>(combined.values()));
     }
 
+    static boolean isHardcodedSubtitleUrl(String raw) {
+        if (raw == null || raw.isBlank()) return false;
+        String low = raw.toLowerCase(java.util.Locale.ROOT);
+        return low.contains("cinemana.shabakaty.com")
+                || (low.contains("shabakaty.com") && low.contains("cinemana"));
+    }
+
+    boolean isHardcodedSubtitleSession(GeckoSession session, String streamUrl, String referer) {
+        if (session != null && hardcodedSubSessions.contains(session)) return true;
+        String loc = session != null ? java.util.Objects.toString(host.locations.get(session), "") : "";
+        return isHardcodedSubtitleUrl(loc) || isHardcodedSubtitleUrl(referer) || isHardcodedSubtitleUrl(streamUrl);
+    }
+
+    private void rebuildSessionTorrents(GeckoSession session) {
+        var combined = new java.util.LinkedHashMap<String, TorrentGrabOption>();
+        var tabTorFrames = frameTorrentSnapshots.get(session);
+        if (tabTorFrames != null) {
+            for (var arr : tabTorFrames.values()) {
+                for (int i = 0; i < arr.length() && combined.size() < 40; i++) {
+                    var item = arr.optJSONObject(i);
+                    if (item == null) continue;
+                    String magnet = item.optString("magnetUri", "").trim();
+                    String torUrl = item.optString("torrentUrl", "").trim();
+                    String uri = !magnet.isEmpty() ? magnet : (!torUrl.isEmpty() ? torUrl : item.optString("uri", "").trim());
+                    if (uri.isEmpty()) continue;
+                    String hash = item.optString("hash", "").trim().toLowerCase(java.util.Locale.ROOT);
+                    String key = !hash.isEmpty() ? ("btih:" + hash) : item.optString("key", uri);
+                    TorrentGrabOption prev = combined.get(key);
+                    if (prev != null) {
+                        if (magnet.isEmpty()) magnet = prev.magnetUri();
+                        if (torUrl.isEmpty()) torUrl = prev.torrentUrl();
+                        uri = !magnet.isEmpty() ? magnet : torUrl;
+                    }
+                    String rawTitle = item.optString("title", prev != null ? prev.title() : "");
+                    String quality = item.optString("quality", prev != null ? prev.quality() : "");
+                    String sizeText = item.optString("sizeText", prev != null ? prev.sizeText() : "");
+                    long sizeBytes = Math.max(item.optLong("size", 0L), prev != null ? prev.sizeBytes() : 0L);
+                    int seeds = Math.max(item.optInt("seeds", 0), prev != null ? prev.seeds() : 0);
+                    combined.put(key, new TorrentGrabOption(
+                            key,
+                            hash,
+                            magnet,
+                            torUrl,
+                            uri,
+                            !magnet.isEmpty() ? "magnet" : "torrent",
+                            rawTitle,
+                            quality,
+                            sizeText,
+                            sizeBytes,
+                            seeds,
+                            item.optString("referer", prev != null ? prev.referer() : ""),
+                            item.optString("userAgent", prev != null ? prev.userAgent() : ""),
+                            item.optString("cookie", prev != null ? prev.cookie() : "")));
+                }
+            }
+        }
+        if (combined.isEmpty()) sessionTorrents.remove(session);
+        else sessionTorrents.put(session, new java.util.ArrayList<>(combined.values()));
+    }
+
+    java.util.List<TorrentGrabOption> torrentOptions(GeckoSession tab) {
+        if (tab == null) return java.util.List.of();
+        return sessionTorrents.getOrDefault(tab, java.util.List.of());
+    }
+
     private void collectSubtitleArrayInto(org.json.JSONArray arr, java.util.Map<String, SubtitleOption> combined) {
         for (int i = 0; i < arr.length() && combined.size() < 40; i++) {
             var item = arr.optJSONObject(i);
@@ -506,6 +764,7 @@ final class CinemaBrowserMediaBridge {
             String mime = item.optString("mime", "");
             String lang = item.optString("language", "");
             String label = item.optString("label", "");
+            if (isStoryboardOrImageSubtitle(url, label, content)) continue;
             long size = item.optLong("size", 0L);
             boolean isDual = item.optBoolean("isDual", false) || "dual".equalsIgnoreCase(lang);
             if (!content.isEmpty()) {
@@ -518,6 +777,7 @@ final class CinemaBrowserMediaBridge {
             } else if (!url.isBlank()) {
                 SubProbeMeta meta = subProbeCache.get(url);
                 if (meta != null) {
+                    if ("__storyboard__".equals(meta.language())) continue;
                     if (size <= 0L && meta.sizeBytes() > 0L) size = meta.sizeBytes();
                     if (lang.isBlank() && !meta.language().isBlank()) lang = meta.language();
                     if (meta.isDual()) isDual = true;
@@ -678,6 +938,7 @@ final class CinemaBrowserMediaBridge {
                             var nm = namePat.matcher(ln);
                             String lang = lm.find() ? lm.group(1) : "";
                             String name = nm.find() ? nm.group(1) : "";
+                            if (isStoryboardOrImageSubtitle(absSub, name, null)) continue;
                             String mime = absSub.toLowerCase(java.util.Locale.ROOT).contains(".m3u8")
                                     ? "application/vnd.apple.mpegurl" : "text/vtt";
                             var subObj = new org.json.JSONObject()
@@ -739,7 +1000,7 @@ final class CinemaBrowserMediaBridge {
                 autoItem.put("userAgent", userAgent);
                 autoItem.put("cookie", cookie);
                 autoItem.put("authorization", auth);
-                if (!bestSubUrl.isEmpty()) {
+                if (!bestSubUrl.isEmpty() && !isHardcodedSubtitleSession(session, url, referer)) {
                     autoItem.put("subtitleUrl", bestSubUrl);
                     autoItem.put("subtitleMime", bestSubMime);
                     autoItem.put("subtitleLanguage", bestSubLang);
@@ -1071,6 +1332,9 @@ final class CinemaBrowserMediaBridge {
                     totalBytes = readTotal;
                 }
                 String sample = new String(sampleBuf.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
+                if (isStoryboardVttBody(sample)) {
+                    return new SubProbeMeta(-1L, "__storyboard__", false);
+                }
                 DetectedLang dl = detectSubtitleLanguage(sample);
                 return new SubProbeMeta(Math.max(0L, totalBytes), dl.language(), dl.isDual());
             } catch (Exception ignored) {
@@ -1142,6 +1406,7 @@ final class CinemaBrowserMediaBridge {
             var entry = entries.optJSONObject(i);
             if (entry == null) continue;
             String url = entry.optString("url");
+            if (isAdMediaStreamUrl(url)) continue;
             var uri = Uri.parse(url);
             String scheme = uri.getScheme();
             if ((!"https".equals(scheme) && !"http".equals(scheme)) || uri.getHost() == null || uri.getUserInfo() != null
@@ -1164,6 +1429,9 @@ final class CinemaBrowserMediaBridge {
             String kind = entry.optString("format");
             if ("embedded".equals(kind) || "drm".equals(kind)) continue;
             boolean hls = filename.endsWith(".m3u8") || "hls".equals(kind);
+            if (hls && (kind == null || kind.isBlank() || "video".equalsIgnoreCase(kind))) {
+                kind = "hls";
+            }
             boolean adaptive = (hls && !entry.optBoolean("masterQuality")
                     && (filename.contains("master") || entry.optBoolean("manifest"))) || "dash".equals(kind);
             if (adaptive) height = 0;
@@ -1189,9 +1457,16 @@ final class CinemaBrowserMediaBridge {
             String referer = entry.optString("referer");
             if (referer.isBlank()) referer = pageUrl;
             String origin = entry.optString("origin");
+            if (origin.isBlank()) origin = deriveOriginFromReferer(referer);
             String ua = entry.optString("userAgent");
             String cookie = entry.optString("cookie");
             String auth = entry.optString("authorization");
+            String itemSubUrl = entry.optString("subtitleUrl");
+            SubProbeMeta itemSubMeta = !itemSubUrl.isBlank() ? subProbeCache.get(itemSubUrl) : null;
+            if (!itemSubUrl.isBlank() && (isStoryboardOrImageSubtitle(itemSubUrl, "", null)
+                    || (itemSubMeta != null && "__storyboard__".equals(itemSubMeta.language())))) {
+                itemSubUrl = "";
+            }
             var option = new VideoOption(
                     url,
                     cleanVideoTitle(entry.optString("title")),
@@ -1204,9 +1479,9 @@ final class CinemaBrowserMediaBridge {
                     entry.optInt("fps"),
                     entry.optBoolean("live"),
                     entry.optBoolean("active", false),
-                    entry.optString("subtitleUrl"),
-                    entry.optString("subtitleMime"),
-                    entry.optString("subtitleLanguage"),
+                    itemSubUrl,
+                    itemSubUrl.isEmpty() ? "" : entry.optString("subtitleMime"),
+                    itemSubUrl.isEmpty() ? "" : entry.optString("subtitleLanguage"),
                     entry.optString("subtitleReferer", referer),
                     entry.optString("subtitleOrigin", origin),
                     entry.optString("subtitleUserAgent", ua),
@@ -1236,6 +1511,7 @@ final class CinemaBrowserMediaBridge {
 
     static String cleanVideoTitle(String title) {
         if (title == null) return "";
+        if (AD_TITLE_SPAM_PATTERN.matcher(title).find()) return "";
         String t = title.replaceAll("\\s+", " ").trim()
                 .replaceFirst("(?i)^(?:watch|مشاهدة(?:\\s+و\\s*تحميل)?|تحميل(?:\\s+و\\s*مشاهدة)?|فيلم|مسلسل|انمي|أنمي)\\s+", "")
                 .replaceFirst("(?i)\\s*(?:[|–—•·:\\-]\\s*)+(?:shabakaty\\s*)?(?:cinemana|shabakaty|youtube|egybest|faselhd|mycima|wecima|e?\\.?cimalight(?:\\.co)?|arabseed|akoam|شبكتي|سينمانا|سيما\\s*لايت|ايجي\\s*بست|فاصل\\s*إعلاني|ماي\\s*سيما|اون\\s*لاين|أون\\s*لاين).*$", "")
@@ -1246,15 +1522,74 @@ final class CinemaBrowserMediaBridge {
         String low = t.toLowerCase(java.util.Locale.ROOT);
         if (low.equals("cinemana") || low.equals("shabakaty") || low.equals("youtube")
                 || low.equals("shabakaty cinemana") || low.equals("سينمانا") || low.equals("شبكتي")
-                || low.equals("video player") || low.equals("home")) {
+                || low.equals("video player") || low.equals("player") || low.equals("embed")
+                || low.equals("jw player") || low.equals("jwplayer") || low.equals("plyr")
+                || low.equals("elif.news") || low.equals("elif news") || low.equals("untitled")
+                || low.equals("advertisement") || low.equals("sponsored") || low.equals("home")
+                || AD_TITLE_SPAM_PATTERN.matcher(t).find()) {
             return "";
         }
         return t;
     }
 
+    private static boolean isLikelyRandomSlug(String seg) {
+        if (seg == null || seg.length() < 3) return true;
+        if (seg.matches("(?s).*[\\u0600-\\u06FF]{2,}.*")) return false;
+        if (seg.matches("(?i).*\\bS\\d{1,2}E\\d{1,3}\\b.*")) return false;
+        if (seg.matches("(?i)^[0-9a-f]{8,}$") || seg.matches("^\\d+$")) return true;
+        if (!seg.matches(".*[\\s._\\-].*") && seg.matches(".*[0-9].*") && seg.matches("(?i).*[a-z].*") && seg.length() >= 8) {
+            return true;
+        }
+        String letters = seg.replaceAll("[^A-Za-z]", "");
+        if (!seg.matches(".*[\\s._\\-].*") && letters.length() >= 8) {
+            int vowels = letters.replaceAll("(?i)[^aeiouy]", "").length();
+            if ((vowels * 100) / letters.length() < 18) return true;
+        }
+        return false;
+    }
+
+    static String extractTitleFromUrlHint(String rawUrl, boolean allowPageSlug) {
+        if (rawUrl == null || rawUrl.isBlank()) return "";
+        try {
+            Uri u = Uri.parse(rawUrl.trim());
+            for (String key : new String[]{"title", "name", "video_title", "filename", "dn", "movie", "series"}) {
+                String val = u.getQueryParameter(key);
+                if (val != null && !val.isBlank()) {
+                    String cleaned = cleanVideoTitle(val.replaceAll("(?i)\\.(?:m3u8|mp4|mkv|webm|mov|mpd|vtt|srt)$", "")
+                            .replaceAll("[._]+", " "));
+                    if (!cleaned.isBlank() && !isLikelyRandomSlug(cleaned)) return cleaned;
+                }
+            }
+            var segs = u.getPathSegments();
+            if (segs != null) {
+                for (int i = segs.size() - 1; i >= 0; i--) {
+                    String seg = Uri.decode(segs.get(i));
+                    if (seg == null) continue;
+                    seg = seg.replaceAll("(?i)\\.(?:m3u8|mp4|mkv|webm|mov|mpd|vtt|srt|html?|php)$", "").trim();
+                    if (seg.isEmpty() || GENERIC_MEDIA_SEGMENTS.contains(seg.toLowerCase(java.util.Locale.ROOT))
+                            || isLikelyRandomSlug(seg)) {
+                        continue;
+                    }
+                    String humanized = seg.replaceAll("[._\\-]+", " ")
+                            .replaceAll("(?i)\\b(?:2160p|1440p|1080p|720p|480p|360p|web[\\s-]?dl|webrip|bluray|bdrip|brrip|hdrip|x264|x265|h264|h265|hevc|aac|ac3|10bit|hls)\\b", " ")
+                            .replaceAll("\\s+", " ")
+                            .trim();
+                    String cleaned = cleanVideoTitle(humanized);
+                    if (cleaned.length() >= 3 && (allowPageSlug
+                            || cleaned.contains(" ")
+                            || cleaned.matches("(?s).*[\\u0600-\\u06FF].*")
+                            || cleaned.matches("(?i).*\\bS\\d{1,2}E\\d{1,3}\\b.*"))) {
+                        return cleaned;
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return "";
+    }
+
     void updateDiscovery() {
         if (host.videoList == null || host.tabsButton == null) return;
-        int count = videoOptions(host.active).size();
+        int count = videoOptions(host.active).size() + torrentOptions(host.active).size();
         host.videoList.setEnabled(count > 0);
         host.videoList.setText(count > 0 ? Integer.toString(count) : "");
         host.stylePillIconButton(host.videoList, R.drawable.ic_cinema_cast_play, count > 0);
@@ -1276,7 +1611,12 @@ final class CinemaBrowserMediaBridge {
         SubtitleOption manual = selectedPrimarySubs.get(source);
         if (manual == SUBTITLE_OFF) return null;
         if (manual != null && (!manual.url().isBlank() || !manual.content().isBlank())) return manual;
-        if (option.subtitleUrl() != null && !option.subtitleUrl().isBlank()) {
+        if (isHardcodedSubtitleSession(source,
+                option != null ? option.url() : "",
+                option != null ? option.referer() : "")) {
+            return null;
+        }
+        if (option != null && option.subtitleUrl() != null && !option.subtitleUrl().isBlank()) {
             return new SubtitleOption(
                     option.subtitleUrl(), option.subtitleMime(), option.subtitleLanguage(), "",
                     0L, "", false,
@@ -1304,7 +1644,10 @@ final class CinemaBrowserMediaBridge {
     private SubtitleOption resolveEffectiveSecondarySub(GeckoSession source) {
         SubtitleOption manual = selectedSecondarySubs.get(source);
         if (manual != null) return manual;
-        if (!TvHubSubtitlesController.dualEnabled(host.context)) return null;
+        if (isHardcodedSubtitleSession(source, "", "") && selectedPrimarySubs.get(source) == null) {
+            return null;
+        }
+        if (!PhoneModuleBridges.tvHub().isDualSubtitlesEnabled(host.context)) return null;
         var subs = sessionSubtitles.getOrDefault(source, java.util.List.of());
         var options = videoOptions(source);
         var primary = options.isEmpty() ? selectedPrimarySubs.get(source) : resolveEffectivePrimarySub(source, options.get(0));
@@ -1319,10 +1662,11 @@ final class CinemaBrowserMediaBridge {
         var source = host.active;
         if (source == null) return;
         var options = videoOptions(source);
-        if (options.isEmpty()) {
+        var torrents = torrentOptions(source);
+        if (options.isEmpty() && torrents.isEmpty()) {
             rescanActiveSession();
-            CinemaSnackBanner.show(host.context, host.l("جاري البحث عن روابط الفيديو في الصفحة...",
-                    "Scanning page for video streams..."));
+            CinemaSnackBanner.show(host.context, host.l("جاري البحث عن روابط الفيديو والتورنت في الصفحة...",
+                    "Scanning page for video & magnet links..."));
             return;
         }
         for (var option : options) {
@@ -1340,13 +1684,7 @@ final class CinemaBrowserMediaBridge {
                 } catch (org.json.JSONException ignored) {}
             }
         }
-        String cleanDomTitle = sessionCleanTitles.getOrDefault(source, "");
-        int tabIdx = host.tabs.indexOf(source);
-        String tabTitle = tabIdx >= 0 ? cleanVideoTitle(host.titles.get(tabIdx)) : "";
-        String title = !cleanDomTitle.isBlank() ? cleanDomTitle
-                : options.stream().map(VideoOption::title).map(CinemaBrowserMediaBridge::cleanVideoTitle)
-                .filter(name -> !name.isBlank()).findFirst()
-                .orElse(!tabTitle.isBlank() ? tabTitle : host.context.getString(R.string.cinema_browser_video));
+        String title = resolveBestSessionTitle(source, options, torrents);
         String hostName = Uri.parse(java.util.Objects.toString(host.locations.get(source), "")).getHost();
         var dialog = new com.google.android.material.bottomsheet.BottomSheetDialog(host.context);
         videoSheetDialog = dialog;
@@ -1401,8 +1739,9 @@ final class CinemaBrowserMediaBridge {
                 if (videoSheetDialog == dialog && dialog.isShowing()) {
                     renderVideoSheetCards(source);
                     if (videoSheetStatus != null) {
-                        videoSheetStatus.setText(host.l("تم تحديث الروابط (" + videoOptions(source).size() + ")",
-                                "Updated (" + videoOptions(source).size() + " streams)"));
+                        int foundTotal = videoOptions(source).size() + torrentOptions(source).size();
+                        videoSheetStatus.setText(host.l("تم تحديث الروابط (" + foundTotal + ")",
+                                "Updated (" + foundTotal + " links)"));
                     }
                 }
             }, 900);
@@ -1455,8 +1794,8 @@ final class CinemaBrowserMediaBridge {
             return false;
         });
         panel.addView(scroll, new LinearLayout.LayoutParams(-1,
-                Math.min(host.dp(Math.max(3, options.size()) * 82),
-                        (int) (host.context.getResources().getDisplayMetrics().heightPixels * 0.56f))));
+                Math.min(host.dp(Math.max(3, options.size() + torrents.size()) * 92),
+                        (int) (host.context.getResources().getDisplayMetrics().heightPixels * 0.62f))));
 
         dialog.setOnDismissListener(d -> {
             if (videoSheetDialog == dialog) {
@@ -1468,6 +1807,7 @@ final class CinemaBrowserMediaBridge {
                 videoSheetHolders.clear();
                 renderedSheetSignature = "";
             }
+            host.resumeBrowserRendering();
         });
         renderVideoSheetCards(source);
         dialog.setContentView(panel);
@@ -1490,7 +1830,12 @@ final class CinemaBrowserMediaBridge {
         }
         StringBuilder sb = new StringBuilder("CC · ");
         if (primary == null) {
-            sb.append(host.l("بدون ترجمة أساسية", "Primary: Off"));
+            if (!subs.isEmpty() && isHardcodedSubtitleSession(source, "", "")) {
+                sb.append(host.l("متوقفة تلقائياً لمنع التكرار (اضغط للتفعيل يدوياً)",
+                        "Auto-Off: Burned-in subs (Tap to enable manually)"));
+            } else {
+                sb.append(host.l("بدون ترجمة أساسية", "Primary: Off"));
+            }
         } else {
             int pIdx = Math.max(1, subs.indexOf(primary) + 1);
             sb.append(formatSubtitleChipLabel(primary, pIdx));
@@ -1508,25 +1853,24 @@ final class CinemaBrowserMediaBridge {
     private void renderVideoSheetCards(GeckoSession source) {
         if (videoSheetCards == null || source == null) return;
         var options = videoOptions(source);
+        var torrents = torrentOptions(source);
         updateSubtitleSummaryView(source, options);
         var detectedSubs = sessionSubtitles.getOrDefault(source, java.util.List.of());
-        String cleanDomTitle = sessionCleanTitles.getOrDefault(source, "");
-        int tabIdx = host.tabs.indexOf(source);
-        String tabTitle = tabIdx >= 0 ? cleanVideoTitle(host.titles.get(tabIdx)) : "";
-        String title = !cleanDomTitle.isBlank() ? cleanDomTitle
-                : options.stream().map(VideoOption::title).map(CinemaBrowserMediaBridge::cleanVideoTitle)
-                .filter(name -> !name.isBlank()).findFirst()
-                .orElse(!tabTitle.isBlank() ? tabTitle : host.context.getString(R.string.cinema_browser_video));
+        String title = resolveBestSessionTitle(source, options, torrents);
 
         StringBuilder sigBuilder = new StringBuilder();
         for (var o : options) {
-            boolean hasDl = !"hls".equalsIgnoreCase(o.kind()) && !"dash".equalsIgnoreCase(o.kind())
-                    && o.url() != null && o.url().startsWith("http");
+            boolean hasDl = isOptionDownloadable(o);
             sigBuilder.append(o.activeStream()).append('|').append(o.kind()).append('|')
                     .append(o.height()).append('|').append(hasDl).append('|').append(o.url()).append('\n');
         }
+        for (var t : torrents) {
+            sigBuilder.append("tor|").append(t.key()).append('|').append(t.quality()).append('|')
+                    .append(t.sizeText()).append('|').append(t.seeds()).append('|').append(t.uri()).append('\n');
+        }
         String newSig = sigBuilder.toString();
-        if (newSig.equals(renderedSheetSignature)
+        if (torrents.isEmpty()
+                && newSig.equals(renderedSheetSignature)
                 && videoSheetHolders.size() == options.size()
                 && videoSheetCards.getChildCount() == options.size()) {
             for (int i = 0; i < options.size(); i++) {
@@ -1539,6 +1883,14 @@ final class CinemaBrowserMediaBridge {
         videoSheetCards.removeAllViews();
         videoSheetHolders.clear();
         renderedSheetSignature = newSig;
+
+        if (!options.isEmpty() && !torrents.isEmpty()) {
+            var vidHdr = host.historyText(
+                    host.l("روابط الفيديو المباشرة (" + options.size() + ")", "Direct Video Streams (" + options.size() + ")"),
+                    12.5f, 0xffe5b84b, true);
+            vidHdr.setPadding(host.dp(2), host.dp(6), host.dp(2), host.dp(2));
+            videoSheetCards.addView(vidHdr);
+        }
 
         for (var option : options) {
             var card = new LinearLayout(host.context);
@@ -1567,12 +1919,26 @@ final class CinemaBrowserMediaBridge {
             format.setPadding(host.dp(10), 0, host.dp(6), 0);
             card.addView(format, new LinearLayout.LayoutParams(0, -2, 1));
 
-            TextView dlBtn = null;
-            if (!"hls".equalsIgnoreCase(option.kind()) && !"dash".equalsIgnoreCase(option.kind())
-                    && option.url() != null && option.url().startsWith("http")) {
-                dlBtn = host.historyAction("⬇", 0xfff5c518, () -> {});
-                dlBtn.setContentDescription(host.l("تحميل الفيديو", "Download video"));
-                card.addView(dlBtn, new LinearLayout.LayoutParams(host.dp(42), host.dp(40)));
+            View dlBtn = null;
+            if (isOptionDownloadable(option)) {
+                var dlIcon = new android.widget.ImageView(host.context);
+                dlIcon.setImageResource(R.drawable.ic_cinema_dl);
+                dlIcon.setImageTintList(android.content.res.ColorStateList.valueOf(0xffe5a93b));
+                dlIcon.setScaleType(android.widget.ImageView.ScaleType.CENTER_INSIDE);
+                int padH = host.dp(7);
+                int padV = host.dp(6);
+                dlIcon.setPadding(padH, padV, padH, padV);
+                var dlBg = host.surface(0xff2a2417, 9);
+                dlBg.setStroke(Math.max(1, host.dp(1)), 0x77e5a93b);
+                dlIcon.setBackground(new android.graphics.drawable.RippleDrawable(
+                        android.content.res.ColorStateList.valueOf(0x33e5a93b), dlBg, host.surface(0xffffffff, 9)));
+                dlIcon.setContentDescription(host.l("تحميل الفيديو", "Download video"));
+                dlIcon.setFocusable(true);
+                dlIcon.setClickable(true);
+                var dlLp = new LinearLayout.LayoutParams(host.dp(34), host.dp(32));
+                dlLp.setMarginEnd(host.dp(8));
+                card.addView(dlIcon, dlLp);
+                dlBtn = dlIcon;
             }
 
             var subBtn = host.historyText("CC", 11, 0xff8c8c96, true);
@@ -1594,12 +1960,142 @@ final class CinemaBrowserMediaBridge {
             row.topMargin = host.dp(8);
             videoSheetCards.addView(card, row);
         }
+        if (!torrents.isEmpty()) {
+            var torHdr = host.historyText(
+                    host.l("روابط التورنت والمغناطيس (" + torrents.size() + ")", "Torrents & Magnet Links (" + torrents.size() + ")"),
+                    12.5f, 0xffe5b84b, true);
+            torHdr.setPadding(host.dp(2), host.dp(options.isEmpty() ? 4 : 12), host.dp(2), host.dp(2));
+            videoSheetCards.addView(torHdr);
+            for (var tor : torrents) {
+                videoSheetCards.addView(buildTorrentGrabCard(tor, title));
+            }
+        }
         if (videoSheetScroll != null && savedScrollY > 0) {
             final int targetY = savedScrollY;
             videoSheetScroll.post(() -> {
                 if (videoSheetScroll != null) videoSheetScroll.scrollTo(0, targetY);
             });
         }
+    }
+
+    private View buildTorrentGrabCard(TorrentGrabOption tor, String fallbackTitle) {
+        var card = new LinearLayout(host.context);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setLayoutDirection(host.isArabic() ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+        var cardBg = host.surface(0xff202127, 14);
+        cardBg.setStroke(Math.max(1, host.dp(1)), 0xff493d2b);
+        card.setBackground(cardBg);
+        card.setPadding(host.dp(12), host.dp(10), host.dp(12), host.dp(10));
+
+        var topRow = new LinearLayout(host.context);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+
+        String badgeLabel = (tor.quality() != null && !tor.quality().isBlank())
+                ? tor.quality()
+                : ("magnet".equals(tor.kind()) ? "MAGNET" : "TORRENT");
+        var badge = host.historyText(badgeLabel, 11.5f, 0xff18181b, true);
+        badge.setBackground(host.surface(0xffe5b84b, 8));
+        badge.setPadding(host.dp(8), host.dp(3), host.dp(8), host.dp(3));
+        topRow.addView(badge, new LinearLayout.LayoutParams(-2, -2));
+
+        String kindChipText = "magnet".equals(tor.kind()) ? "🧲 Magnet" : "📦 .torrent";
+        var kindChip = host.historyText(kindChipText, 11f, 0xff93c5fd, true);
+        kindChip.setBackground(host.surface(0xff1e293b, 7));
+        kindChip.setPadding(host.dp(7), host.dp(3), host.dp(7), host.dp(3));
+        var kLp = new LinearLayout.LayoutParams(-2, -2);
+        kLp.setMarginStart(host.dp(6));
+        topRow.addView(kindChip, kLp);
+
+        if (tor.seeds() > 0) {
+            var seedChip = host.historyText("▲ " + tor.seeds(), 11f, 0xff6ee7b7, true);
+            seedChip.setBackground(host.surface(0xff143126, 7));
+            seedChip.setPadding(host.dp(7), host.dp(3), host.dp(7), host.dp(3));
+            var sLp = new LinearLayout.LayoutParams(-2, -2);
+            sLp.setMarginStart(host.dp(6));
+            topRow.addView(seedChip, sLp);
+        }
+
+        String sizeInfo = !tor.sizeText().isBlank() ? tor.sizeText()
+                : (tor.sizeBytes() > 0 ? BrowserDownloadManager.formatBytes(tor.sizeBytes()) : "");
+        if (!sizeInfo.isEmpty()) {
+            topRow.addView(new View(host.context), new LinearLayout.LayoutParams(0, 1, 1f));
+            var sizeView = host.historyText(sizeInfo, 11.5f, 0xffd4cfc7, true);
+            topRow.addView(sizeView, new LinearLayout.LayoutParams(-2, -2));
+        }
+        card.addView(topRow, new LinearLayout.LayoutParams(-1, -2));
+
+        String itemTitle = !tor.title().isBlank() ? tor.title() : fallbackTitle;
+        var titleTv = host.historyText(itemTitle, 13f, 0xfff4f4f6, false);
+        titleTv.setMaxLines(2);
+        titleTv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        titleTv.setTextDirection(View.TEXT_DIRECTION_FIRST_STRONG);
+        var tLp = new LinearLayout.LayoutParams(-1, -2);
+        tLp.topMargin = host.dp(6);
+        card.addView(titleTv, tLp);
+
+        var actionsRow = new LinearLayout(host.context);
+        actionsRow.setOrientation(LinearLayout.HORIZONTAL);
+        actionsRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        var actLp = new LinearLayout.LayoutParams(-1, -2);
+        actLp.topMargin = host.dp(8);
+
+        var dlBtn = new com.google.android.material.button.MaterialButton(
+                host.context, null, com.google.android.material.R.attr.materialButtonOutlinedStyle);
+        dlBtn.setAllCaps(false);
+        dlBtn.setSingleLine(true);
+        dlBtn.setText("⬇ " + host.l("تحميل مباشر", "Download"));
+        dlBtn.setTextSize(12.5f);
+        dlBtn.setTextColor(0xfff8e5b0);
+        dlBtn.setCornerRadius(host.dp(11));
+        dlBtn.setStrokeColor(android.content.res.ColorStateList.valueOf(0xffe5b84b));
+        dlBtn.setStrokeWidth(Math.max(1, host.dp(1)));
+        dlBtn.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xff26231c));
+        dlBtn.setInsetTop(0);
+        dlBtn.setInsetBottom(0);
+        dlBtn.setMinHeight(host.dp(38));
+        dlBtn.setMinimumHeight(host.dp(38));
+        dlBtn.setOnClickListener(v -> {
+            if (videoSheetDialog != null) videoSheetDialog.dismiss();
+            host.downloadCapturedTorrent(tor.magnetUri(), tor.torrentUrl(), tor.referer(), tor.userAgent(), tor.cookie());
+        });
+        actionsRow.addView(dlBtn, new LinearLayout.LayoutParams(0, host.dp(38), 1f));
+
+        var tvBtn = new com.google.android.material.button.MaterialButton(host.context);
+        tvBtn.setAllCaps(false);
+        tvBtn.setSingleLine(true);
+        tvBtn.setText("▶ " + host.l("إرسال للتلفاز", "Send to TV"));
+        tvBtn.setTextSize(12.5f);
+        tvBtn.setTextColor(0xff171717);
+        tvBtn.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        tvBtn.setCornerRadius(host.dp(11));
+        tvBtn.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xffe5b84b));
+        tvBtn.setInsetTop(0);
+        tvBtn.setInsetBottom(0);
+        tvBtn.setMinHeight(host.dp(38));
+        tvBtn.setMinimumHeight(host.dp(38));
+        tvBtn.setOnClickListener(v -> {
+            if (videoSheetDialog != null) videoSheetDialog.dismiss();
+            PhoneModuleBridges.tvHub().castCapturedTorrent(
+                    host.context, tor.magnetUri(), tor.torrentUrl(), itemTitle,
+                    tor.referer(), tor.userAgent(), tor.cookie());
+        });
+        var tvLp = new LinearLayout.LayoutParams(0, host.dp(38), 1f);
+        tvLp.setMarginStart(host.dp(8));
+        actionsRow.addView(tvBtn, tvLp);
+
+        card.addView(actionsRow, actLp);
+        card.setOnLongClickListener(v -> {
+            host.context.getSystemService(android.content.ClipboardManager.class)
+                    .setPrimaryClip(android.content.ClipData.newPlainText("Torrent link", tor.uri()));
+            CinemaSnackBanner.show(host.context, host.l("تم نسخ رابط المغناطيس/التورنت ✓", "Copied magnet/torrent link ✓"));
+            return true;
+        });
+
+        var lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.topMargin = host.dp(8);
+        card.setLayoutParams(lp);
+        return card;
     }
 
     private void bindSheetCard(SheetCardHolder holder, VideoOption option, GeckoSession source,
@@ -1613,8 +2109,7 @@ final class CinemaBrowserMediaBridge {
         if (holder.dlBtn() != null) {
             holder.dlBtn().setOnClickListener(v -> {
                 if (videoSheetDialog != null) videoSheetDialog.dismiss();
-                host.promptDirectVideoDownload(option.url(), null, option.sizeBytes() > 0 ? option.sizeBytes() : -1L,
-                        title, option.referer(), option.userAgent(), option.cookie());
+                host.enqueueVideoOptionDownload(option, title);
             });
         }
         SubtitleOption primarySub = resolveEffectivePrimarySub(source, option);
@@ -1631,63 +2126,7 @@ final class CinemaBrowserMediaBridge {
 
         holder.card().setOnClickListener(view -> {
             if (videoSheetDialog != null) videoSheetDialog.dismiss();
-            lastCastSession = source;
-            lastBroadcastTitle = title;
-            SubtitleOption pSub = resolveEffectivePrimarySub(source, option);
-            SubtitleOption sSub = resolveEffectiveSecondarySub(source);
-            var catalog = new org.json.JSONArray();
-            for (int si = 0; si < detectedSubs.size(); si++) {
-                var subOpt = detectedSubs.get(si);
-                try {
-                    String memPath = (subOpt.content() != null && !subOpt.content().isBlank())
-                            ? PhoneVideoServer.registerInMemorySubtitle(subOpt.content(), subOpt.mime()) : "";
-                    catalog.put(new org.json.JSONObject()
-                            .put("url", subOpt.url())
-                            .put("memPath", memPath)
-                            .put("mime", subOpt.mime())
-                            .put("language", subOpt.language())
-                            .put("label", formatSubtitleChipLabel(subOpt, si + 1))
-                            .put("isDual", subOpt.isDual())
-                            .put("referer", subOpt.referer())
-                            .put("origin", subOpt.origin())
-                            .put("userAgent", subOpt.userAgent())
-                            .put("cookie", subOpt.cookie())
-                            .put("authorization", subOpt.authorization()));
-                } catch (org.json.JSONException ignored) {}
-            }
-            TvHubActivity.castFromBrowser(host.context, new TvHubActivity.BrowserCastRequest(
-                    option.url(),
-                    option.audioUrl(),
-                    option.kind(),
-                    title,
-                    "hls".equals(option.kind()) ? option.height() : 0,
-                    option.live(),
-                    option.referer(),
-                    option.origin(),
-                    option.userAgent(),
-                    option.cookie(),
-                    option.authorization(),
-                    pSub != null ? pSub.url() : "",
-                    pSub != null ? pSub.mime() : "",
-                    pSub != null ? pSub.language() : "",
-                    pSub != null ? pSub.content() : "",
-                    pSub != null ? pSub.referer() : "",
-                    pSub != null ? pSub.origin() : "",
-                    pSub != null ? pSub.userAgent() : "",
-                    pSub != null ? pSub.cookie() : "",
-                    pSub != null ? pSub.authorization() : "",
-                    sSub != null ? sSub.url() : "",
-                    sSub != null ? sSub.mime() : "",
-                    sSub != null ? sSub.language() : "",
-                    sSub != null ? sSub.content() : "",
-                    sSub != null ? sSub.referer() : "",
-                    sSub != null ? sSub.origin() : "",
-                    sSub != null ? sSub.userAgent() : "",
-                    sSub != null ? sSub.cookie() : "",
-                    sSub != null ? sSub.authorization() : "",
-                    catalog.toString(),
-                    R.id.cinema_browser_nav,
-                    () -> pauseCastSource(source)));
+            dispatchBrowserCast(source, option, title, detectedSubs);
         });
         holder.card().setOnLongClickListener(view -> {
             host.context.getSystemService(android.content.ClipboardManager.class)
@@ -1695,6 +2134,162 @@ final class CinemaBrowserMediaBridge {
             CinemaSnackBanner.show(host.context, host.l("تم نسخ رابط البث ✓", "Copied stream URL ✓"));
             return true;
         });
+    }
+
+    private static String canonicalStreamKey(String rawUrl) {
+        if (rawUrl == null || rawUrl.isBlank()) return "";
+        try {
+            Uri u = Uri.parse(rawUrl.trim());
+            return u.buildUpon().fragment(null).build().toString();
+        } catch (Exception ignored) {
+            return rawUrl.trim();
+        }
+    }
+
+    private String resolveBestSessionTitle(GeckoSession source, java.util.List<VideoOption> options) {
+        return resolveBestSessionTitle(source, options, torrentOptions(source));
+    }
+
+    private String resolveBestSessionTitle(GeckoSession source,
+                                           java.util.List<VideoOption> options,
+                                           java.util.List<TorrentGrabOption> torrents) {
+        String pageUrl = source != null ? java.util.Objects.toString(host.locations.get(source), "") : "";
+        boolean cloakedHost = isCloakedWrapperUrl(pageUrl);
+        String cleanDomTitle = sessionCleanTitles.getOrDefault(source, "");
+        if (!cleanDomTitle.isBlank()) return cleanDomTitle;
+        for (var opt : options) {
+            String t = cleanVideoTitle(opt.title());
+            if (!t.isBlank()) return t;
+        }
+        if (torrents != null) {
+            for (var tor : torrents) {
+                String t = cleanVideoTitle(tor.title());
+                if (!t.isBlank()) return t;
+            }
+        }
+        if (!cloakedHost) {
+            int tabIdx = host.tabs.indexOf(source);
+            String tabTitle = tabIdx >= 0 ? cleanVideoTitle(host.titles.get(tabIdx)) : "";
+            if (!tabTitle.isBlank()) return tabTitle;
+        }
+        for (var opt : options) {
+            String fromStream = extractTitleFromUrlHint(opt.url(), false);
+            if (!fromStream.isBlank()) return fromStream;
+            if (!isCloakedWrapperUrl(opt.referer())) {
+                String fromRef = extractTitleFromUrlHint(opt.referer(), false);
+                if (!fromRef.isBlank()) return fromRef;
+            }
+        }
+        var subs = sessionSubtitles.getOrDefault(source, java.util.List.of());
+        for (var sub : subs) {
+            String fromSub = extractTitleFromUrlHint(sub.url(), false);
+            if (!fromSub.isBlank()) return fromSub;
+        }
+        String openerTitle = host.getOpenerCleanTitle(source);
+        if (!openerTitle.isBlank()) return openerTitle;
+        if (cloakedHost) {
+            String prevVerified = lastVerifiedSessionTitles.getOrDefault(source, "");
+            if (!prevVerified.isBlank()) return prevVerified;
+        }
+        if (!cloakedHost) {
+            String fromPage = extractTitleFromUrlHint(pageUrl, true);
+            if (!fromPage.isBlank()) return fromPage;
+        }
+        String prevAny = lastVerifiedSessionTitles.getOrDefault(source, "");
+        if (!prevAny.isBlank()) return prevAny;
+        return host.context.getString(R.string.cinema_browser_video);
+    }
+
+    private void maybeAutoSwitchPostPrerollCast(GeckoSession session) {
+        if (session == null || session != lastCastSession || lastCastCanonicalUrl.isEmpty()) return;
+        long elapsed = android.os.SystemClock.elapsedRealtime() - lastCastTimestampMs;
+        if (elapsed < 1200L || elapsed > 4 * 60_000L) return;
+        var options = videoOptions(session);
+        if (options.isEmpty()) return;
+        boolean previousStillPresent = options.stream()
+                .anyMatch(o -> canonicalStreamKey(o.url()).equals(lastCastCanonicalUrl));
+        VideoOption activeMain = options.stream()
+                .filter(o -> o.activeStream() && !"audio".equals(o.kind()))
+                .findFirst().orElse(null);
+        if (activeMain == null) return;
+        String nextKey = canonicalStreamKey(activeMain.url());
+        if (nextKey.isEmpty() || nextKey.equals(lastCastCanonicalUrl)) return;
+        // Auto-promote when the initial cast clip was a pre-roll that finished/disappeared,
+        // or when a short progressive pre-roll transitions to the real HLS/DASH/main feature stream.
+        boolean upgradedFromShortClip = !previousStillPresent
+                || (!lastCastWasAdaptive && ("hls".equals(activeMain.kind()) || "dash".equals(activeMain.kind())
+                        || activeMain.sizeBytes() >= 25L * 1024L * 1024L));
+        if (!upgradedFromShortClip) return;
+        var detectedSubs = sessionSubtitles.getOrDefault(session, java.util.List.of());
+        String resolvedTitle = resolveBestSessionTitle(session, options);
+        dispatchBrowserCast(session, activeMain, resolvedTitle, detectedSubs);
+    }
+
+    private void dispatchBrowserCast(GeckoSession source, VideoOption option,
+                                     String title, java.util.List<SubtitleOption> detectedSubs) {
+        lastCastSession = source;
+        lastBroadcastTitle = title;
+        lastCastCanonicalUrl = canonicalStreamKey(option.url());
+        lastCastWasAdaptive = "hls".equals(option.kind()) || "dash".equals(option.kind()) || option.adaptive();
+        lastCastTimestampMs = android.os.SystemClock.elapsedRealtime();
+
+        SubtitleOption pSub = resolveEffectivePrimarySub(source, option);
+        SubtitleOption sSub = resolveEffectiveSecondarySub(source);
+        var catalog = new org.json.JSONArray();
+        for (int si = 0; si < detectedSubs.size(); si++) {
+            var subOpt = detectedSubs.get(si);
+            if (isStoryboardOrImageSubtitle(subOpt.url(), subOpt.label(), subOpt.content())) continue;
+            try {
+                String memPath = (subOpt.content() != null && !subOpt.content().isBlank())
+                        ? PhoneModuleBridges.tvHub().registerInMemorySubtitle(subOpt.content(), subOpt.mime()) : "";
+                catalog.put(new org.json.JSONObject()
+                        .put("url", subOpt.url())
+                        .put("memPath", memPath)
+                        .put("mime", subOpt.mime())
+                        .put("language", subOpt.language())
+                        .put("label", formatSubtitleChipLabel(subOpt, si + 1))
+                        .put("isDual", subOpt.isDual())
+                        .put("referer", subOpt.referer())
+                        .put("origin", subOpt.origin().isBlank() ? deriveOriginFromReferer(subOpt.referer()) : subOpt.origin())
+                        .put("userAgent", subOpt.userAgent())
+                        .put("cookie", subOpt.cookie())
+                        .put("authorization", subOpt.authorization()));
+            } catch (org.json.JSONException ignored) {}
+        }
+        String effectiveOrigin = option.origin().isBlank() ? deriveOriginFromReferer(option.referer()) : option.origin();
+        PhoneModuleBridges.tvHub().castBrowserMedia(host.context, new PhoneModuleBridges.BrowserCastPayload(
+                option.url(),
+                option.audioUrl(),
+                option.kind(),
+                title,
+                "hls".equals(option.kind()) ? option.height() : 0,
+                option.live(),
+                option.referer(),
+                effectiveOrigin,
+                option.userAgent(),
+                option.cookie(),
+                option.authorization(),
+                pSub != null ? pSub.url() : "",
+                pSub != null ? pSub.mime() : "",
+                pSub != null ? pSub.language() : "",
+                pSub != null ? pSub.content() : "",
+                pSub != null ? pSub.referer() : "",
+                pSub != null ? (pSub.origin().isBlank() ? deriveOriginFromReferer(pSub.referer()) : pSub.origin()) : "",
+                pSub != null ? pSub.userAgent() : "",
+                pSub != null ? pSub.cookie() : "",
+                pSub != null ? pSub.authorization() : "",
+                sSub != null ? sSub.url() : "",
+                sSub != null ? sSub.mime() : "",
+                sSub != null ? sSub.language() : "",
+                sSub != null ? sSub.content() : "",
+                sSub != null ? sSub.referer() : "",
+                sSub != null ? (sSub.origin().isBlank() ? deriveOriginFromReferer(sSub.referer()) : sSub.origin()) : "",
+                sSub != null ? sSub.userAgent() : "",
+                sSub != null ? sSub.cookie() : "",
+                sSub != null ? sSub.authorization() : "",
+                catalog.toString(),
+                pSub == null && isHardcodedSubtitleSession(source, option.url(), option.referer()),
+                () -> pauseCastSource(source)));
     }
 
     private void showDualSubtitlePickerDialog(GeckoSession source) {
@@ -1710,7 +2305,7 @@ final class CinemaBrowserMediaBridge {
                             "No external subtitle files captured from page or cache yet."),
                     13, 0xffd0d0d5, false);
             root.addView(emptyNote);
-            new AlertDialog.Builder(host.context)
+            CinemaBrowser.styleDarkDialog(new AlertDialog.Builder(host.context)
                     .setTitle(host.l("إعدادات الترجمة (CC)", "Subtitles (CC)"))
                     .setView(root)
                     .setNeutralButton(host.l("إعادة فحص", "Rescan"), (d, w) -> {
@@ -1718,26 +2313,30 @@ final class CinemaBrowserMediaBridge {
                         CinemaSnackBanner.show(host.context, host.l("جارٍ البحث عن الترجمات...", "Scanning for subtitles..."));
                     })
                     .setPositiveButton(android.R.string.ok, null)
-                    .show();
+                    .show());
             return;
         }
 
         final SubtitleOption[] pickedPrimary = new SubtitleOption[]{selectedPrimarySubs.get(source)};
         if (pickedPrimary[0] == null && !subs.isEmpty()) {
-            SubtitleOption best = null;
-            int bestScore = -1;
-            for (var s : subs) {
-                int score = 10;
-                String low = (s.language() + " " + s.label()).toLowerCase(java.util.Locale.ROOT);
-                if (s.isDual() || "dual".equals(low)) score += 35;
-                else if (low.startsWith("ar") || low.contains("عرب")) score += 30;
-                else if (low.startsWith("en")) score += 20;
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = s;
+            if (isHardcodedSubtitleSession(source, "", "")) {
+                pickedPrimary[0] = SUBTITLE_OFF;
+            } else {
+                SubtitleOption best = null;
+                int bestScore = -1;
+                for (var s : subs) {
+                    int score = 10;
+                    String low = (s.language() + " " + s.label()).toLowerCase(java.util.Locale.ROOT);
+                    if (s.isDual() || "dual".equals(low)) score += 35;
+                    else if (low.startsWith("ar") || low.contains("عرب")) score += 30;
+                    else if (low.startsWith("en")) score += 20;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        best = s;
+                    }
                 }
+                pickedPrimary[0] = best;
             }
-            pickedPrimary[0] = best;
         }
         final SubtitleOption[] pickedSecondary = new SubtitleOption[]{selectedSecondarySubs.get(source)};
 
@@ -1826,17 +2425,17 @@ final class CinemaBrowserMediaBridge {
                     renderVideoSheetCards(source);
                 });
 
-        boolean enabled = TvHubSubtitlesController.dualEnabled(host.context);
+        boolean enabled = PhoneModuleBridges.tvHub().isDualSubtitlesEnabled(host.context);
         builder.setNeutralButton(enabled ? host.l("مزدوجة: مفعّلة ✓", "Dual Subs: ON ✓")
                         : host.l("تفعيل الترجمة المزدوجة", "Enable Dual Subs"), (dialog, which) -> {
-            TvHubSubtitlesController.setDualEnabled(host.context, !enabled);
+            PhoneModuleBridges.tvHub().setDualSubtitlesEnabled(host.context, !enabled);
             if (!enabled && pickedPrimary[0] != null && pickedPrimary[0] != SUBTITLE_OFF) {
                 selectedPrimarySubs.put(source, pickedPrimary[0]);
             }
             if (enabled) selectedSecondarySubs.remove(source);
             renderVideoSheetCards(source);
         });
-        var dialog = builder.show();
+        var dialog = CinemaBrowser.styleDarkDialog(builder.show());
         if (dialog.getWindow() != null) dialog.getWindow().setLayout(
                 Math.round(host.context.getResources().getDisplayMetrics().widthPixels * 0.96f), -2);
     }

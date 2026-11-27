@@ -71,7 +71,7 @@ public class NavBarFragment extends Fragment {
                     });
     private BottomNavigationView bottomNav = null;
     private PlaybackBubble playbackBubble;
-    private boolean feedsFromBrowser;
+    private boolean feedsFromSettings;
     private final Runnable miniCastListener = this::refreshMiniCastBar;
     private DrawerLayout drawerLayout;
     private NavigationView navigationView;
@@ -161,11 +161,10 @@ public class NavBarFragment extends Fragment {
             cinemaBrowser = activity.getOrCreateCinemaBrowser(
                     view.findViewById(R.id.cinema_content), view.findViewById(R.id.nav_bar_host_fragment),
                     uri -> handleUri(uri, null), () -> extensionPicker.launch(new String[]{"*/*"}));
-            cinemaBrowser.setOpenFeedsAction(this::openBrowserFeeds);
             bottomNav.setLabelVisibilityMode(com.google.android.material.navigation.NavigationBarView.LABEL_VISIBILITY_LABELED);
             bottomNav.setItemHorizontalTranslationEnabled(false);
             bottomNav.setOnItemSelectedListener(item -> {
-                feedsFromBrowser = false;
+                feedsFromSettings = false;
                 if (item.getItemId() == R.id.cinema_hub_nav) {
                     org.proninyaroslav.libretorrent.cinema_hub.TvHubActivity.open(requireContext());
                     return false;
@@ -215,6 +214,10 @@ public class NavBarFragment extends Fragment {
             activity.getIntent().removeExtra("open_url");
             openBrowserUrl(pendingUrl);
         }
+        if (activity.getIntent().getBooleanExtra(MainActivity.EXTRA_OPEN_FEEDS, false)) {
+            activity.getIntent().removeExtra(MainActivity.EXTRA_OPEN_FEEDS);
+            openFeedsFromSettings();
+        }
     }
 
     public void openBrowserUrl(String url) {
@@ -226,24 +229,28 @@ public class NavBarFragment extends Fragment {
         }
     }
 
-    private void openBrowserFeeds() {
-        if (navController.getCurrentDestination() == null
-                || navController.getCurrentDestination().getId() != R.id.feedFragment) {
-            navController.navigate(R.id.feed_nav, null, new androidx.navigation.NavOptions.Builder()
-                    .setLaunchSingleTop(true).build());
+    public void openFeedsFromSettings() {
+        if (cinemaBrowser != null && cinemaBrowser.isShowing()) {
+            cinemaBrowser.hide();
         }
-        feedsFromBrowser = true;
-        cinemaBrowser.hide();
+        if (navController != null && (navController.getCurrentDestination() == null
+                || navController.getCurrentDestination().getId() != R.id.feedFragment)) {
+            navController.navigate(R.id.feed_nav, null, new androidx.navigation.NavOptions.Builder()
+                    .setLaunchSingleTop(true)
+                    .build());
+        }
+        feedsFromSettings = true;
+    }
+
+    public boolean canNavigateBackFromFeeds() {
+        return feedsFromSettings || (navController != null && navController.getPreviousBackStackEntry() != null);
     }
 
     public boolean handleBackPressed() {
-        if (feedsFromBrowser && navController.getCurrentDestination() != null
+        if (feedsFromSettings && navController != null && navController.getCurrentDestination() != null
                 && navController.getCurrentDestination().getId() == R.id.feedFragment) {
-            feedsFromBrowser = false;
-            navController.navigateUp();
-            bottomNav.setSelectedItemId(R.id.cinema_browser_nav);
-            cinemaBrowser.open();
-            return true;
+            feedsFromSettings = false;
+            return navController.navigateUp();
         }
         if (cinemaBrowser != null && cinemaBrowser.isShowing()) {
             if (!cinemaBrowser.goBack() && bottomNav != null) {

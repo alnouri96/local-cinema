@@ -782,13 +782,21 @@ public final class CinemaLiveActivity extends FragmentActivity {
     }
 
     private void play(CinemaLivePlaylists.Channel channel) {
-        startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(channel.url()), this, CinemaHlsActivity.class)
-                .putExtra("format", channel.hls() ? "hls" : "adaptive_file")
-                .putExtra("is_live_cast", true)
-                .putExtra(CinemaHlsActivity.LIVE_CHANNEL, true)
-                .putExtra(CinemaHlsActivity.CHANNEL_USER_AGENT, channel.userAgent())
-                .putExtra(CinemaHlsActivity.CHANNEL_REFERER, channel.referer())
-                .putExtra("title", channel.title()));
+        CinemaPlaybackRouter.playLiveChannel(this, new CinemaPlaybackRouter.LiveChannelRequest(
+                Uri.parse(channel.url()),
+                channel.hls() ? "hls" : "adaptive_file",
+                channel.title(),
+                null,
+                "tv",
+                null,
+                null,
+                channel.userAgent(),
+                channel.referer(),
+                CinemaPlaybackRouter.mapToHeadersBundle(channel.headers()),
+                null,
+                null,
+                null,
+                null));
     }
 
     private String displayCountry(String code) {

@@ -905,8 +905,37 @@ public class PlayerService extends Service implements Player.Listener, IndexHelp
                     Thread.currentThread().interrupt();
                 }
             }
-            mPlayer.setVideoURI(mStreamingUri, null);
+            mPlayer.setVideoURI(mStreamingUri, buildStreamingHeaders());
         }).start();
+    }
+
+    private java.util.Map<String, String> buildStreamingHeaders() {
+        java.util.Map<String, String> map = new java.util.LinkedHashMap<>();
+        if (mIntent != null) {
+            for (String bundleKey : new String[]{"headers", "channel_headers"}) {
+                android.os.Bundle b = mIntent.getBundleExtra(bundleKey);
+                if (b != null) {
+                    for (String k : b.keySet()) {
+                        Object v = b.get(k);
+                        if (k != null && !k.isBlank() && v instanceof String sv && !sv.isBlank()) {
+                            map.put(k, sv);
+                        }
+                    }
+                }
+            }
+            String ua = mIntent.getStringExtra("channel_ua");
+            if (ua != null && !ua.isBlank() && !map.containsKey("User-Agent")) map.put("User-Agent", ua);
+            String ref = mIntent.getStringExtra("channel_referer");
+            if (ref != null && !ref.isBlank() && !map.containsKey("Referer")) map.put("Referer", ref);
+        }
+        if (mStreamingUri != null) {
+            String scheme = mStreamingUri.getScheme();
+            if (("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
+                    && map.keySet().stream().noneMatch("User-Agent"::equalsIgnoreCase)) {
+                map.put("User-Agent", "Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            }
+        }
+        return map.isEmpty() ? null : map;
     }
 
     public void setPlayer(){
@@ -1033,16 +1062,15 @@ public class PlayerService extends Service implements Player.Listener, IndexHelp
                         mIndexHelper.writeVideoInfo(mVideoInfo, mNetworkBookmarksEnabled);
                         return;
                     }
-                    if (mStartedCompleted && !mUserSoughtBelowThreshold) {
-                        mLastPosition = LAST_POSITION_END;
-                    }
                     boolean completedByThreshold = mLastPosition > 0 && mVideoInfo.duration > 0
                             && (long) mLastPosition * 100L >= (long) mVideoInfo.duration * 85L;
                     if (completedByThreshold) {
                         mLastPosition = LAST_POSITION_END;
+                    } else if (mStartedCompleted && mLastPosition <= 1000 && !mUserSoughtBelowThreshold) {
+                        mLastPosition = LAST_POSITION_END;
                     }
                     mVideoInfo.resume = mLastPosition;
-                    if (mLastPosition == LAST_POSITION_END) {
+                    if (mLastPosition == LAST_POSITION_END || mStartedCompleted) {
                         mVideoInfo.traktSeen = Trakt.TRAKT_DB_MARKED;
                     }
                     com.archos.mediacenter.video.leanback.cinema.CinemaMediaTime.rememberState(
@@ -1075,24 +1103,39 @@ public class PlayerService extends Service implements Player.Listener, IndexHelp
                                     Math.max(1L, durSnap), Math.max(1L, durSnap), true);
                             com.archos.mediacenter.video.leanback.cinema.CinemaWatchStore.syncWithTraktAsync(appCtx);
                         });
-                    } else if (pushRemote && mLastPosition > 1000 && mVideoInfo.id > 0) {
+                    } else if (mLastPosition > 1000 && mVideoInfo.id > 0) {
                         final long playedId = mVideoInfo.id;
+                        final boolean keepWatched = mStartedCompleted || mVideoInfo.traktSeen == Trakt.TRAKT_DB_MARKED;
+                        final boolean doPushRemote = pushRemote;
                         final Context appCtx = getApplicationContext();
                         final String titleSnap = mVideoInfo.scraperTitle != null && !mVideoInfo.scraperTitle.isEmpty() ? mVideoInfo.scraperTitle : mVideoInfo.title;
                         final String uriSnap = mVideoInfo.uri != null ? mVideoInfo.uri.toString() : (mUri != null ? mUri.toString() : "");
                         final long posSnap = mLastPosition;
                         final long durSnap = mVideoInfo.duration;
                         java.util.concurrent.Executors.newSingleThreadExecutor().execute(() -> {
+                            if (keepWatched) {
+                                try {
+                                    android.content.ContentValues cv = new android.content.ContentValues();
+                                    cv.put(VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN, Trakt.TRAKT_DB_MARKED);
+                                    appCtx.getContentResolver().update(VideoStore.Video.Media.EXTERNAL_CONTENT_URI, cv,
+                                            VideoStore.Video.VideoColumns._ID + "=?", new String[]{Long.toString(playedId)});
+                                } catch (Exception ignored) {}
+                            }
                             var desc = com.archos.mediacenter.video.leanback.cinema.CinemaWatchStore.resolvePlaybackDescriptor(appCtx, playedId, uriSnap, titleSnap);
-                            com.archos.mediacenter.video.leanback.cinema.CinemaLinkServer.broadcastWatchSync(
-                                    com.archos.mediacenter.video.leanback.cinema.CinemaWatchStore.buildSyncRecordJson(
-                                            desc.canonicalKey(), desc.streamKey(), "tv", titleSnap, desc.mediaType(),
-                                            desc.imdbId(), desc.tmdbId(), desc.season(), desc.episode(),
-                                            posSnap, Math.max(0L, durSnap), false, false, System.currentTimeMillis()));
-                            com.archos.mediacenter.video.leanback.cinema.CinemaWatchStore.pushPlaybackScrobbleAsync(
-                                    appCtx, playedId, uriSnap, titleSnap, desc.mediaType(),
-                                    desc.imdbId(), desc.tmdbId(), desc.season(), desc.episode(),
-                                    posSnap, durSnap, false);
+                            com.archos.mediacenter.video.leanback.cinema.CinemaWatchStore.clearContinueTombstone(
+                                    appCtx, desc.canonicalKey(), desc.streamKey(), uriSnap, titleSnap,
+                                    desc.imdbId(), desc.tmdbId(), desc.season(), desc.episode());
+                            if (doPushRemote) {
+                                com.archos.mediacenter.video.leanback.cinema.CinemaLinkServer.broadcastWatchSync(
+                                        com.archos.mediacenter.video.leanback.cinema.CinemaWatchStore.buildSyncRecordJson(
+                                                desc.canonicalKey(), desc.streamKey(), "tv", titleSnap, desc.mediaType(),
+                                                desc.imdbId(), desc.tmdbId(), desc.season(), desc.episode(),
+                                                posSnap, Math.max(0L, durSnap), keepWatched || desc.watched(), false, System.currentTimeMillis()));
+                                com.archos.mediacenter.video.leanback.cinema.CinemaWatchStore.pushPlaybackScrobbleAsync(
+                                        appCtx, playedId, uriSnap, titleSnap, desc.mediaType(),
+                                        desc.imdbId(), desc.tmdbId(), desc.season(), desc.episode(),
+                                        posSnap, durSnap, false);
+                            }
                         });
                     }
                     long utcSeconds = System.currentTimeMillis() / 1000L;
@@ -1411,6 +1454,21 @@ public class PlayerService extends Service implements Player.Listener, IndexHelp
         }
         mLastPosition = getLastPosition(mVideoInfo, mResume);
         mStartedCompleted = (mVideoInfo != null && (mVideoInfo.resume == LAST_POSITION_END || mVideoInfo.traktSeen == Trakt.TRAKT_DB_MARKED));
+        if (mStartedCompleted && mVideoInfo != null) {
+            mVideoInfo.traktSeen = Trakt.TRAKT_DB_MARKED;
+            if (!PrivateMode.isActive() && mVideoInfo.id > 0) {
+                final long watchedVid = mVideoInfo.id;
+                final Context appCtx = getApplicationContext();
+                java.util.concurrent.Executors.newSingleThreadExecutor().execute(() -> {
+                    try {
+                        android.content.ContentValues cv = new android.content.ContentValues();
+                        cv.put(VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN, Trakt.TRAKT_DB_MARKED);
+                        appCtx.getContentResolver().update(VideoStore.Video.Media.EXTERNAL_CONTENT_URI, cv,
+                                VideoStore.Video.VideoColumns._ID + "=?", new String[]{Long.toString(watchedVid)});
+                    } catch (Exception ignored) {}
+                });
+            }
+        }
         mUserSoughtBelowThreshold = false;
         mInitialResumeSeekPending = false;
         if (mVideoInfo != null && mVideoInfo.id > 0 && mAutoCompletedVideoId == mVideoInfo.id && !mStartedCompleted) {

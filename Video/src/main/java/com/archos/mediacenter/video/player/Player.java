@@ -834,6 +834,15 @@ public class Player implements IPlayerControl,
     public void setLooping(boolean enable) {
         if (mMediaPlayer != null) mMediaPlayer.setLooping(enable);
     }
+
+    public void setFilterMuted(boolean muted) {
+        if (mMediaPlayer != null) {
+            try {
+                float vol = muted ? 0f : 1f;
+                mMediaPlayer.setVolume(vol, vol);
+            } catch (Exception ignored) {}
+        }
+    }
     
     public boolean isLocalVideo() {
         return mIsLocalVideo;
@@ -1031,8 +1040,7 @@ public class Player implements IPlayerControl,
 
         mResumeCtx.onPrepared();
 
-        var cinemaPrefs=PreferenceManager.getDefaultSharedPreferences(mContext);
-        int cinemaMode=cinemaPrefs.getInt("cinema_display_mode",-1);
+        int cinemaMode=com.archos.mediacenter.video.leanback.cinema.CinemaEngineBoundary.getDisplayMode(mContext);
         if(mWindow!=null&&cinemaMode>=0){
             setHdrCapabilities();
             CustomApplication.setSupportedRefreshRates(getSupportedRefreshRates());
@@ -1044,14 +1052,14 @@ public class Player implements IPlayerControl,
                 mCurrentFps=(float)video.fpsRate/video.fpsScale;
                 if(cinemaMode>0&&display!=null){
                     Display.Mode current=display.getMode();
-                    Display.Mode desired=CinemaDisplayModes.select(current,display.getSupportedModes(),
-                            mCurrentFps,cinemaMode==2?mVideoWidth:0,cinemaMode==2?mVideoHeight:0);
+                    Display.Mode desired=com.archos.mediacenter.video.leanback.cinema.CinemaEngineBoundary.selectDisplayMode(
+                            current,display.getSupportedModes(),mCurrentFps,mVideoWidth,mVideoHeight,cinemaMode);
                     if(desired.getModeId()!=current.getModeId()){
                         LayoutParams attributes=mWindow.getAttributes();
                         if(originalModeId==null)originalModeId=attributes.preferredDisplayModeId;
                         attributes.preferredDisplayModeId=desired.getModeId();
                         mWindow.setAttributes(attributes);
-                        delay=Math.max(0,Math.min(5000,cinemaPrefs.getInt("cinema_display_delay_ms",1500)));
+                        delay=com.archos.mediacenter.video.leanback.cinema.CinemaEngineBoundary.getDisplaySwitchDelayMs(mContext);
                     }
                     if(desired.getModeId()!=current.getModeId()&&Build.VERSION.SDK_INT>=30&&mSurfaceHolder!=null){
                         Surface surface=mSurfaceHolder.getSurface();

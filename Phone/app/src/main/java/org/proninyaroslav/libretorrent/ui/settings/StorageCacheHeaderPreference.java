@@ -19,7 +19,6 @@ import com.google.android.material.button.MaterialButton;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 
 import org.proninyaroslav.libretorrent.R;
-import org.proninyaroslav.libretorrent.cinema_hub.BrowserDownloadManager;
 import org.proninyaroslav.libretorrent.cinema_hub.CinemaCacheManager;
 import org.proninyaroslav.libretorrent.cinema_hub.CinemaSnackBanner;
 
@@ -105,7 +104,7 @@ public final class StorageCacheHeaderPreference extends Preference {
         TextView totalBadge = new TextView(c);
         String totalText = loading
                 ? (ar ? "جاري الحساب..." : "Calculating...")
-                : BrowserDownloadManager.formatBytes(breakdown.totalBytes());
+                : CinemaCacheManager.formatBytes(breakdown.totalBytes());
         totalBadge.setText(totalText);
         totalBadge.setTextSize(12);
         totalBadge.setTypeface(Typeface.DEFAULT_BOLD);
@@ -120,12 +119,12 @@ public final class StorageCacheHeaderPreference extends Preference {
         // Compact single-box breakdown summary + inline button
         TextView compactLine = new TextView(c);
         compactLine.setText(ar
-                ? ("التطبيق والصور: " + BrowserDownloadManager.formatBytes(breakdown.appImageCacheBytes())
-                    + " · المتصفح: " + BrowserDownloadManager.formatBytes(breakdown.browserCacheBytes())
-                    + " · البث المؤقت: " + BrowserDownloadManager.formatBytes(breakdown.tempStreamBytes()))
-                : ("App & Images: " + BrowserDownloadManager.formatBytes(breakdown.appImageCacheBytes())
-                    + " · Browser: " + BrowserDownloadManager.formatBytes(breakdown.browserCacheBytes())
-                    + " · Temp: " + BrowserDownloadManager.formatBytes(breakdown.tempStreamBytes())));
+                ? ("التطبيق والصور: " + CinemaCacheManager.formatBytes(breakdown.appImageCacheBytes())
+                    + " · المتصفح: " + CinemaCacheManager.formatBytes(breakdown.browserCacheBytes())
+                    + " · البث المؤقت: " + CinemaCacheManager.formatBytes(breakdown.tempStreamBytes()))
+                : ("App & Images: " + CinemaCacheManager.formatBytes(breakdown.appImageCacheBytes())
+                    + " · Browser: " + CinemaCacheManager.formatBytes(breakdown.browserCacheBytes())
+                    + " · Temp: " + CinemaCacheManager.formatBytes(breakdown.tempStreamBytes())));
         compactLine.setTextSize(12.5f);
         compactLine.setTextColor(0xffe4e4e7);
         compactLine.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
@@ -188,7 +187,7 @@ public final class StorageCacheHeaderPreference extends Preference {
     }
 
     public void confirmAndClearCache(Context c, boolean ar) {
-        String sizeFormatted = BrowserDownloadManager.formatBytes(breakdown.totalBytes());
+        String sizeFormatted = CinemaCacheManager.formatBytes(breakdown.totalBytes());
         new MaterialAlertDialogBuilder(c)
                 .setTitle(ar ? "مسح الكاش والملفات المؤقتة؟" : "Clear Cache & Temp Stream Files?")
                 .setMessage(ar
@@ -202,8 +201,8 @@ public final class StorageCacheHeaderPreference extends Preference {
                         clearing = false;
                         refreshBreakdown();
                         String msg = ar
-                                ? ("تم مسح الكاش وتحرير " + BrowserDownloadManager.formatBytes(freedBytes) + " ✓")
-                                : ("Cache cleared (" + BrowserDownloadManager.formatBytes(freedBytes) + " freed) ✓");
+                                ? ("تم مسح الكاش وتحرير " + CinemaCacheManager.formatBytes(freedBytes) + " ✓")
+                                : ("Cache cleared (" + CinemaCacheManager.formatBytes(freedBytes) + " freed) ✓");
                         CinemaSnackBanner.show(c, msg);
                     });
                 })

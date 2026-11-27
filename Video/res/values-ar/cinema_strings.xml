@@ -68,13 +68,13 @@
     <string name="cinema_list_view">قائمة</string>
     <string name="cinema_loading_files">جارٍ تحميل الملفات…</string>
     <string name="cinema_manage_library_sources">إدارة مصادر المكتبة</string>
-    <string name="cinema_mark_as_unwatched">تحديد كغير مشاهد</string>
+    <string name="cinema_mark_as_unwatched">تحديد كغير مُشاهَد</string>
     <string name="cinema_mark_as_watched">تمت المشاهدة</string>
-    <string name="cinema_mark_as_watched_cinemadetailsactivity">تحديد كمشاهد</string>
-    <string name="cinema_mark_as_watched_cinemaseriesactivity">تحديد كمشاهد</string>
+    <string name="cinema_mark_as_watched_cinemadetailsactivity">تحديد كمُشاهَد</string>
+    <string name="cinema_mark_as_watched_cinemaseriesactivity">تحديد كمُشاهَد</string>
     <string name="cinema_medium">متوسط</string>
     <string name="cinema_more">المزيد</string>
-    <string name="cinema_more_details_and_advanced_actions">تفاصيل إضافية وخيارات متقدمة</string>
+    <string name="cinema_more_details_and_advanced_actions">التفاصيل التقنية والمزيد</string>
     <string name="cinema_move_down">تحريك إلى الأسفل</string>
     <string name="cinema_move_up">تحريك إلى الأعلى</string>
     <string name="cinema_movie_files_scan_started">بدأ فحص ملفات الأفلام وتحديث المكتبة</string>
@@ -95,7 +95,7 @@
     <string name="cinema_official_trailer_unavailable">الإعلان الرسمي غير متاح</string>
     <string name="cinema_oldest_first">الأقدم أولاً</string>
     <string name="cinema_only_the_app_library_source_will_be_removed_video_files_and_the_network_folder_will_be_preserved">ستتم إزالته من مكتبة التطبيق فقط. ستبقى ملفات الفيديو ومجلد الشبكة محفوظة.</string>
-    <string name="cinema_open_details">فتح التفاصيل</string>
+    <string name="cinema_open_details">فتح صفحة العرض</string>
     <string name="cinema_open_library">فتح المكتبة</string>
     <string name="cinema_other_videos">فيديوهات أخرى</string>
     <string name="cinema_phone_remote">التحكم من الهاتف</string>
@@ -107,7 +107,7 @@
     <string name="cinema_recently_added">تمت إضافته حديثاً</string>
     <string name="cinema_recently_added_movies">الأفلام المضافة حديثاً</string>
     <string name="cinema_recently_added_tv_shows">المسلسلات المضافة حديثاً</string>
-    <string name="cinema_refresh_poster_choose_another_poster">تحديث البوستر / اختيار بوستر آخر</string>
+    <string name="cinema_refresh_poster_choose_another_poster">تغيير البوستر</string>
     <string name="cinema_refresh_posters">تحديث البوسترات</string>
     <string name="cinema_refresh_rate_and_resolution">التردد والدقة</string>
     <string name="cinema_refresh_rate_only">التردد فقط</string>

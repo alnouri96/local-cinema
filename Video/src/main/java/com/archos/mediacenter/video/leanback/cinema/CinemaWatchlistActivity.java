@@ -54,7 +54,7 @@ public class CinemaWatchlistActivity extends LeanbackActivity {
     private final android.content.BroadcastReceiver syncReceiver=new android.content.BroadcastReceiver(){
         @Override public void onReceive(android.content.Context ctx,Intent intent){if(!isDestroyed())load();}
     };
-    private String selectedPath;private boolean layoutCheck,watchedMode;
+    private String selectedPath;private int selectedPosition;private int savedFirstVisible=-1,savedTopOffset;private boolean layoutCheck,watchedMode;
     public static boolean contains(android.content.Context c,Video v){
         if (c == null || v == null) return false;
         return PreferenceManager.getDefaultSharedPreferences(c).getStringSet(KEY,Set.of()).contains(v.getFilePath())
@@ -122,7 +122,13 @@ public class CinemaWatchlistActivity extends LeanbackActivity {
         }, "trakt-watchlist-push").start();
     }
     @Override public void onCreate(Bundle state){
-        super.onCreate(state);if(state!=null)selectedPath=state.getString("selected_path");
+        super.onCreate(state);
+        if(state!=null){
+            selectedPath=state.getString("selected_path");
+            selectedPosition=state.getInt("selected_pos",0);
+            savedFirstVisible=state.getInt("saved_first",-1);
+            savedTopOffset=state.getInt("saved_offset",0);
+        }
         androidx.core.content.ContextCompat.registerReceiver(this, syncReceiver,
                 new android.content.IntentFilter(CinemaLinkServer.ACTION_WATCH_SYNC_UPDATED),
                 androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED);
@@ -181,7 +187,7 @@ public class CinemaWatchlistActivity extends LeanbackActivity {
             var seenNormTitles=new java.util.HashSet<String>();
             if(watchedMode){
                 String watchedFilter="(" + com.archos.mediaprovider.video.VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN + "=1 OR "
-                        + com.archos.mediaprovider.video.VideoStore.Video.VideoColumns.BOOKMARK + "=" + com.archos.mediacenter.video.player.PlayerActivity.LAST_POSITION_END + ") AND "
+                        + com.archos.mediaprovider.video.VideoStore.Video.VideoColumns.BOOKMARK + "=" + CinemaPlaybackRouter.BOOKMARK_COMPLETED + ") AND "
                         + com.archos.mediaprovider.video.VideoStore.Video.VideoColumns.ARCHOS_HIDDEN_BY_USER + "=0";
                 String watchedOrder=com.archos.mediaprovider.video.VideoStore.Video.VideoColumns.ARCHOS_LAST_TIME_PLAYED + " DESC, _id DESC";
                 try(Cursor cursor=getContentResolver().query(com.archos.mediaprovider.video.VideoStore.Video.Media.EXTERNAL_CONTENT_URI,
@@ -251,12 +257,37 @@ public class CinemaWatchlistActivity extends LeanbackActivity {
                     for(Video v : videos){
                         if(v.getFilePath()!=null && v.getFilePath().startsWith("trakt://")) prefetchTraktArt(v);
                     }
-                    int chosen=0;for(int n=0;n<videos.size();n++)if(videos.get(n).getFilePath().equals(selectedPath))chosen=n;focus(chosen,3);
+                    int chosen=-1;
+                    for(int n=0;n<videos.size();n++)if(videos.get(n).getFilePath().equals(selectedPath)){chosen=n;break;}
+                    if(chosen<0)chosen=Math.max(0,Math.min(selectedPosition,videos.size()-1));
+                    selectedPosition=chosen;
+                    if(savedFirstVisible>=0&&savedFirstVisible<videos.size()&&grid.getLayoutManager() instanceof GridLayoutManager lm){
+                        lm.scrollToPositionWithOffset(savedFirstVisible,savedTopOffset);
+                    }
+                    focus(chosen,3);
                 }
             });
         }catch(Exception failure){handler.post(()->{if(isDestroyed()||token!=generation)return;loading=false;videos.clear();count.setText("");adapter.notifyDataSetChanged();status.setText(watchedMode?label(this,"تعذر قراءة قائمة الأفلام المشاهدة","Could not read watched movies"):label(this,"تعذر قراءة قائمة المشاهدة","Could not read the watchlist"));retry.setText(label(this,"إعادة المحاولة","Retry"));retry.setVisibility(View.VISIBLE);retry.setOnClickListener(v->load());retry.requestFocus();});}});
     }
-    private void focus(int position,int attempts){grid.scrollToPosition(position);grid.post(()->{if(isDestroyed())return;var holder=grid.findViewHolderForAdapterPosition(position);if(holder!=null)holder.itemView.requestFocus();else if(attempts>0)focus(position,attempts-1);});}
+    private void captureGridState(Video video){
+        if(video!=null){
+            selectedPath=video.getFilePath();
+            for(int i=0;i<videos.size();i++)if(videos.get(i).getFilePath().equals(selectedPath)){selectedPosition=i;break;}
+        }
+        if(grid!=null&&grid.getLayoutManager() instanceof GridLayoutManager lm){
+            int first=lm.findFirstVisibleItemPosition();
+            if(first!=RecyclerView.NO_POSITION){
+                savedFirstVisible=first;
+                View firstView=lm.findViewByPosition(first);
+                savedTopOffset=firstView!=null?(firstView.getTop()-grid.getPaddingTop()):0;
+            }
+        }
+    }
+    @Override public void onPause(){captureGridState(null);super.onPause();}
+    private void focus(int position,int attempts){
+        if(grid.findViewHolderForAdapterPosition(position)==null)grid.scrollToPosition(position);
+        grid.post(()->{if(isDestroyed())return;var holder=grid.findViewHolderForAdapterPosition(position);if(holder!=null)holder.itemView.requestFocus();else if(attempts>0){grid.scrollToPosition(position);focus(position,attempts-1);}});
+    }
     private GradientDrawable focusRing(){return posterFocusRing(this,3);}
     private String displayName(Video video){
         CinemaWatchStore.TraktItem ti = traktEntries.get(video.getFilePath());
@@ -270,6 +301,7 @@ public class CinemaWatchlistActivity extends LeanbackActivity {
         if(season!=null&&video instanceof Episode episode)return episode.getShowName()+"\n"+(season.number()==0?label(this,"حلقات خاصة","Specials"):label(this,"الموسم ","Season ")+season.number());
         return video instanceof Episode episode?episode.getShowName()+"\n"+String.format(Locale.US,"S%02d E%02d · %s",episode.getSeasonNumber(),episode.getEpisodeNumber(),episode.getName()):video.getName();}
     private void open(Video video){
+        captureGridState(video);
         CinemaWatchStore.TraktItem ti = traktEntries.get(video.getFilePath());
         if(ti!=null){
             openTraktItemMenu(video, ti);
@@ -295,31 +327,37 @@ public class CinemaWatchlistActivity extends LeanbackActivity {
         startActivity(new Intent(this,CinemaDetailsActivity.class).putExtra(VideoDetailsFragment.EXTRA_VIDEO,video));}
     private void openTraktItemMenu(Video video, CinemaWatchStore.TraktItem ti){
         boolean isSeries = "show".equals(ti.mediaType()) || "episode".equals(ti.mediaType()) || ti.season()>0;
-        java.util.List<String> opts = new java.util.ArrayList<>();
+        java.util.List<CinemaContextDialog.Option> opts = new java.util.ArrayList<>();
         if(com.meedx.providers.StremioAddons.hasEnabled(this) && ti.imdbId()!=null && ti.imdbId().matches("tt[0-9]+")){
-            opts.add(label(this,"تشغيل عبر الإضافات (Nuvio / Stremio)","Stream via Addons"));
+            opts.add(new CinemaContextDialog.Option(
+                    com.archos.mediacenter.video.R.drawable.cinema_addons,
+                    label(this,"تشغيل عبر الإضافات (Nuvio / Stremio)","Stream via Add-ons"),
+                    label(this,"جلب مصادر البث المباشر للعمل","Browse streams from installed add-ons"),
+                    () -> {
+                        var meta = new com.meedx.providers.OpenMetadata.Item(ti.title(), ti.year()>0?String.valueOf(ti.year()):"",
+                                "", "", "", ti.imdbId(), null, null, "");
+                        CinemaAddonPicker.show(this, io, handler, video, meta, Math.max(1,ti.season()), Math.max(1,ti.episode()));
+                    }));
         }
-        opts.add(watchedMode?label(this,"إزالة من تمت المشاهدة في Trakt","Mark as Unwatched on Trakt")
-                :label(this,"إزالة من قائمة المشاهدة في Trakt","Remove from Trakt Watchlist"));
-        CinemaUi.dialog(this).setTitle(ti.title()).setItems(opts.toArray(new String[0]),(d,w)->{
-            String chosen = opts.get(w);
-            if(chosen.contains("Addons") || chosen.contains("الإضافات")){
-                var meta = new com.meedx.providers.OpenMetadata.Item(ti.title(), ti.year()>0?String.valueOf(ti.year()):"",
-                        "", "", "", ti.imdbId(), null, null, "");
-                CinemaAddonPicker.show(this, io, handler, video, meta, Math.max(1,ti.season()), Math.max(1,ti.episode()));
-            } else {
-                android.widget.Toast.makeText(this, label(this,"جاري التحديث في Trakt...","Updating Trakt..."), android.widget.Toast.LENGTH_SHORT).show();
-                io.execute(()->{
-                    if(watchedMode){
-                        com.meedx.providers.TraktSyncClient.syncHistoryItem(getApplicationContext(), isSeries, ti.imdbId(), ti.tmdbId(), Math.max(1,ti.season()), Math.max(1,ti.episode()), false);
-                    } else {
-                        com.meedx.providers.TraktSyncClient.syncWatchlistItem(getApplicationContext(), isSeries, ti.imdbId(), ti.tmdbId(), false);
-                    }
-                    try { CinemaWatchStore.syncWithTrakt(getApplicationContext()); } catch (Exception ignored) {}
-                    handler.post(()->{ if(!isDestroyed()) load(); });
-                });
-            }
-        }).setNegativeButton(android.R.string.cancel,null).show();
+        opts.add(new CinemaContextDialog.Option(
+                com.archos.mediacenter.video.R.drawable.cinema_ic_trakt,
+                watchedMode ? label(this,"إزالة من تمت المشاهدة في Trakt","Mark as Unwatched on Trakt")
+                        : label(this,"إزالة من قائمة المشاهدة في Trakt","Remove from Trakt Watchlist"),
+                null,
+                () -> {
+                    android.widget.Toast.makeText(this, label(this,"جاري التحديث في Trakt...","Updating Trakt..."), android.widget.Toast.LENGTH_SHORT).show();
+                    io.execute(()->{
+                        if(watchedMode){
+                            com.meedx.providers.TraktSyncClient.syncHistoryItem(getApplicationContext(), isSeries, ti.imdbId(), ti.tmdbId(), Math.max(1,ti.season()), Math.max(1,ti.episode()), false);
+                        } else {
+                            com.meedx.providers.TraktSyncClient.syncWatchlistItem(getApplicationContext(), isSeries, ti.imdbId(), ti.tmdbId(), false);
+                        }
+                        try { CinemaWatchStore.syncWithTrakt(getApplicationContext()); } catch (Exception ignored) {}
+                        handler.post(()->{ if(!isDestroyed()) load(); });
+                    });
+                }));
+        CinemaContextDialog.show(this, com.archos.mediacenter.video.R.drawable.cinema_ic_trakt,
+                ti.title(), label(this, "خيارات العنصر", "Media Options"), opts);
     }
     private void actions(Video video){
         CinemaWatchStore.TraktItem ti = traktEntries.get(video.getFilePath());
@@ -327,22 +365,44 @@ public class CinemaWatchlistActivity extends LeanbackActivity {
             openTraktItemMenu(video, ti);
             return;
         }
-        String removeLabel=watchedMode?label(this,"إزالة من تمت المشاهدة","Mark as Unwatched"):label(this,"إزالة من قائمة المشاهدة","Remove from Watchlist");
-        CinemaUi.dialog(this).setTitle(video.getName()).setItems(layoutCheck?new String[]{"Open details"}:new String[]{label(this,"فتح التفاصيل","Open details"),removeLabel},(d,index)->{
-            if(index==0)open(video);
-            else if(!layoutCheck){
-                if(watchedMode){
-                    io.execute(()->{var season=watchedSeasons.get(video.getFilePath());
-                        if(season!=null)com.archos.mediacenter.video.utils.DbUtils.markAsNotRead(getApplicationContext(),
-                                new com.archos.mediacenter.video.browser.adapters.object.Season(season.showId(),video.getName(),
-                                        video.getPosterUri(),season.number(),0,0));
-                        else com.archos.mediacenter.video.utils.DbUtils.markAsNotRead(getApplicationContext(),video);
-                        handler.post(this::load);});
-                }else{
-                    if(contains(this,video))toggle(this,video);load();
-                }
-            }
-        }).setNegativeButton(android.R.string.cancel,null).show();
+        if(layoutCheck){
+            CinemaContextDialog.show(this, com.archos.mediacenter.video.R.drawable.cinema_play_movie,
+                    video.getName(), null,
+                    java.util.List.of(new CinemaContextDialog.Option(
+                            com.archos.mediacenter.video.R.drawable.cinema_play_movie,
+                            getString(com.archos.mediacenter.video.R.string.cinema_open_details),
+                            () -> open(video))));
+            return;
+        }
+        var season=watchedSeasons.get(video.getFilePath());
+        if(season!=null){
+            String removeLabel=label(this,"إزالة الموسم من تمت المشاهدة","Mark Season as Unwatched");
+            CinemaContextDialog.show(this, com.archos.mediacenter.video.R.drawable.cinema_play_movie,
+                    displayName(video), label(this, "خيارات الموسم", "Season Options"),
+                    java.util.List.of(
+                            new CinemaContextDialog.Option(
+                                    com.archos.mediacenter.video.R.drawable.cinema_play_movie,
+                                    getString(com.archos.mediacenter.video.R.string.cinema_open_details),
+                                    () -> open(video)),
+                            new CinemaContextDialog.Option(
+                                    com.archos.mediacenter.video.R.drawable.cinema_restart,
+                                    removeLabel,
+                                    () -> io.execute(()->{
+                                        com.archos.mediacenter.video.utils.DbUtils.markAsNotRead(getApplicationContext(),
+                                                new com.archos.mediacenter.video.browser.adapters.object.Season(season.showId(),video.getName(),
+                                                        video.getPosterUri(),season.number(),0,0));
+                                        handler.post(this::load);
+                                    }))));
+            return;
+        }
+        CinemaMediaMoreDialog.with(this)
+                .video(video)
+                .displayTitle(displayName(video).replace('\n', ' '))
+                .onOpenDetails(() -> open(video))
+                .onPlayResume(() -> CinemaPlaybackRouter.playVideo(this, video, false,
+                        CinemaMediaTime.knownResume(video.getId(), video.getFilePath(), video.getResumeMs())))
+                .onStateChanged(this::load)
+                .show();
     }
     private void prefetchTraktArt(Video video){
         String path = video.getFilePath();
@@ -433,7 +493,7 @@ public class CinemaWatchlistActivity extends LeanbackActivity {
             if(poster!=null)Picasso.get().load(poster).resize(posterWidth,posterHeight).centerCrop().into(h.image);
             long duration=CinemaMediaTime.known(video.getId(),video.getFilePath(),video.getDurationMs()),resume=CinemaMediaTime.knownResume(video.getId(),video.getFilePath(),video.getResumeMs());if(duration>0&&resume>0)h.progress.getLayoutParams().width=(int)Math.min(posterWidth,(long)posterWidth*resume/duration);
             h.progress.requestLayout();h.itemView.setOnClickListener(v->open(video));h.itemView.setOnLongClickListener(v->{actions(video);return true;});
-            h.itemView.setOnFocusChangeListener((v,focused)->{h.poster.setForeground(focused?focusRing():null);animatePosterFocus(h.poster,focused);h.title.setTextColor(focused?CinemaTokens.FOCUS:CinemaTokens.TEXT);if(focused)select(video);});
+            h.itemView.setOnFocusChangeListener((v,focused)->{h.poster.setForeground(focused?focusRing():null);animatePosterFocus(h.poster,focused);h.title.setTextColor(focused?CinemaTokens.FOCUS:CinemaTokens.TEXT);if(focused){int pos=h.getBindingAdapterPosition();if(pos>=0)selectedPosition=pos;select(video);}});
             h.itemView.setOnKeyListener((v,key,event)->{if(event.getAction()!=KeyEvent.ACTION_DOWN)return false;int position=h.getBindingAdapterPosition();if(position<0)return false;if(key==KeyEvent.KEYCODE_MENU){actions(video);return true;}if(key==KeyEvent.KEYCODE_DPAD_UP&&position<columns)return syncBtn!=null&&syncBtn.requestFocus();boolean rtl=arabic(CinemaWatchlistActivity.this);int enterRail=rtl?KeyEvent.KEYCODE_DPAD_RIGHT:KeyEvent.KEYCODE_DPAD_LEFT;int outerEdge=rtl?KeyEvent.KEYCODE_DPAD_LEFT:KeyEvent.KEYCODE_DPAD_RIGHT;if(key==enterRail&&position%columns==0){ArrayList<View> targets=new ArrayList<>();root.findViewsWithText(targets,label(CinemaWatchlistActivity.this,"الإعدادات","Settings"),View.FIND_VIEWS_WITH_CONTENT_DESCRIPTION);if(!targets.isEmpty())targets.get(0).requestFocus();return true;}if(key==outerEdge&&(position%columns==columns-1||position==videos.size()-1))return true;return false;});
             h.poster.setForeground(h.itemView.hasFocus()?focusRing():null);animatePosterFocus(h.poster,h.itemView.hasFocus());
         }
@@ -466,6 +526,6 @@ public class CinemaWatchlistActivity extends LeanbackActivity {
         });
     }
 
-    @Override public void onSaveInstanceState(Bundle state){state.putString("selected_path",selectedPath);super.onSaveInstanceState(state);}
+    @Override public void onSaveInstanceState(Bundle state){captureGridState(null);state.putString("selected_path",selectedPath);state.putInt("selected_pos",selectedPosition);state.putInt("saved_first",savedFirstVisible);state.putInt("saved_offset",savedTopOffset);super.onSaveInstanceState(state);}
     @Override public void onDestroy(){try{unregisterReceiver(syncReceiver);}catch(Exception ignored){}generation++;handler.removeCallbacksAndMessages(null);Picasso.get().cancelRequest(backdrop);if(artworkTask!=null)artworkTask.cancel(true);artIo.shutdownNow();io.shutdownNow();super.onDestroy();}
 }

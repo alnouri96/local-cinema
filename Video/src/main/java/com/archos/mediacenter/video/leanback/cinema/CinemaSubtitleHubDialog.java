@@ -3,7 +3,6 @@ package com.archos.mediacenter.video.leanback.cinema;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Color;
-import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.ImageView;
@@ -27,16 +26,10 @@ import static com.archos.mediacenter.video.leanback.cinema.CinemaUi.*;
  * - VOD HLS / Torrent / Cast Player (CinemaHlsActivity — never Live TV)
  * - Movie Details (CinemaDetailsActivity)
  * - Series & Episode Details (CinemaSeriesActivity)
+ * - Add-on Series Episodes (CinemaAddonsActivity)
  *
- * Features:
- * - Compact Live Timing Overlay shortcut at the top during playback
- * - Smart Subtitle Mode dropdown (Auto-Select, Movie Source, Auto-Download Online Now, Turn Off)
- * - Clear active primary track indicator (gold highlight + ✓ badge) & active secondary track display
- * - Grouped Embedded Video Subtitles dropdown with concise header and native Endonym language names
- * - Choose File from Movie Source (opens movie's own directory directly)
- * - Dual Subtitles controls with dedicated Secondary Subtitle Language picker
- * - Live Arabic + English Subtitle Preview Box with active state indicators inside Live Appearance
- * - Smooth Marquee scrolling for long labels
+ * Delegates all Appearance & Timing UI to {@link CinemaSubtitleAppearancePanel} and
+ * {@link CinemaSubtitleColorPickerDialog} so Settings, Details, and Players share one identical UI.
  */
 public final class CinemaSubtitleHubDialog {
 
@@ -75,13 +68,16 @@ public final class CinemaSubtitleHubDialog {
         Runnable onDualToggled;
         Runnable onDualPositionCycled;
         Runnable onOpenLiveTimingOverlay;
-        boolean showDualControls;
+        boolean showDualControls = true;
         boolean hasSecondaryActive;
         boolean showLiveAppearanceControls;
         long currentDelayMs;
         int currentSize = -1;
         int currentColor = Color.WHITE;
         boolean currentOpaqueBg;
+        int currentBgOpacity = 70;
+        int currentOutlineLevel = 0;
+        int currentOutlineColor = Color.BLACK;
         boolean currentVisible = true;
         boolean hasExplicitAppearanceState;
         StyleCallback styleCallback;
@@ -135,7 +131,7 @@ public final class CinemaSubtitleHubDialog {
             return this;
         }
 
-        /** Places the Live Timing Overlay Bar shortcut at the very top of the Hub during playback. */
+        /** Wires the Live Timing Overlay Bar shortcut during playback. */
         public Builder liveTimingShortcut(long delayMs, Runnable onOpenLiveTimingOverlay) {
             this.currentDelayMs = delayMs;
             this.onOpenLiveTimingOverlay = onOpenLiveTimingOverlay;
@@ -159,11 +155,31 @@ public final class CinemaSubtitleHubDialog {
 
         public Builder liveAppearance(long delayMs, int size, int color, boolean opaqueBg,
                                       boolean visible, StyleCallback callback) {
+            return liveAppearance(delayMs, size, color, opaqueBg,
+                    UnifiedSubtitleConfig.bgOpacity(activity),
+                    UnifiedSubtitleConfig.outlineLevel(activity),
+                    UnifiedSubtitleConfig.outlineColor(activity),
+                    visible, callback);
+        }
+
+        public Builder liveAppearance(long delayMs, int size, int color, boolean opaqueBg,
+                                      int bgOpacity, int outlineLevel,
+                                      boolean visible, StyleCallback callback) {
+            return liveAppearance(delayMs, size, color, opaqueBg, bgOpacity, outlineLevel,
+                    UnifiedSubtitleConfig.outlineColor(activity), visible, callback);
+        }
+
+        public Builder liveAppearance(long delayMs, int size, int color, boolean opaqueBg,
+                                      int bgOpacity, int outlineLevel, int outlineColor,
+                                      boolean visible, StyleCallback callback) {
             this.showLiveAppearanceControls = callback != null;
             this.currentDelayMs = delayMs;
             this.currentSize = size;
             this.currentColor = color;
             this.currentOpaqueBg = opaqueBg;
+            this.currentBgOpacity = UnifiedSubtitleConfig.normalizeBgOpacity(bgOpacity);
+            this.currentOutlineLevel = Math.max(0, Math.min(3, outlineLevel));
+            this.currentOutlineColor = UnifiedSubtitleConfig.normalizeOutlineColor(outlineColor);
             this.currentVisible = visible;
             this.hasExplicitAppearanceState = true;
             this.styleCallback = callback;
@@ -308,8 +324,7 @@ public final class CinemaSubtitleHubDialog {
 
     /**
      * Opens the clean, sorted Embedded Video Subtitles dropdown dialog containing ONLY
-     * internal video subtitles with native Endonym language names (preferred language first,
-     * followed by alphabetical order).
+     * internal video subtitles with native Endonym language names.
      */
     public static AlertDialog showEmbeddedTracksDialog(
             Activity a,
@@ -391,8 +406,8 @@ public final class CinemaSubtitleHubDialog {
 
         ScrollView scroll = new ScrollView(a);
         scroll.setLayoutDirection(ar ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
-        scroll.setClipChildren(false);
-        scroll.setClipToPadding(false);
+        scroll.setClipChildren(true);
+        scroll.setClipToPadding(true);
 
         LinearLayout body = new LinearLayout(a);
         body.setOrientation(LinearLayout.VERTICAL);
@@ -405,17 +420,29 @@ public final class CinemaSubtitleHubDialog {
         final AlertDialog[] dlgRef = {null};
         final View[] firstFocus = {null};
 
-        // 0. Top Playback Shortcut: Adjust Subtitle Timing -> Live Timing Overlay Bar
-        if (b.onOpenLiveTimingOverlay != null) {
-            LinearLayout timingCard = settingsCard(a, body, R.drawable.cinema_ic_timer,
-                    CinemaSubtitleTimingOverlay.formatShortcutTitle(a, b.currentDelayMs),
-                    a.getString(R.string.cinema_sub_timing_shortcut_hint),
-                    null, null, () -> {
-                        if (dlgRef[0] != null) dlgRef[0].dismiss();
-                        b.onOpenLiveTimingOverlay.run();
-                    });
-            firstFocus[0] = timingCard;
-        }
+        // 0. UNIFIED TOP SECTION: Isolated Appearance & Timing Panel (identical in Players, Details, Series & Settings)
+        CinemaSubtitleAppearancePanel.Config appCfg = new CinemaSubtitleAppearancePanel.Config();
+        appCfg.livePlayback = b.showLiveAppearanceControls || b.onOpenLiveTimingOverlay != null;
+        appCfg.hasExplicitState = b.hasExplicitAppearanceState;
+        appCfg.initialDelayMs = b.hasExplicitAppearanceState ? b.currentDelayMs
+                : (b.onOpenLiveTimingOverlay != null ? b.currentDelayMs : UnifiedSubtitleConfig.defaultDelayMs(a));
+        appCfg.initialSize = b.currentSize;
+        appCfg.initialVpos = UnifiedSubtitleConfig.vpos(a);
+        appCfg.initialColor = b.currentColor;
+        appCfg.initialOpaqueBg = b.currentOpaqueBg;
+        appCfg.initialBgOpacity = b.currentBgOpacity;
+        appCfg.initialOutlineLevel = b.currentOutlineLevel;
+        appCfg.initialOutlineColor = b.currentOutlineColor;
+        appCfg.initialVisible = b.currentVisible;
+        appCfg.styleCallback = b.styleCallback != null
+                ? b.styleCallback
+                : CinemaSubtitleAppearancePanel.defaultConfigStyleCallback(a);
+        appCfg.onOpenLiveTimingOverlay = b.onOpenLiveTimingOverlay;
+
+        CinemaSubtitleAppearancePanel.Handle appearanceHandle =
+                CinemaSubtitleAppearancePanel.attach(a, body, appCfg, () -> dlgRef[0]);
+        int appearanceChildEnd = body.getChildCount();
+        firstFocus[0] = appearanceHandle.firstFocusable;
 
         // 1. Subtitle Mode Dropdown + Embedded Dropdown + External & Secondary Tracks
         boolean hasTracksSection = b.hasSubtitleModeDropdown || !b.tracks.isEmpty()
@@ -423,7 +450,6 @@ public final class CinemaSubtitleHubDialog {
         if (hasTracksSection) {
             addSectionHeading(a, body, ar ? "مسارات الترجمة المتاحة" : "Available Subtitle Tracks");
 
-            // 1a. Smart Subtitle Mode Dropdown (Auto-Select / Movie Source / Online Now / Turn Off)
             if (b.hasSubtitleModeDropdown) {
                 String shortPrio = UnifiedSubtitleConfig.autoSelectPriorityShortLabel(a, ar);
                 String modeTitle;
@@ -464,7 +490,6 @@ public final class CinemaSubtitleHubDialog {
                 if (firstFocus[0] == null) firstFocus[0] = modeCard;
             }
 
-            // 1b. External / Stream tracks remain directly visible at level 1 with clear active highlight
             for (TrackChoice tc : b.tracks) {
                 LinearLayout card = trackChoiceCard(a, body, tc.label(), tc.selected(), () -> {
                     if (dlgRef[0] != null) dlgRef[0].dismiss();
@@ -473,7 +498,6 @@ public final class CinemaSubtitleHubDialog {
                 if (firstFocus[0] == null) firstFocus[0] = card;
             }
 
-            // 1c. All embedded/internal video subtitles collapsed into ONE concise dropdown right below
             if (!b.embeddedTracks.isEmpty()) {
                 String activeEmbeddedLabel = null;
                 for (EmbeddedTrackChoice etc : b.embeddedTracks) {
@@ -496,7 +520,6 @@ public final class CinemaSubtitleHubDialog {
                 if (firstFocus[0] == null) firstFocus[0] = groupCard;
             }
 
-            // 1d. Active Secondary (Dual) Subtitle status card with one-click turn-off
             if (b.hasSecondaryActive && b.onClearSecondary != null) {
                 String secName = (b.activeSecondaryLabel != null && !b.activeSecondaryLabel.isBlank())
                         ? b.activeSecondaryLabel
@@ -515,17 +538,51 @@ public final class CinemaSubtitleHubDialog {
 
         // 2. Smart Search & Movie Source / Phone Pickers
         addSectionHeading(a, body, ar ? "البحث وملفات الترجمة" : "Search & Subtitle Files");
-        if (b.onSearchOnline != null) {
+        final LinearLayout[] searchCardHolder = {null};
+        final LinearLayout[] sourcesQuickCardHolder = {null};
+        java.util.function.Supplier<String> buildSearchSub = () -> {
             String srcSummary = UnifiedSubtitleConfig.searchSelectionSummary(a, ar);
             String langSummary = UnifiedSubtitleConfig.languageDisplay(UnifiedSubtitleConfig.primaryLanguage(a), ar);
+            List<String> addonNames = UnifiedSubtitleConfig.activeAddonSourceNames(a);
+            String addonSuffix = addonNames.isEmpty() ? "" : (" · " + String.join("، ", addonNames));
+            return srcSummary + " · " + langSummary + addonSuffix;
+        };
+        if (b.onSearchOnline != null) {
             LinearLayout searchCard = settingsCard(a, body, R.drawable.cinema_globe,
                     label(a, "بحث ذكي عن الترجمة", "Smart Multi-Source Subtitle Search"),
-                    srcSummary + " · " + langSummary,
+                    buildSearchSub.get(),
                     null, null, () -> {
                         if (dlgRef[0] != null) dlgRef[0].dismiss();
                         b.onSearchOnline.run();
                     });
+            searchCardHolder[0] = searchCard;
             if (firstFocus[0] == null) firstFocus[0] = searchCard;
+        }
+        {
+            List<String> addonNames = UnifiedSubtitleConfig.activeAddonSourceNames(a);
+            String quickSub = addonNames.isEmpty()
+                    ? UnifiedSubtitleConfig.searchSelectionSummary(a, ar)
+                    : UnifiedSubtitleConfig.searchSelectionSummary(a, ar) + " · " + String.join(" · ", addonNames);
+            LinearLayout srcQuickCard = dropdownCard(a, body, R.drawable.cinema_addons,
+                    label(a, "مصادر البحث الذكي وإضافات الترجمة", "Smart Search Sources & Subtitle Add-ons"),
+                    quickSub, !addonNames.isEmpty(), () -> showHubSourcesPickerDialog(a, () -> {
+                        if (searchCardHolder[0] != null) {
+                            updateSettingsCardSubtitle(searchCardHolder[0], buildSearchSub.get());
+                        }
+                        if (sourcesQuickCardHolder[0] != null) {
+                            List<String> updatedAddons = UnifiedSubtitleConfig.activeAddonSourceNames(a);
+                            String nextSub = updatedAddons.isEmpty()
+                                    ? UnifiedSubtitleConfig.searchSelectionSummary(a, ar)
+                                    : UnifiedSubtitleConfig.searchSelectionSummary(a, ar) + " · " + String.join(" · ", updatedAddons);
+                            if (sourcesQuickCardHolder[0].getChildCount() >= 2
+                                    && sourcesQuickCardHolder[0].getChildAt(1) instanceof LinearLayout col
+                                    && col.getChildCount() >= 2 && col.getChildAt(1) instanceof TextView st) {
+                                st.setText(nextSub);
+                            }
+                        }
+                    }, sourcesQuickCardHolder[0]));
+            sourcesQuickCardHolder[0] = srcQuickCard;
+            if (firstFocus[0] == null) firstFocus[0] = srcQuickCard;
         }
         if (b.onPickMovieSource != null) {
             LinearLayout pickCard = settingsCard(a, body, R.drawable.cinema_folder,
@@ -547,54 +604,65 @@ public final class CinemaSubtitleHubDialog {
                     });
         }
 
-        // 3. Dual Subtitles & Secondary Language Controls
+        // 3. Dual Subtitles & Secondary Language Controls (toggles in-place WITHOUT closing the Hub!)
         if (b.showDualControls) {
             addSectionHeading(a, body, ar ? "الترجمة المزدوجة واللغة الثانوية" : "Dual Subtitles & Secondary Language");
-            boolean dualOn = UnifiedSubtitleConfig.dualSubtitlesEnabled(a);
-            int dualPos = UnifiedSubtitleConfig.dualSubPosition(a);
-            String posDesc = switch (dualPos) {
+            final boolean[] dualState = {UnifiedSubtitleConfig.dualSubtitlesEnabled(a)};
+            final int[] dualPosState = {UnifiedSubtitleConfig.dualSubPosition(a)};
+            java.util.function.Supplier<String> buildPosDesc = () -> switch (dualPosState[0]) {
                 case 0 -> label(a, "الموضع: كلاهما بالأسفل", "Position: Both at Bottom");
                 case 2 -> label(a, "الموضع: الأساسية أعلى · الثانوية أسفل", "Position: Primary Top · Secondary Bottom");
                 default -> label(a, "الموضع: الأساسية أسفل · الثانوية أعلى", "Position: Primary Bottom · Secondary Top");
             };
-            LinearLayout dualCard = settingsCard(a, body, R.drawable.cinema_subtitles,
-                    label(a, "تفعيل الترجمة المزدوجة", "Dual Subtitles Mode"),
-                    posDesc,
-                    dualOn, null, () -> {
-                        boolean next = !UnifiedSubtitleConfig.dualSubtitlesEnabled(a);
-                        UnifiedSubtitleConfig.setDualSubtitlesEnabled(a, next);
-                        CinemaSubtitleSyncBridge.onTvSubtitleConfigChanged(a);
-                        if (dlgRef[0] != null) dlgRef[0].dismiss();
-                        if (b.onDualToggled != null) b.onDualToggled.run();
-                    });
-            if (firstFocus[0] == null) firstFocus[0] = dualCard;
 
-            // Dedicated Secondary Subtitle Language picker lives cleanly inside Dual Subtitles
+            final LinearLayout[] posCardRef = {null};
+            InPlaceToggleRef dualToggle = inPlaceToggleCard(a, body, R.drawable.cinema_subtitles,
+                    label(a, "تفعيل الترجمة المزدوجة", "Dual Subtitles Mode"),
+                    buildPosDesc.get(),
+                    () -> dualState[0],
+                    null);
+            dualToggle.root.setOnClickListener(v -> {
+                dualState[0] = !dualState[0];
+                UnifiedSubtitleConfig.setDualSubtitlesEnabled(a, dualState[0]);
+                CinemaSubtitleSyncBridge.onTvSubtitleConfigChanged(a);
+                dualToggle.refresh.run();
+                if (b.onDualToggled != null) b.onDualToggled.run();
+            });
+            if (firstFocus[0] == null) firstFocus[0] = dualToggle.root;
+
+            final LinearLayout[] secLangCardRef = {null};
             String secLangLabel = CinemaLanguagePreferences.localizedSubtitleLabel(
                     a, CinemaLanguagePreferences.secondarySubtitleLanguage(a));
-            settingsCard(a, body, R.drawable.cinema_globe,
+            LinearLayout secLangCard = settingsCard(a, body, R.drawable.cinema_globe,
                     a.getString(R.string.cinema_pref_secondary_sub_lang),
                     secLangLabel,
-                    null, null, () -> {
-                        if (dlgRef[0] != null) dlgRef[0].dismiss();
-                        CinemaLanguagePreferences.chooseSecondaryLanguage(a, chosen -> {
-                            CinemaLanguagePreferences.setSecondarySubtitleLanguage(a, chosen);
-                            if (b.onDualToggled != null) b.onDualToggled.run();
-                        });
-                    });
+                    null, null, () -> CinemaLanguagePreferences.chooseSecondaryLanguage(a, chosen -> {
+                        CinemaLanguagePreferences.setSecondarySubtitleLanguage(a, chosen);
+                        if (secLangCardRef[0] != null) {
+                            updateSettingsCardSubtitle(secLangCardRef[0],
+                                    CinemaLanguagePreferences.localizedSubtitleLabel(a, chosen));
+                        }
+                        if (b.onDualToggled != null) b.onDualToggled.run();
+                        if (secLangCardRef[0] != null && secLangCardRef[0].isShown()) {
+                            secLangCardRef[0].post(secLangCardRef[0]::requestFocus);
+                        }
+                    }));
+            secLangCardRef[0] = secLangCard;
 
-            if (b.onDualPositionCycled != null) {
-                settingsCard(a, body, R.drawable.cinema_ic_appearance,
-                        label(a, "تبديل موضع الترجمة المزدوجة", "Switch Dual Subtitle Position"),
-                        posDesc,
-                        null, null, () -> {
-                            int nextPos = (UnifiedSubtitleConfig.dualSubPosition(a) + 1) % 3;
-                            UnifiedSubtitleConfig.setDualSubPosition(a, nextPos);
-                            CinemaSubtitleSyncBridge.onTvSubtitleConfigChanged(a);
-                            if (dlgRef[0] != null) dlgRef[0].dismiss();
-                            b.onDualPositionCycled.run();
-                        });
-            }
+            LinearLayout posCard = settingsCard(a, body, R.drawable.cinema_ic_appearance,
+                    label(a, "تبديل موضع الترجمة المزدوجة", "Switch Dual Subtitle Position"),
+                    buildPosDesc.get(),
+                    null, null, () -> {
+                        dualPosState[0] = (UnifiedSubtitleConfig.dualSubPosition(a) + 1) % 3;
+                        UnifiedSubtitleConfig.setDualSubPosition(a, dualPosState[0]);
+                        CinemaSubtitleSyncBridge.onTvSubtitleConfigChanged(a);
+                        String nextDesc = buildPosDesc.get();
+                        dualToggle.subtitleTv.setText(nextDesc);
+                        if (posCardRef[0] != null) updateSettingsCardSubtitle(posCardRef[0], nextDesc);
+                        if (b.onDualPositionCycled != null) b.onDualPositionCycled.run();
+                    });
+            posCardRef[0] = posCard;
+
             if (b.onPickSecondaryFile != null) {
                 settingsCard(a, body, R.drawable.cinema_folder,
                         label(a, "اختيار ملف للترجمة الثانية", "Choose Secondary Subtitle File"),
@@ -614,158 +682,7 @@ public final class CinemaSubtitleHubDialog {
             }
         }
 
-        // 4. Live Appearance Controls with Compact Arabic + English Live Preview Box & Active Indicators
-        if (b.showLiveAppearanceControls && b.styleCallback != null) {
-            addSectionHeading(a, body, ar ? "المظهر الفوري" : "Live Appearance");
-
-            final int[] sizeState = {b.hasExplicitAppearanceState && b.currentSize > 0
-                    ? b.currentSize : UnifiedSubtitleConfig.textSize(a)};
-            final int[] colorState = {b.hasExplicitAppearanceState
-                    ? b.currentColor : UnifiedSubtitleConfig.textColor(a)};
-            final boolean[] bgState = {b.hasExplicitAppearanceState
-                    ? b.currentOpaqueBg : UnifiedSubtitleConfig.opaqueBg(a)};
-            final boolean[] visibleState = {b.hasExplicitAppearanceState ? b.currentVisible : true};
-
-            LinearLayout previewFrame = new LinearLayout(a);
-            previewFrame.setOrientation(LinearLayout.VERTICAL);
-            previewFrame.setGravity(Gravity.CENTER);
-            previewFrame.setBackground(rounded(0xff0d0e11, dp(a, 10), 0xff3b3629));
-            previewFrame.setPadding(dp(a, 14), dp(a, 10), dp(a, 14), dp(a, 10));
-            LinearLayout.LayoutParams frameLp = new LinearLayout.LayoutParams(-1, -2);
-            frameLp.bottomMargin = dp(a, 10);
-
-            LinearLayout previewPill = new LinearLayout(a);
-            previewPill.setOrientation(LinearLayout.VERTICAL);
-            previewPill.setGravity(Gravity.CENTER);
-            previewPill.setPadding(dp(a, 14), dp(a, 7), dp(a, 14), dp(a, 7));
-
-            TextView previewAr = text(a, 16, true);
-            previewAr.setText(a.getString(R.string.cinema_sub_preview_ar));
-            previewAr.setGravity(Gravity.CENTER);
-            previewAr.setMaxLines(2);
-            previewPill.addView(previewAr);
-
-            TextView previewEn = text(a, 14, true);
-            previewEn.setText(a.getString(R.string.cinema_sub_preview_en));
-            previewEn.setGravity(Gravity.CENTER);
-            previewEn.setMaxLines(2);
-            previewEn.setPadding(0, dp(a, 3), 0, 0);
-            previewPill.addView(previewEn);
-
-            TextView previewHiddenTv = text(a, 13, true);
-            previewHiddenTv.setText(a.getString(R.string.cinema_sub_preview_hidden));
-            previewHiddenTv.setTextColor(0xff9aa0aa);
-            previewHiddenTv.setGravity(Gravity.CENTER);
-            previewHiddenTv.setVisibility(View.GONE);
-
-            previewFrame.addView(previewPill, new LinearLayout.LayoutParams(-2, -2));
-            previewFrame.addView(previewHiddenTv, new LinearLayout.LayoutParams(-2, -2));
-            body.addView(previewFrame, frameLp);
-
-            final Runnable[] refreshAppearance = {null};
-
-            LinearLayout row1 = chipRow(a, body);
-            TextView visibleChip = addStatefulControlChip(a, row1, "",
-                    () -> visibleState[0],
-                    () -> {
-                        visibleState[0] = !visibleState[0];
-                        b.styleCallback.onAction("visible", 0);
-                        if (refreshAppearance[0] != null) refreshAppearance[0].run();
-                    });
-            addControlChip(a, row1, "A−", () -> {
-                sizeState[0] = Math.max(16, sizeState[0] - 2);
-                b.styleCallback.onAction("size", -2);
-                if (refreshAppearance[0] != null) refreshAppearance[0].run();
-            });
-            addControlChip(a, row1, "A+", () -> {
-                sizeState[0] = Math.min(72, sizeState[0] + 2);
-                b.styleCallback.onAction("size", 2);
-                if (refreshAppearance[0] != null) refreshAppearance[0].run();
-            });
-            addControlChip(a, row1, "↑", () -> b.styleCallback.onAction("position", 5));
-            addControlChip(a, row1, "↓", () -> b.styleCallback.onAction("position", -5));
-
-            LinearLayout row2 = chipRow(a, body);
-            final int[] palette = {Color.WHITE, 0xffffd54f, 0xff4dd0e1, 0xff81c784};
-            final String[] colorNames = {
-                    ar ? "أبيض" : "White",
-                    ar ? "أصفر" : "Yellow",
-                    ar ? "سماوي" : "Cyan",
-                    ar ? "أخضر" : "Green"
-            };
-            final ColorChipRef[] colorChips = new ColorChipRef[palette.length];
-            for (int i = 0; i < palette.length; i++) {
-                final int chipColor = palette[i];
-                colorChips[i] = addStatefulColorChip(a, row2, colorNames[i], chipColor,
-                        () -> isSameColor(colorState[0], chipColor),
-                        () -> {
-                            colorState[0] = chipColor;
-                            b.styleCallback.onAction("color", chipColor);
-                            if (refreshAppearance[0] != null) refreshAppearance[0].run();
-                        });
-            }
-
-            LinearLayout row3 = chipRow(a, body);
-            TextView bgChip = addStatefulControlChip(a, row3, "",
-                    () -> true,
-                    () -> {
-                        bgState[0] = !bgState[0];
-                        b.styleCallback.onAction("background", 0);
-                        if (refreshAppearance[0] != null) refreshAppearance[0].run();
-                    });
-            addControlChip(a, row3, ar ? "تصفير المظهر والتوقيت" : "Reset All", () -> {
-                visibleState[0] = true;
-                sizeState[0] = 36;
-                colorState[0] = Color.WHITE;
-                bgState[0] = false;
-                b.styleCallback.onAction("reset", 0);
-                if (refreshAppearance[0] != null) refreshAppearance[0].run();
-            });
-
-            refreshAppearance[0] = () -> {
-                float arSp = Math.max(12.5f, Math.min(23.5f, 12.5f + (sizeState[0] - 18) * 0.21f));
-                float enSp = Math.max(11.5f, Math.min(21.5f, arSp - 1.5f));
-                previewAr.setTextSize(arSp);
-                previewEn.setTextSize(enSp);
-                previewAr.setTextColor(colorState[0]);
-                previewEn.setTextColor(colorState[0]);
-                if (bgState[0]) {
-                    previewPill.setBackground(rounded(0xcc000000, dp(a, 8), 0x44ffffff));
-                    previewAr.setShadowLayer(1.5f, 0f, 1f, 0xaa000000);
-                    previewEn.setShadowLayer(1.5f, 0f, 1f, 0xaa000000);
-                } else {
-                    previewPill.setBackground(null);
-                    previewAr.setShadowLayer(3.5f, 0f, 1.5f, 0xf0000000);
-                    previewEn.setShadowLayer(3.5f, 0f, 1.5f, 0xf0000000);
-                }
-                if (visibleState[0]) {
-                    previewPill.setVisibility(View.VISIBLE);
-                    previewHiddenTv.setVisibility(View.GONE);
-                } else {
-                    previewPill.setVisibility(View.GONE);
-                    previewHiddenTv.setVisibility(View.VISIBLE);
-                }
-
-                visibleChip.setText(visibleState[0]
-                        ? a.getString(R.string.cinema_sub_visible_on)
-                        : a.getString(R.string.cinema_sub_visible_off));
-                styleStatefulControlChip(a, visibleChip, visibleState[0], visibleChip.hasFocus());
-
-                for (int i = 0; i < colorChips.length; i++) {
-                    boolean active = isSameColor(colorState[0], palette[i]);
-                    colorChips[i].label.setText(active ? (colorNames[i] + " ✓") : colorNames[i]);
-                    styleStatefulColorChip(a, colorChips[i], active, colorChips[i].root.hasFocus());
-                }
-
-                bgChip.setText(bgState[0]
-                        ? a.getString(R.string.cinema_sub_bg_dark_on)
-                        : a.getString(R.string.cinema_sub_bg_trans_on));
-                styleStatefulControlChip(a, bgChip, true, bgChip.hasFocus());
-            };
-            refreshAppearance[0].run();
-        }
-
-        // 5. Unified Subtitle Settings (clean single entry; Preferred Subtitle Language lives inside Settings)
+        // 4. Unified Subtitle Settings
         addSectionHeading(a, body, ar ? "الإعدادات" : "Settings");
         settingsCard(a, body, R.drawable.cinema_ic_system,
                 label(a, "إعدادات الترجمة الموحّدة ومصادرها", "Unified Subtitle Settings & Sources"),
@@ -775,6 +692,12 @@ public final class CinemaSubtitleHubDialog {
                     if (dlgRef[0] != null) dlgRef[0].dismiss();
                     a.startActivity(new Intent(a, SubsourceSettingsActivity.class));
                 });
+
+        // Register all non-timing sibling sections so live timing adjustment fades them transparently over video
+        List<View> siblingViews = new ArrayList<>();
+        for (int i = appearanceChildEnd; i < body.getChildCount(); i++) {
+            siblingViews.add(body.getChildAt(i));
+        }
 
         String title = (b.headerTitle != null && !b.headerTitle.isBlank())
                 ? b.headerTitle
@@ -786,6 +709,7 @@ public final class CinemaSubtitleHubDialog {
                 .setNegativeButton(label(a, "إغلاق", "Close"), null)
                 .create();
         dlgRef[0] = dlg;
+        appearanceHandle.attachHostDialog(dlg, siblingViews);
         dlg.setOnShowListener(d -> {
             widenSubtitleDialog(dlg.getWindow());
             if (firstFocus[0] != null) firstFocus[0].requestFocus();
@@ -794,12 +718,192 @@ public final class CinemaSubtitleHubDialog {
         return dlg;
     }
 
-    private static boolean isSameColor(int actual, int swatch) {
-        if (actual == swatch) return true;
-        if (swatch == 0xffffd54f && (actual == Color.YELLOW || actual == 0xffe5b94c)) return true;
-        if (swatch == 0xff4dd0e1 && (actual == Color.CYAN || actual == 0xff00e5ff)) return true;
-        if (swatch == 0xff81c784 && actual == Color.GREEN) return true;
-        return false;
+    private record InPlaceToggleRef(LinearLayout root, TextView subtitleTv, Runnable refresh) {}
+
+    /** Builds a D-pad card whose ✓ ON / ✕ OFF badge updates in-place without dismissing or losing focus. */
+    private static InPlaceToggleRef inPlaceToggleCard(
+            Activity a,
+            LinearLayout container,
+            int iconRes,
+            String title,
+            String initialSubtitle,
+            java.util.function.BooleanSupplier stateSupplier,
+            Runnable onClick) {
+        LinearLayout row = new LinearLayout(a);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setFocusable(true);
+        row.setClickable(true);
+        row.setPadding(dp(a, 18), dp(a, 13), dp(a, 18), dp(a, 13));
+
+        ImageView icon = new ImageView(a);
+        icon.setImageResource(iconRes);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(a, 24), dp(a, 24));
+        iconLp.setMarginEnd(dp(a, 14));
+        row.addView(icon, iconLp);
+
+        LinearLayout textCol = new LinearLayout(a);
+        textCol.setOrientation(LinearLayout.VERTICAL);
+        TextView titleTv = text(a, CinemaTokens.BODY, true);
+        titleTv.setText(title);
+        enableMarquee(titleTv);
+        titleTv.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
+        textCol.addView(titleTv);
+
+        TextView subTv = text(a, CinemaTokens.CAPTION, false);
+        subTv.setText(initialSubtitle);
+        subTv.setMaxLines(2);
+        subTv.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
+        subTv.setPadding(0, dp(a, 3), 0, 0);
+        textCol.addView(subTv);
+        row.addView(textCol, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView badgeTv = text(a, CinemaTokens.CAPTION, true);
+        badgeTv.setPadding(dp(a, 10), dp(a, 4), dp(a, 10), dp(a, 4));
+        LinearLayout.LayoutParams bLp = new LinearLayout.LayoutParams(-2, -2);
+        bLp.setMarginStart(dp(a, 10));
+        row.addView(badgeTv, bLp);
+
+        Runnable applyVisuals = () -> {
+            boolean on = stateSupplier.getAsBoolean();
+            boolean focused = row.hasFocus();
+            badgeTv.setText(on ? label(a, "✓ مفعّل", "✓ ON") : label(a, "✕ متوقف", "✕ OFF"));
+            if (focused) {
+                row.setBackground(rounded(CinemaTokens.FOCUS, dp(a, 10), CinemaTokens.FOCUS));
+                titleTv.setTextColor(0xff141517);
+                subTv.setTextColor(0xff2c240d);
+                icon.setColorFilter(0xff141517);
+                badgeTv.setTextColor(0xff141517);
+                badgeTv.setBackground(rounded(0x33141517, dp(a, 8), 0));
+            } else {
+                row.setBackground(rounded(on ? 0xff222019 : 0xff1d1e21, dp(a, 10),
+                        on ? 0xaaE5A93B : 0xff34322c));
+                titleTv.setTextColor(on ? 0xfff8e2a6 : CinemaTokens.TEXT);
+                subTv.setTextColor(on ? 0xff9de0b8 : 0xffb8b8c0);
+                icon.setColorFilter(CinemaTokens.GOLD);
+                badgeTv.setTextColor(on ? 0xff9de0b8 : 0xffd0a0a0);
+                badgeTv.setBackground(rounded(on ? 0xff1b3326 : 0xff2b1e20, dp(a, 8), 0));
+            }
+        };
+        applyVisuals.run();
+
+        row.setOnFocusChangeListener((v, hasFocus) -> applyVisuals.run());
+        if (onClick != null) row.setOnClickListener(v -> onClick.run());
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.bottomMargin = dp(a, 10);
+        container.addView(row, lp);
+        return new InPlaceToggleRef(row, subTv, applyVisuals);
+    }
+
+    /** Direct multi-source & Stremio subtitle add-on picker inside Unified Subtitle Hub. */
+    private static void showHubSourcesPickerDialog(Activity a, Runnable onSaved, View returnFocusView) {
+        if (a == null || a.isFinishing() || a.isDestroyed()) return;
+        boolean rtl = arabic(a);
+        List<UnifiedSubtitleConfig.ProviderInfo> providers = UnifiedSubtitleConfig.allProviders(a);
+        boolean allMode = UnifiedSubtitleConfig.MODE_ALL.equals(UnifiedSubtitleConfig.searchSelectionMode(a));
+        java.util.Set<String> selected = new java.util.LinkedHashSet<>(UnifiedSubtitleConfig.selectedSearchSources(a));
+
+        boolean[] allFlag = {allMode};
+        boolean[] checks = new boolean[providers.size()];
+        for (int i = 0; i < providers.size(); i++) {
+            checks[i] = !allMode && selected.contains(providers.get(i).id);
+        }
+
+        android.widget.ListView list = new android.widget.ListView(a);
+        list.setDivider(null);
+        list.setDividerHeight(dp(a, 4));
+        list.setPadding(dp(a, 14), dp(a, 8), dp(a, 14), dp(a, 8));
+        list.setSelector(rounded(0xff35281b, dp(a, 12), CinemaTokens.GOLD));
+
+        var adapter = new android.widget.BaseAdapter() {
+            @Override public int getCount() { return providers.size() + 1; }
+            @Override public Object getItem(int pos) { return pos == 0 ? "ALL" : providers.get(pos - 1); }
+            @Override public long getItemId(int pos) { return pos; }
+            @Override public View getView(int pos, View recycled, android.view.ViewGroup parent) {
+                LinearLayout row = new LinearLayout(a);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setMinimumHeight(dp(a, 50));
+                row.setPaddingRelative(dp(a, 14), dp(a, 8), dp(a, 14), dp(a, 8));
+
+                ImageView box = new ImageView(a);
+                boolean isChecked = pos == 0 ? allFlag[0] : checks[pos - 1];
+                box.setImageDrawable(createCinemaCheckDrawable(a, isChecked));
+                int sz = dp(a, 22);
+                LinearLayout.LayoutParams bLp = new LinearLayout.LayoutParams(sz, sz);
+                bLp.setMarginEnd(dp(a, 12));
+                row.addView(box, bLp);
+
+                LinearLayout col = new LinearLayout(a);
+                col.setOrientation(LinearLayout.VERTICAL);
+                TextView t1 = text(a, 15, true);
+                TextView t2 = text(a, 12, false);
+                if (pos == 0) {
+                    t1.setText(label(a, "الكل (جميع المصادر وإضافات الترجمة المفعّلة معاً)",
+                            "All Enabled Sources & Subtitle Add-ons"));
+                    t2.setText(label(a, "يبحث بالتوازي في جميع المصادر المفتوحة وإضافات Stremio المفعّلة",
+                            "Parallel search across all open sources & enabled Stremio add-ons"));
+                    t1.setTextColor(isChecked ? CinemaTokens.GOLD : Color.WHITE);
+                } else {
+                    UnifiedSubtitleConfig.ProviderInfo p = providers.get(pos - 1);
+                    boolean ready = p.keyless || UnifiedSubtitleConfig.hasKey(a, p);
+                    t1.setText(p.name + (ready ? "" : label(a, " (يحتاج مفتاح API)", " (API key needed)")));
+                    t2.setText(rtl ? p.arType : p.enType);
+                    t1.setTextColor(isChecked ? CinemaTokens.GOLD : (ready ? Color.WHITE : 0xff8a8a94));
+                }
+                t2.setTextColor(0xffa1a1aa);
+                col.addView(t1);
+                col.addView(t2);
+                row.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
+                return row;
+            }
+        };
+        list.setAdapter(adapter);
+        list.setOnItemClickListener((p, v, pos, id) -> {
+            if (pos == 0) {
+                allFlag[0] = true;
+                for (int i = 0; i < checks.length; i++) checks[i] = false;
+            } else {
+                allFlag[0] = false;
+                checks[pos - 1] = !checks[pos - 1];
+                boolean any = false;
+                for (boolean c : checks) if (c) { any = true; break; }
+                if (!any) allFlag[0] = true;
+            }
+            adapter.notifyDataSetChanged();
+        });
+
+        AlertDialog picker = dialog(a)
+                .setTitle(label(a, "مصادر البحث الذكي وإضافات الترجمة", "Smart Search Sources & Subtitle Add-ons"))
+                .setView(list)
+                .setPositiveButton(label(a, "حفظ ومزامنة", "Save & Sync"), (d, w) -> {
+                    if (allFlag[0]) {
+                        UnifiedSubtitleConfig.setSearchSelectionAll(a);
+                    } else {
+                        java.util.Set<String> picked = new java.util.LinkedHashSet<>();
+                        for (int i = 0; i < providers.size(); i++) {
+                            if (checks[i]) {
+                                picked.add(providers.get(i).id);
+                                UnifiedSubtitleConfig.setSourceEnabled(a, providers.get(i).id, true);
+                            }
+                        }
+                        UnifiedSubtitleConfig.setSearchSelectionCustom(a, picked);
+                    }
+                    CinemaSubtitleSyncBridge.onTvSubtitleConfigChanged(a);
+                    if (onSaved != null) onSaved.run();
+                })
+                .setNegativeButton(R.string.addon_back, null)
+                .create();
+        picker.setOnDismissListener(d -> {
+            if (returnFocusView != null && returnFocusView.isShown()) {
+                returnFocusView.post(returnFocusView::requestFocus);
+            }
+        });
+        picker.show();
+        widenSubtitleDialog(picker.getWindow());
+        list.requestFocus();
     }
 
     private static LinearLayout modeOptionRow(
@@ -1189,128 +1293,5 @@ public final class CinemaSubtitleHubDialog {
         tv.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
         tv.setPaddingRelative(dp(a, 4), dp(a, 10), dp(a, 4), dp(a, 6));
         parent.addView(tv);
-    }
-
-    private static LinearLayout chipRow(Activity a, LinearLayout parent) {
-        LinearLayout row = new LinearLayout(a);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setClipChildren(false);
-        row.setClipToPadding(false);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-        lp.bottomMargin = dp(a, 8);
-        parent.addView(row, lp);
-        return row;
-    }
-
-    private static void addControlChip(Activity a, LinearLayout row, String labelText, Runnable click) {
-        TextView btn = text(a, 13, true);
-        btn.setText(labelText);
-        btn.setGravity(Gravity.CENTER);
-        btn.setSingleLine(true);
-        btn.setFocusable(true);
-        btn.setClickable(true);
-        btn.setPadding(dp(a, 8), dp(a, 10), dp(a, 8), dp(a, 10));
-        btn.setBackground(rounded(0xff202127, dp(a, 10), 0xff3b372c));
-        btn.setTextColor(CinemaTokens.TEXT);
-        btn.setOnFocusChangeListener((v, has) -> {
-            btn.setBackground(rounded(has ? CinemaTokens.FOCUS : 0xff202127, dp(a, 10),
-                    has ? CinemaTokens.FOCUS : 0xff3b372c));
-            btn.setTextColor(has ? 0xff141517 : CinemaTokens.TEXT);
-        });
-        btn.setOnClickListener(v -> { if (click != null) click.run(); });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1f);
-        lp.setMarginEnd(dp(a, 6));
-        row.addView(btn, lp);
-    }
-
-    private static TextView addStatefulControlChip(
-            Activity a,
-            LinearLayout row,
-            String initialText,
-            java.util.function.BooleanSupplier isActive,
-            Runnable click) {
-        TextView btn = text(a, 13, true);
-        btn.setText(initialText);
-        btn.setGravity(Gravity.CENTER);
-        btn.setSingleLine(true);
-        btn.setFocusable(true);
-        btn.setClickable(true);
-        btn.setPadding(dp(a, 8), dp(a, 10), dp(a, 8), dp(a, 10));
-        styleStatefulControlChip(a, btn, isActive.getAsBoolean(), false);
-        btn.setOnFocusChangeListener((v, has) -> styleStatefulControlChip(a, btn, isActive.getAsBoolean(), has));
-        btn.setOnClickListener(v -> { if (click != null) click.run(); });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1f);
-        lp.setMarginEnd(dp(a, 6));
-        row.addView(btn, lp);
-        return btn;
-    }
-
-    private static void styleStatefulControlChip(Activity a, TextView btn, boolean active, boolean focused) {
-        if (focused) {
-            btn.setBackground(rounded(CinemaTokens.FOCUS, dp(a, 10), CinemaTokens.FOCUS));
-            btn.setTextColor(0xff141517);
-        } else if (active) {
-            btn.setBackground(rounded(0xff272318, dp(a, 10), 0xbbE5A93B));
-            btn.setTextColor(0xfff8e2a6);
-        } else {
-            btn.setBackground(rounded(0xff291d1d, dp(a, 10), 0x88d46a6a));
-            btn.setTextColor(0xfff2a29d);
-        }
-    }
-
-    private record ColorChipRef(LinearLayout root, TextView label) {}
-
-    private static ColorChipRef addStatefulColorChip(
-            Activity a,
-            LinearLayout row,
-            String labelText,
-            int color,
-            java.util.function.BooleanSupplier isActive,
-            Runnable click) {
-        LinearLayout chip = new LinearLayout(a);
-        chip.setOrientation(LinearLayout.HORIZONTAL);
-        chip.setGravity(Gravity.CENTER);
-        chip.setFocusable(true);
-        chip.setClickable(true);
-        chip.setPadding(dp(a, 8), dp(a, 9), dp(a, 8), dp(a, 9));
-
-        View dot = new View(a);
-        GradientDrawable d = new GradientDrawable();
-        d.setShape(GradientDrawable.OVAL);
-        d.setColor(color);
-        d.setStroke(dp(a, 1), 0x88000000);
-        dot.setBackground(d);
-        LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(dp(a, 12), dp(a, 12));
-        dotLp.setMarginEnd(dp(a, 6));
-        chip.addView(dot, dotLp);
-
-        TextView tv = text(a, 12, true);
-        tv.setText(labelText);
-        tv.setSingleLine(true);
-        chip.addView(tv);
-
-        ColorChipRef ref = new ColorChipRef(chip, tv);
-        styleStatefulColorChip(a, ref, isActive.getAsBoolean(), false);
-
-        chip.setOnFocusChangeListener((v, has) -> styleStatefulColorChip(a, ref, isActive.getAsBoolean(), has));
-        chip.setOnClickListener(v -> { if (click != null) click.run(); });
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1f);
-        lp.setMarginEnd(dp(a, 6));
-        row.addView(chip, lp);
-        return ref;
-    }
-
-    private static void styleStatefulColorChip(Activity a, ColorChipRef ref, boolean active, boolean focused) {
-        if (focused) {
-            ref.root.setBackground(rounded(CinemaTokens.FOCUS, dp(a, 10), CinemaTokens.FOCUS));
-            ref.label.setTextColor(0xff141517);
-        } else if (active) {
-            ref.root.setBackground(rounded(0xff292418, dp(a, 10), 0xddE5A93B));
-            ref.label.setTextColor(0xfff8e2a6);
-        } else {
-            ref.root.setBackground(rounded(0xff202127, dp(a, 10), 0xff3b372c));
-            ref.label.setTextColor(CinemaTokens.TEXT);
-        }
     }
 }

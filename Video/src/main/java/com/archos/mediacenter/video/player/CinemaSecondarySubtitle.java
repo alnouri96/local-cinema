@@ -36,7 +36,7 @@ final class CinemaSecondarySubtitle implements AutoCloseable {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final java.util.concurrent.ExecutorService io = Executors.newSingleThreadExecutor();
     private final Context context;
-    private final TextView overlay;
+    private final SubtitleTextView overlay;
     private final IntSupplier position;
     private final boolean primaryMode;
     private final Runnable update = this::updateCue;
@@ -50,6 +50,9 @@ final class CinemaSecondarySubtitle implements AutoCloseable {
     private int bottomMarginDp;
     private int textColor;
     private boolean opaqueBg = false;
+    private int bgOpacity = 70;
+    private int outlineLevel = 0;
+    private int outlineColor = Color.BLACK;
     private boolean visible = true;
     private long delayMs = 0L;
     private String trackLabel = "";
@@ -67,13 +70,16 @@ final class CinemaSecondarySubtitle implements AutoCloseable {
         this.primaryMode = primaryMode;
         this.sizeSp = primaryMode ? 22f : 22f;
         this.bottomMarginDp = primaryMode ? 36 : 24;
-        this.textColor = primaryMode ? Color.WHITE : 0xfffef08a;
-        overlay = new TextView(context);
+        this.textColor = primaryMode ? com.meedx.providers.UnifiedSubtitleConfig.textColor(context) : 0xfffef08a;
+        this.opaqueBg = com.meedx.providers.UnifiedSubtitleConfig.opaqueBg(context);
+        this.bgOpacity = com.meedx.providers.UnifiedSubtitleConfig.bgOpacity(context);
+        this.outlineLevel = com.meedx.providers.UnifiedSubtitleConfig.outlineLevel(context);
+        this.outlineColor = com.meedx.providers.UnifiedSubtitleConfig.outlineColor(context);
+        overlay = new SubtitleTextView(context);
         overlay.setId(View.generateViewId());
         overlay.setGravity(Gravity.CENTER);
         overlay.setTextColor(textColor);
         overlay.setTypeface(Typeface.DEFAULT_BOLD);
-        overlay.setShadowLayer(6f, 0f, 0f, Color.BLACK);
         overlay.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         overlay.setVisibility(View.GONE);
         root.addView(overlay);
@@ -90,6 +96,11 @@ final class CinemaSecondarySubtitle implements AutoCloseable {
     }
 
     void refreshLayout() {
+        this.opaqueBg = com.meedx.providers.UnifiedSubtitleConfig.opaqueBg(context);
+        this.bgOpacity = com.meedx.providers.UnifiedSubtitleConfig.bgOpacity(context);
+        this.outlineLevel = com.meedx.providers.UnifiedSubtitleConfig.outlineLevel(context);
+        this.outlineColor = com.meedx.providers.UnifiedSubtitleConfig.outlineColor(context);
+        if (primaryMode) this.textColor = com.meedx.providers.UnifiedSubtitleConfig.textColor(context);
         applyAppearance();
     }
 
@@ -198,6 +209,9 @@ final class CinemaSecondarySubtitle implements AutoCloseable {
         if (rawUtf8 == null || rawUtf8.length == 0) throw new IOException("Empty subtitle");
         String text = new String(rawUtf8, StandardCharsets.UTF_8)
                 .replace("\r\n", "\n").replace('\r', '\n').replace("\ufeff", "");
+        if (CinemaSubtitleText.isEntirelyStoryboardVtt(text)) {
+            throw new IOException("Storyboard VTT ignored");
+        }
         List<Cue> parsed = new ArrayList<>();
         if ("ass".equalsIgnoreCase(ext) || "ssa".equalsIgnoreCase(ext) || text.contains("Dialogue:")) {
             for (String line : text.split("\n")) {
@@ -329,14 +343,31 @@ final class CinemaSecondarySubtitle implements AutoCloseable {
             case "size" -> sizeSp = Math.max(12f, Math.min(48f, sizeSp + (value * 1.5f)));
             case "position" -> bottomMarginDp = Math.max(8, Math.min(200, bottomMarginDp + (value * 2)));
             case "background" -> opaqueBg = !opaqueBg;
+            case "bg_opacity" -> {
+                bgOpacity = value >= 0
+                        ? com.meedx.providers.UnifiedSubtitleConfig.normalizeBgOpacity(value)
+                        : com.meedx.providers.UnifiedSubtitleConfig.nextBgOpacity(bgOpacity);
+                opaqueBg = bgOpacity > 0;
+            }
+            case "outline" -> outlineLevel = value >= 0
+                    ? Math.max(0, Math.min(3, value))
+                    : com.meedx.providers.UnifiedSubtitleConfig.nextOutlineLevel(outlineLevel);
+            case "outline_color" -> {
+                outlineColor = com.meedx.providers.UnifiedSubtitleConfig.normalizeOutlineColor(value);
+                if (outlineLevel == 0) outlineLevel = 2;
+            }
             case "visible" -> visible = !visible;
             case "delay" -> delayMs += value;
+            case "delay_reset" -> delayMs = 0L;
             case "reset" -> {
                 delayMs = 0L;
                 sizeSp = 22f;
                 bottomMarginDp = primaryMode ? 36 : 24;
                 textColor = primaryMode ? Color.WHITE : 0xfffef08a;
                 opaqueBg = false;
+                bgOpacity = 70;
+                outlineLevel = 0;
+                outlineColor = Color.BLACK;
                 visible = true;
             }
             default -> {
@@ -379,13 +410,15 @@ final class CinemaSecondarySubtitle implements AutoCloseable {
         overlay.setTextSize(sz);
         overlay.setTextColor(textColor);
         overlay.setTypeface(Typeface.DEFAULT_BOLD);
-        overlay.setShadowLayer(6f, 0f, 0f, Color.BLACK);
-        overlay.setBackgroundColor(opaqueBg ? 0xAA000000 : Color.TRANSPARENT);
-        overlay.setPadding(opaqueBg ? 18 : 0, opaqueBg ? 8 : 0, opaqueBg ? 18 : 0, opaqueBg ? 8 : 0);
+        overlay.setMaxWidth(Math.max(CinemaUi.dp(context, 240),
+                context.getResources().getDisplayMetrics().widthPixels - CinemaUi.dp(context, 48)));
+        overlay.setSubtitleBackground(opaqueBg, bgOpacity);
+        overlay.setOutline(outlineLevel, outlineColor);
         int inset = CinemaUi.dp(context, 24);
         int dualPos = Math.max(0, Math.min(2, prefs.getInt("pref_dual_sub_position", 1)));
         boolean pairedWithCastPrimary = partner != null && partner.hasCues();
-        var layout = new RelativeLayout.LayoutParams(-1, -2);
+        var layout = new RelativeLayout.LayoutParams(-2, -2);
+        layout.addRule(RelativeLayout.CENTER_HORIZONTAL);
         if (dualPos == 0) {
             if (primaryMode) {
                 layout.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);

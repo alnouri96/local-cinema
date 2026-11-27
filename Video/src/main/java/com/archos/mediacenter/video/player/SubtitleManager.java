@@ -317,8 +317,14 @@ public class SubtitleManager {
     }
 
     private static String cleanText(final String input) {
+        if (input == null || CinemaSubtitleText.isStoryboardOrImageLine(input)) {
+            return "";
+        }
         // remove space/new lines at end and beginning
-        String displayText = input.trim();
+        String displayText = CinemaSubtitleText.displayText(input).trim();
+        if (displayText.isEmpty()) {
+            return "";
+        }
 
         // convert \n or literal "\n" to <br>
         displayText = displayText.replaceAll("(?i)\\n|\\\\n", "<br />");
@@ -376,12 +382,30 @@ public class SubtitleManager {
         return mColor;
     }
 
-    public boolean getOutlineState() { return mOutline; }
+    public boolean getOutlineState() { return mOutlineLevel > 0 || mOutline; }
+
+    private int mOutlineLevel = 0;
+    private int mOutlineColor = android.graphics.Color.BLACK;
+
+    public int getOutlineLevel() { return mOutlineLevel; }
+    public int getOutlineColor() { return mOutlineColor; }
 
     public void setOutlineState(boolean outline) {
-        mOutline = outline;
+        setOutlineLevel(outline ? (mOutlineLevel > 0 ? mOutlineLevel : 2) : 0);
+    }
+
+    public void setOutlineLevel(int level) {
+        mOutlineLevel = Math.max(0, Math.min(3, level));
+        mOutline = mOutlineLevel > 0;
         if (mSubtitleTxtView != null) {
-            mSubtitleTxtView.setOutlineState(outline);
+            mSubtitleTxtView.setOutlineLevel(mOutlineLevel);
+        }
+    }
+
+    public void setOutlineColor(int color) {
+        mOutlineColor = com.meedx.providers.UnifiedSubtitleConfig.normalizeOutlineColor(color);
+        if (mSubtitleTxtView != null) {
+            mSubtitleTxtView.setOutlineColor(mOutlineColor);
         }
     }
 
@@ -726,11 +750,26 @@ public class SubtitleManager {
     }
 
     private boolean phoneBackground;
+    private int phoneBgOpacity = 75;
+
     public void setPhoneBackground(boolean enabled) {
+        setPhoneBackground(enabled, phoneBgOpacity);
+    }
+
+    public void setPhoneBackground(boolean enabled, int opacityPercent) {
         phoneBackground = enabled;
-        if (mSubtitleTxtView != null) {
-            mSubtitleTxtView.setBackgroundColor(phoneBackground ? 0xCC000000 : android.graphics.Color.TRANSPARENT);
+        phoneBgOpacity = com.meedx.providers.UnifiedSubtitleConfig.normalizeBgOpacity(opacityPercent);
+        if (mSubtitleLayout != null) {
+            mSubtitleLayout.setBackgroundColor(android.graphics.Color.TRANSPARENT);
         }
+        if (mSubtitleTxtView != null) {
+            mSubtitleTxtView.setBackgroundColor(android.graphics.Color.TRANSPARENT);
+            mSubtitleTxtView.setSubtitleBackground(phoneBackground, phoneBgOpacity);
+        }
+    }
+
+    public int getPhoneBgOpacity() {
+        return phoneBgOpacity;
     }
 
     public boolean isPhoneBackground() {
@@ -738,7 +777,7 @@ public class SubtitleManager {
     }
 
     public void togglePhoneBackground() {
-        setPhoneBackground(!phoneBackground);
+        setPhoneBackground(!phoneBackground, phoneBgOpacity);
     }
 
     public boolean isPhoneVisible() {

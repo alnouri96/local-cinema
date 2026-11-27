@@ -2932,7 +2932,11 @@ public class PlayerController implements View.OnTouchListener, OnGenericMotionLi
             new java.util.EnumMap<>(com.archos.mediacenter.video.leanback.cinema.CinemaPlaybackOption.class);
 
     void refreshCinemaPlaybackOptions() {
-        cinemaPlaybackOptions.forEach((option, card) -> card.setText(card.getContext().getString(option.title) + "\n" + option.state(card.getContext())));
+        cinemaPlaybackOptions.forEach((option, card) -> {
+            var ctx = card.getContext();
+            card.setText(ctx.getString(option.title) + "\n" + option.state(ctx));
+            card.setAlpha(option.available() ? 1f : 0.48f);
+        });
     }
 
     void addCinemaPlaybackOptions() {
@@ -2945,7 +2949,11 @@ public class PlayerController implements View.OnTouchListener, OnGenericMotionLi
             card.setAlpha(option.available() ? 1f : 0.48f);
             if (option.available()) card.setOnSwitchClickListener(v -> {
                 option.toggle(context);
-                card.setText(context.getString(option.title) + "\n" + option.state(context));
+                String updated = context.getString(option.title) + "\n" + option.state(context);
+                card.setText(updated);
+                android.widget.Toast.makeText(context,
+                        context.getString(option.title) + ": " + option.state(context),
+                        android.widget.Toast.LENGTH_SHORT).show();
             });
             cinemaPlaybackOptions.put(option, card);
         }

@@ -150,6 +150,33 @@ public final class CinemaUi {
             @Override public androidx.appcompat.app.AlertDialog create(){
                 androidx.appcompat.app.AlertDialog dialog=super.create();
                 dialog.setOnShowListener(ignored->{
+                    View titleView = dialog.findViewById(androidx.appcompat.R.id.alertTitle);
+                    if (titleView == null) titleView = dialog.findViewById(android.R.id.title);
+                    if (titleView != null) {
+                        titleView.setPaddingRelative(
+                                dp(c, 20),
+                                Math.max(titleView.getPaddingTop(), dp(c, 8)),
+                                dp(c, 20),
+                                Math.max(titleView.getPaddingBottom(), dp(c, 10)));
+                    }
+                    View topPanel = dialog.findViewById(androidx.appcompat.R.id.topPanel);
+                    if (topPanel != null) {
+                        topPanel.setPaddingRelative(
+                                topPanel.getPaddingStart(),
+                                topPanel.getPaddingTop(),
+                                topPanel.getPaddingEnd(),
+                                Math.max(topPanel.getPaddingBottom(), dp(c, 6)));
+                    }
+                    for (int panelId : new int[]{
+                            androidx.appcompat.R.id.customPanel,
+                            androidx.appcompat.R.id.custom,
+                            androidx.appcompat.R.id.contentPanel}) {
+                        View p = dialog.findViewById(panelId);
+                        if (p instanceof android.view.ViewGroup vg) {
+                            vg.setClipToPadding(false);
+                            vg.setClipChildren(false);
+                        }
+                    }
                     for (int which : new int[]{-1, -2, -3}) {
                         var button = dialog.getButton(which);
                         if (button == null || button.getVisibility() != View.VISIBLE) continue;
@@ -162,7 +189,14 @@ public final class CinemaUi {
                     }
                     android.widget.ListView list=dialog.getListView();
                     if(list!=null){
-                        list.setSelector(rounded(CinemaTokens.FOCUS,dp(c,12),0));
+                        list.setClipToPadding(false);
+                        list.setClipChildren(false);
+                        list.setDivider(null);
+                        list.setDividerHeight(dp(c, 5));
+                        list.setPadding(dp(c, 18), dp(c, 12), dp(c, 18), dp(c, 12));
+                        int inset = dp(c, 2);
+                        list.setSelector(new android.graphics.drawable.InsetDrawable(
+                                rounded(CinemaTokens.FOCUS, dp(c, 12), 0), inset, inset, inset, inset));
                         list.setDrawSelectorOnTop(false);
                         Runnable styleRows=()->{
                             int position=Math.max(0,list.getSelectedItemPosition());
@@ -182,7 +216,8 @@ public final class CinemaUi {
                             }
                             @Override public void onNothingSelected(android.widget.AdapterView<?> parent){}
                         });
-                        list.requestFocusFromTouch();list.setSelection(0);
+                        int initialSel = Math.max(0, list.getCheckedItemPosition());
+                        list.requestFocusFromTouch();list.setSelection(initialSel);
                     }
                 });return dialog;
             }

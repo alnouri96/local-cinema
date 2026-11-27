@@ -13,10 +13,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/** Unified SQLite store on Phone for local library, torrent casts, web videos, and LAN WATCH_SYNC. */
+/** Local SQLite store on Phone strictly for Phone Local Cinema library resume/watched state (zero Trakt list caching). */
 public final class PhoneWatchStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "phone_watch_store.db";
-    private static final int DB_VERSION = 3;
+    private static final int DB_VERSION = 4;
     private static volatile PhoneWatchStore instance;
 
     public static final class Entry {
@@ -101,17 +101,9 @@ public final class PhoneWatchStore extends SQLiteOpenHelper {
                 + "duration_ms INTEGER DEFAULT 0, "
                 + "watched INTEGER DEFAULT 0, "
                 + "removed_from_continue INTEGER DEFAULT 0, "
-                + "pending_trakt_sync INTEGER DEFAULT 1, "
+                + "pending_trakt_sync INTEGER DEFAULT 0, "
                 + "updated_at INTEGER DEFAULT 0)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_watch_canonical ON watch_entries(canonical_key)");
-        db.execSQL("CREATE TABLE IF NOT EXISTS trakt_watchlist ("
-                + "item_key TEXT PRIMARY KEY, "
-                + "media_type TEXT, "
-                + "title TEXT, "
-                + "imdb_id TEXT, "
-                + "tmdb_id INTEGER DEFAULT 0, "
-                + "year INTEGER DEFAULT 0, "
-                + "updated_at INTEGER DEFAULT 0)");
     }
 
     @Override
@@ -121,6 +113,10 @@ public final class PhoneWatchStore extends SQLiteOpenHelper {
             try { db.execSQL("CREATE INDEX IF NOT EXISTS idx_watch_canonical ON watch_entries(canonical_key)"); } catch (Exception ignored) {}
         }
         onCreate(db);
+        if (oldVersion < 4) {
+            try { db.execSQL("DROP TABLE IF EXISTS trakt_watchlist"); } catch (Exception ignored) {}
+            try { db.delete("watch_entries", "kind IN ('trakt','tv')", null); } catch (Exception ignored) {}
+        }
     }
 
     public static String normalizeTitle(String title) {
@@ -155,7 +151,7 @@ public final class PhoneWatchStore extends SQLiteOpenHelper {
 
     public static boolean isExcludedNonLibrary(String itemKey, String kind, String title, String sourceUri) {
         String k = kind == null ? "" : kind.trim().toLowerCase(Locale.ROOT);
-        if (!"library".equals(k) && !"tv".equals(k) && !"trakt".equals(k)) {
+        if (!"library".equals(k)) {
             return true;
         }
         String keyStr = itemKey == null ? "" : itemKey.trim();
@@ -356,34 +352,6 @@ public final class PhoneWatchStore extends SQLiteOpenHelper {
             return null;
         }
         return markWatched(context, entry.itemKey, entry.kind, entry.title, entry.sourceUri, watched);
-    }
-
-    public static boolean removeFromWatchlist(Context context, String itemKey) {
-        if (context == null || itemKey == null || itemKey.isBlank()) return false;
-        try {
-            return get(context).getWritableDatabase().delete(
-                    "trakt_watchlist", "item_key=?", new String[]{itemKey}) > 0;
-        } catch (Exception ignored) {}
-        return false;
-    }
-
-    public static JSONArray exportWatchlistJson(Context context) {
-        JSONArray arr = new JSONArray();
-        for (WatchlistEntry w : listWatchlist(context)) {
-            if (w == null) continue;
-            try {
-                JSONObject o = new JSONObject();
-                o.put("item_key", w.itemKey == null ? "" : w.itemKey);
-                o.put("media_type", w.mediaType == null ? "movie" : w.mediaType);
-                o.put("title", w.title == null ? "" : w.title);
-                o.put("imdb_id", w.imdbId == null ? "" : w.imdbId);
-                o.put("tmdb_id", w.tmdbId);
-                o.put("year", w.year);
-                o.put("updated_at", w.updatedAt);
-                arr.put(o);
-            } catch (Exception ignored) {}
-        }
-        return arr;
     }
 
     public static Entry getEntry(Context context, String itemKey) {

@@ -320,27 +320,272 @@ final class TvHubSubtitlesController {
         host.add(actions, host.l("إعدادات ومصادر", "Sources & Settings"), this::showUnifiedSubtitleSettingsSheet);
         source.addView(host.button(host.l("اختيار ملف ترجمة من الجهاز", "Choose subtitle file"), host::launchSubtitlePicker, false));
 
-        // 3. Appearance & Sync Card (unchanged ergonomics, synced with TV!)
-        var style = host.card(page, host.l("مظهر وتزامن الترجمة", "Subtitle appearance & sync"));
-        styleControl(host.row(style), host.l("إظهار / إخفاء", "Show / Hide"), "visible", 0);
-        var size = host.row(style);
-        styleControl(size, "A−", "size", -2);
-        styleControl(size, "A+", "size", 2);
-        styleControl(size, "↑", "position", 5);
-        styleControl(size, "↓", "position", -5);
-        var colors = host.row(style);
-        swatch(colors, host.l("أبيض", "White"), 0xffffffff);
-        swatch(colors, host.l("أصفر", "Yellow"), 0xffffd54f);
-        swatch(colors, host.l("سماوي", "Cyan"), 0xff4dd0e1);
-        swatch(colors, host.l("أخضر", "Green"), 0xff81c784);
-        var sync = host.row(style);
-        styleControl(sync, "−0.5s", "delay", -500);
-        styleControl(sync, "−0.1s", "delay", -100);
-        styleControl(sync, "+0.1s", "delay", 100);
-        styleControl(sync, "+0.5s", "delay", 500);
+        // 3. Unified Appearance, Outline, Opacity & Sync Card (100% synced bidirectionally with TV & Drive)
+        attachPhoneSubtitleAppearanceCard(page, true);
+    }
+
+    /** Renders the organized Subtitle Appearance & Sync card on Phone matching TV's UnifiedSubtitleConfig. */
+    private void attachPhoneSubtitleAppearanceCard(LinearLayout parent, boolean includeLiveTimingAndVisibility) {
+        boolean ar = isArabicUi();
+        var style = host.card(parent, includeLiveTimingAndVisibility
+                ? host.l("مظهر وتزامن الترجمة", "Subtitle Appearance & Sync")
+                : host.l("مظهر وموضع وإطار الترجمة", "Subtitle Appearance, Position & Outline"));
+
+        var summaryLbl = host.label("", 12);
+        summaryLbl.setTextColor(TvHubActivity.GOLD);
+        style.addView(summaryLbl);
+
+        if (includeLiveTimingAndVisibility) {
+            styleControl(host.row(style), host.l("إظهار / إخفاء على الشاشة", "Show / Hide on TV"), "visible", 0);
+        }
+
+        final Runnable[] refreshAppearanceUi = {null};
+
+        // 1. Compact Color Picker Button (9 curated colors) + Font Size + Vertical Position
+        var colorBtn = host.button("", () -> {
+            int curCol = com.meedx.providers.UnifiedSubtitleConfig.textColor(host);
+            int[] cols = com.meedx.providers.UnifiedSubtitleConfig.TEXT_COLORS;
+            String[] names = new String[cols.length];
+            int checkedIdx = 0;
+            for (int i = 0; i < cols.length; i++) {
+                names[i] = com.meedx.providers.UnifiedSubtitleConfig.textColorLabel(cols[i], ar);
+                if (com.meedx.providers.UnifiedSubtitleConfig.isSameSubtitleColor(curCol, cols[i])) checkedIdx = i;
+            }
+            new com.google.android.material.dialog.MaterialAlertDialogBuilder(host)
+                    .setTitle(host.l("اختر لون نص الترجمة", "Choose Subtitle Text Color"))
+                    .setSingleChoiceItems(names, checkedIdx, (d, which) -> {
+                        d.dismiss();
+                        sendSubtitleStyle("color", cols[which]);
+                        if (refreshAppearanceUi[0] != null) refreshAppearanceUi[0].run();
+                    })
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+        }, false);
+        var colorLp = new LinearLayout.LayoutParams(-1, -2);
+        colorLp.topMargin = host.dp(6);
+        style.addView(colorBtn, colorLp);
+
+        var sizePosRow = host.row(style);
+        addRefreshingStyleBtn(sizePosRow, "A−", "size", -2, refreshAppearanceUi);
+        addRefreshingStyleBtn(sizePosRow, "A+", "size", 2, refreshAppearanceUi);
+        addRefreshingStyleBtn(sizePosRow, "↑", "position", 5, refreshAppearanceUi);
+        addRefreshingStyleBtn(sizePosRow, "↓", "position", -5, refreshAppearanceUi);
+
+        // 2. Dark Background Toggle + 0%..100% Opacity (10% steps)
+        var bgRow = host.row(style);
+        var bgToggleBtn = host.button("", () -> {
+            boolean curBg = com.meedx.providers.UnifiedSubtitleConfig.opaqueBg(host);
+            int curOp = com.meedx.providers.UnifiedSubtitleConfig.bgOpacity(host);
+            if (!curBg && curOp == 0) {
+                sendSubtitleStyle("bg_opacity", 70);
+            } else {
+                sendSubtitleStyle("background", 0);
+            }
+            if (refreshAppearanceUi[0] != null) refreshAppearanceUi[0].run();
+        }, false);
+        bgToggleBtn.setSingleLine(true);
+        bgToggleBtn.setTextSize(12);
+        bgToggleBtn.setPadding(0, 0, 0, 0);
+        bgRow.addView(bgToggleBtn, new LinearLayout.LayoutParams(0, host.dp(46), 1.35f));
+
+        var opMinusBtn = host.button("−10%", () -> {
+            int curOp = com.meedx.providers.UnifiedSubtitleConfig.bgOpacity(host);
+            int nextOp = com.meedx.providers.UnifiedSubtitleConfig.stepBgOpacity(curOp, -10);
+            sendSubtitleStyle("bg_opacity", nextOp);
+            if (refreshAppearanceUi[0] != null) refreshAppearanceUi[0].run();
+        }, false);
+        opMinusBtn.setSingleLine(true);
+        opMinusBtn.setTextSize(12);
+        opMinusBtn.setPadding(0, 0, 0, 0);
+        bgRow.addView(opMinusBtn, new LinearLayout.LayoutParams(0, host.dp(46), 0.7f));
+
+        var opValBtn = host.button("", () -> {
+            int curOp = com.meedx.providers.UnifiedSubtitleConfig.bgOpacity(host);
+            String[] steps = new String[11];
+            int sel = curOp / 10;
+            for (int i = 0; i <= 10; i++) steps[i] = (i * 10) + "%";
+            new com.google.android.material.dialog.MaterialAlertDialogBuilder(host)
+                    .setTitle(host.l("نسبة شفافية الخلفية الداكنة", "Dark Background Opacity"))
+                    .setSingleChoiceItems(steps, Math.max(0, Math.min(10, sel)), (d, which) -> {
+                        d.dismiss();
+                        sendSubtitleStyle("bg_opacity", which * 10);
+                        if (refreshAppearanceUi[0] != null) refreshAppearanceUi[0].run();
+                    })
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+        }, false);
+        opValBtn.setSingleLine(true);
+        opValBtn.setTextSize(12);
+        opValBtn.setPadding(0, 0, 0, 0);
+        bgRow.addView(opValBtn, new LinearLayout.LayoutParams(0, host.dp(46), 0.95f));
+
+        var opPlusBtn = host.button("+10%", () -> {
+            int curOp = com.meedx.providers.UnifiedSubtitleConfig.bgOpacity(host);
+            int nextOp = com.meedx.providers.UnifiedSubtitleConfig.stepBgOpacity(curOp, 10);
+            if (nextOp == 0) nextOp = 10;
+            sendSubtitleStyle("bg_opacity", nextOp);
+            if (refreshAppearanceUi[0] != null) refreshAppearanceUi[0].run();
+        }, false);
+        opPlusBtn.setSingleLine(true);
+        opPlusBtn.setTextSize(12);
+        opPlusBtn.setPadding(0, 0, 0, 0);
+        bgRow.addView(opPlusBtn, new LinearLayout.LayoutParams(0, host.dp(46), 0.7f));
+
+        // 3. Unified Outline / Stroke Row (Size + Color together)
+        var outlineRow = host.row(style);
+        var outlineSizeBtn = host.button("", () -> {
+            int curLvl = com.meedx.providers.UnifiedSubtitleConfig.outlineLevel(host);
+            String[] lvlNames = new String[4];
+            for (int i = 0; i < 4; i++) {
+                lvlNames[i] = com.meedx.providers.UnifiedSubtitleConfig.outlineLevelLabel(i, ar);
+            }
+            new com.google.android.material.dialog.MaterialAlertDialogBuilder(host)
+                    .setTitle(host.l("حجم إطار الترجمة", "Subtitle Outline Thickness"))
+                    .setSingleChoiceItems(lvlNames, curLvl, (d, which) -> {
+                        d.dismiss();
+                        sendSubtitleStyle("outline", which);
+                        if (refreshAppearanceUi[0] != null) refreshAppearanceUi[0].run();
+                    })
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+        }, false);
+        outlineSizeBtn.setSingleLine(true);
+        outlineSizeBtn.setTextSize(12);
+        outlineSizeBtn.setPadding(0, 0, 0, 0);
+        outlineRow.addView(outlineSizeBtn, new LinearLayout.LayoutParams(0, host.dp(48), 1f));
+
+        var outlineColorBtn = host.button("", () -> {
+            int curOutCol = com.meedx.providers.UnifiedSubtitleConfig.outlineColor(host);
+            int[] outCols = com.meedx.providers.UnifiedSubtitleConfig.OUTLINE_COLORS;
+            String[] outNames = new String[outCols.length];
+            int checked = 0;
+            for (int i = 0; i < outCols.length; i++) {
+                outNames[i] = com.meedx.providers.UnifiedSubtitleConfig.outlineColorLabel(outCols[i], ar);
+                if (com.meedx.providers.UnifiedSubtitleConfig.isSameOutlineColor(curOutCol, outCols[i])) checked = i;
+            }
+            new com.google.android.material.dialog.MaterialAlertDialogBuilder(host)
+                    .setTitle(host.l("لون إطار الترجمة", "Subtitle Outline Color"))
+                    .setSingleChoiceItems(outNames, checked, (d, which) -> {
+                        d.dismiss();
+                        sendSubtitleStyle("outline_color", outCols[which]);
+                        if (refreshAppearanceUi[0] != null) refreshAppearanceUi[0].run();
+                    })
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+        }, false);
+        outlineColorBtn.setSingleLine(true);
+        outlineColorBtn.setTextSize(12);
+        outlineColorBtn.setPadding(0, 0, 0, 0);
+        outlineRow.addView(outlineColorBtn, new LinearLayout.LayoutParams(0, host.dp(48), 1f));
+
+        // 4. Dual Subtitles Toggle + Dual Position
+        var dualRow = host.row(style);
+        var dualToggleBtn = host.button("", () -> {
+            boolean next = !com.meedx.providers.UnifiedSubtitleConfig.dualSubtitlesEnabled(host);
+            setDualEnabled(host, next);
+            com.meedx.providers.UnifiedSubtitleConfig.setDualSubtitlesEnabled(host, next);
+            if (host.connection != null) host.connection.sendSubtitleConfigToTv();
+            if (!next) sendSubtitleStyle("sub_clear_secondary", 0);
+            refreshActiveStreamSubCard();
+            if (refreshAppearanceUi[0] != null) refreshAppearanceUi[0].run();
+        }, false);
+        dualToggleBtn.setSingleLine(true);
+        dualToggleBtn.setTextSize(12);
+        dualToggleBtn.setPadding(0, 0, 0, 0);
+        dualRow.addView(dualToggleBtn, new LinearLayout.LayoutParams(0, host.dp(46), 1f));
+
+        var dualPosBtn = host.button("", () -> {
+            int nextPos = (com.meedx.providers.UnifiedSubtitleConfig.dualSubPosition(host) + 1) % 3;
+            com.meedx.providers.UnifiedSubtitleConfig.setDualSubPosition(host, nextPos);
+            host.getSharedPreferences("cinema_subtitles", Context.MODE_PRIVATE)
+                    .edit().putInt("dual_sub_position", nextPos).apply();
+            if (host.connection != null) host.connection.sendSubtitleConfigToTv();
+            sendSubtitleStyle("dual_position", nextPos);
+            if (refreshAppearanceUi[0] != null) refreshAppearanceUi[0].run();
+        }, false);
+        dualPosBtn.setSingleLine(true);
+        dualPosBtn.setTextSize(12);
+        dualPosBtn.setPadding(0, 0, 0, 0);
+        dualRow.addView(dualPosBtn, new LinearLayout.LayoutParams(0, host.dp(46), 1f));
+
+        // 5. Timing & Reset
+        if (includeLiveTimingAndVisibility) {
+            var sync = host.row(style);
+            styleControl(sync, "−0.5s", "delay", -500);
+            styleControl(sync, "−0.1s", "delay", -100);
+            styleControl(sync, "+0.1s", "delay", 100);
+            styleControl(sync, "+0.5s", "delay", 500);
+        }
         var resetRow = host.row(style);
-        styleControl(resetRow, host.l("تصفير التزامن والمظهر", "Reset"), "reset", 0);
-        styleControl(resetRow, host.l("خلفية معتمة", "Opaque background"), "background", 0);
+        if (includeLiveTimingAndVisibility) {
+            addRefreshingStyleBtn(resetRow, host.l("تصفير التوقيت", "Reset Sync"), "delay_reset", 0, refreshAppearanceUi);
+        }
+        addRefreshingStyleBtn(resetRow, host.l("تصفير المظهر والتوقيت", "Reset All"), "reset", 0, refreshAppearanceUi);
+
+        refreshAppearanceUi[0] = () -> {
+            int col = com.meedx.providers.UnifiedSubtitleConfig.textColor(host);
+            boolean bg = com.meedx.providers.UnifiedSubtitleConfig.opaqueBg(host);
+            int bgOp = com.meedx.providers.UnifiedSubtitleConfig.bgOpacity(host);
+            int outLvl = com.meedx.providers.UnifiedSubtitleConfig.outlineLevel(host);
+            int outCol = com.meedx.providers.UnifiedSubtitleConfig.outlineColor(host);
+            boolean dualOn = com.meedx.providers.UnifiedSubtitleConfig.dualSubtitlesEnabled(host);
+            int dualPos = com.meedx.providers.UnifiedSubtitleConfig.dualSubPosition(host);
+
+            summaryLbl.setText(com.meedx.providers.UnifiedSubtitleConfig.appearanceSummary(host, ar));
+
+            var textDot = new GradientDrawable();
+            textDot.setShape(GradientDrawable.OVAL);
+            textDot.setColor(col);
+            textDot.setStroke(host.dp(1), 0x88000000);
+            textDot.setSize(host.dp(14), host.dp(14));
+            colorBtn.setIcon(textDot);
+            colorBtn.setIconTint(null);
+            colorBtn.setText(host.l("لون النص: ", "Text Color: ")
+                    + com.meedx.providers.UnifiedSubtitleConfig.textColorLabel(col, ar) + " ▾");
+
+            bgToggleBtn.setText(bg ? host.l("خلفية داكنة ✓", "Dark BG ✓") : host.l("خلفية شفافة", "Trans BG"));
+            styleSubtitleActionButton(bgToggleBtn, bg, false);
+
+            opValBtn.setText((bg ? bgOp : 0) + "%");
+            styleSubtitleActionButton(opValBtn, bg && bgOp > 0, false);
+
+            outlineSizeBtn.setText(host.l("الإطار: ", "Outline: ")
+                    + com.meedx.providers.UnifiedSubtitleConfig.outlineLevelLabel(outLvl, ar));
+            styleSubtitleActionButton(outlineSizeBtn, outLvl > 0, false);
+
+            var outDot = new GradientDrawable();
+            outDot.setShape(GradientDrawable.OVAL);
+            outDot.setColor(outCol);
+            outDot.setStroke(host.dp(1), (outCol | 0xff000000) == android.graphics.Color.BLACK ? 0xbbffffff : 0x88000000);
+            outDot.setSize(host.dp(13), host.dp(13));
+            outlineColorBtn.setIcon(outDot);
+            outlineColorBtn.setIconTint(null);
+            outlineColorBtn.setText(host.l("لون الإطار: ", "Stroke: ")
+                    + com.meedx.providers.UnifiedSubtitleConfig.outlineColorLabel(outCol, ar));
+
+            dualToggleBtn.setText(dualOn ? host.l("المزدوجة: ✓ مفعّلة", "Dual: ✓ ON")
+                    : host.l("المزدوجة: ✕ متوقفة", "Dual: ✕ OFF"));
+            styleSubtitleActionButton(dualToggleBtn, dualOn, false);
+
+            String posShort = switch (dualPos) {
+                case 0 -> host.l("الموضع: أسفل معاً", "Pos: Both Bottom");
+                case 2 -> host.l("الموضع: أساسية أعلى", "Pos: Primary Top");
+                default -> host.l("الموضع: أساسية أسفل", "Pos: Split Default");
+            };
+            dualPosBtn.setText(posShort);
+        };
+        refreshAppearanceUi[0].run();
+    }
+
+    private void addRefreshingStyleBtn(LinearLayout row, String label, String action, int value, Runnable[] refreshRef) {
+        var control = host.button(label, () -> {
+            sendSubtitleStyle(action, value);
+            if (refreshRef != null && refreshRef[0] != null) refreshRef[0].run();
+        }, false);
+        control.setSingleLine(true);
+        control.setTextSize(13);
+        control.setPadding(0, 0, 0, 0);
+        row.addView(control, new LinearLayout.LayoutParams(0, host.dp(46), 1));
     }
 
     private boolean isArabicUi() {
@@ -350,7 +595,7 @@ final class TvHubSubtitlesController {
 
     void showPhoneSourceMultiSelectDialog(Runnable onUpdated) {
         boolean ar = isArabicUi();
-        var providers = com.meedx.providers.UnifiedSubtitleConfig.allProviders();
+        var providers = com.meedx.providers.UnifiedSubtitleConfig.allProviders(host);
         boolean allMode = com.meedx.providers.UnifiedSubtitleConfig.MODE_ALL
                 .equals(com.meedx.providers.UnifiedSubtitleConfig.searchSelectionMode(host));
         var selected = new java.util.LinkedHashSet<>(
@@ -487,9 +732,9 @@ final class TvHubSubtitlesController {
         var panel = host.column();
         panel.setPadding(host.dp(12), 0, host.dp(12), host.dp(18));
 
-        // 1. Transparent list of ALL built-in open-source & optional-key subtitle providers
-        var srcCard = host.card(panel, host.l("1. مصادر وإضافات الترجمة (مفتوحة ومدمجة)", "1. Built-in & Open-Source Subtitle Sources"));
-        for (var info : com.meedx.providers.UnifiedSubtitleConfig.allProviders()) {
+        // 1. Transparent list of ALL built-in open-source, Stremio subtitle add-ons & optional-key subtitle providers
+        var srcCard = host.card(panel, host.l("1. مصادر وإضافات الترجمة (مفتوحة ومدمجة)", "1. Built-in & Add-on Subtitle Sources"));
+        for (var info : com.meedx.providers.UnifiedSubtitleConfig.allProviders(host)) {
             boolean enabled = com.meedx.providers.UnifiedSubtitleConfig.isSourceEnabled(host, info.id);
             boolean hasKey = com.meedx.providers.UnifiedSubtitleConfig.hasKey(host, info);
             String statusTxt = (enabled && hasKey) ? host.l("✓ مفعّل", "✓ ON")
@@ -565,8 +810,11 @@ final class TvHubSubtitlesController {
                     .show();
         }, false));
 
-        // 3. Sync Now
-        var syncCard = host.card(panel, host.l("3. المزامنة الثنائية (الهاتف ↔ الشاشة)", "3. Bidirectional Sync (Phone ↔ TV)"));
+        // 3. Unified Subtitle Appearance, Outline & Opacity (synced with TV & Google Drive Backup)
+        attachPhoneSubtitleAppearanceCard(panel, false);
+
+        // 4. Sync Now
+        var syncCard = host.card(panel, host.l("4. المزامنة الثنائية (الهاتف ↔ الشاشة)", "4. Bidirectional Sync (Phone ↔ TV)"));
         syncCard.addView(host.button(host.l("مزامنة إعدادات ومصادر الترجمة مع الشاشة الآن",
                 "Sync Subtitle Settings & Sources with TV Now"), () -> {
             if (host.connection != null) {
@@ -1193,20 +1441,8 @@ final class TvHubSubtitlesController {
         rLp.topMargin = host.dp(6);
         syncCard.addView(resetSyncBtn, rLp);
 
-        // Appearance card (Size, Position, Colors, Background)
-        var lookCard = host.card(panel, host.l("الحجم والموضع والألوان", "Size, Position & Colors"));
-        var sizePos = host.row(lookCard);
-        styleControl(sizePos, "A−", "size", -2);
-        styleControl(sizePos, "A+", "size", 2);
-        styleControl(sizePos, "↑", "position", 5);
-        styleControl(sizePos, "↓", "position", -5);
-        var colors = host.row(lookCard);
-        swatch(colors, host.l("أبيض", "White"), 0xffffffff);
-        swatch(colors, host.l("أصفر", "Yellow"), 0xffffd54f);
-        swatch(colors, host.l("سماوي", "Cyan"), 0xff4dd0e1);
-        swatch(colors, host.l("أخضر", "Green"), 0xff81c784);
-        var bgBtn = host.row(lookCard);
-        styleControl(bgBtn, host.l("خلفية داكنة للترجمة", "Toggle Dark Background"), "background", 0);
+        // Unified Appearance card (Colors, Size, Position, Dark BG Opacity 0-100%, Outline Size + Color)
+        attachPhoneSubtitleAppearanceCard(panel, false);
 
         scroll.addView(panel);
         sheet.setContentView(scroll);
@@ -1240,25 +1476,51 @@ final class TvHubSubtitlesController {
     }
 
     void sendSubtitleStyle(String action, int value) {
-        if ("color".equals(action) || "size".equals(action) || "position".equals(action)
-                || "background".equals(action) || "reset".equals(action)) {
+        boolean isPersistedAppearance = "color".equals(action) || "size".equals(action)
+                || "position".equals(action) || "background".equals(action)
+                || "bg_opacity".equals(action) || "outline".equals(action)
+                || "outline_color".equals(action) || "delay_reset".equals(action)
+                || "reset".equals(action);
+        if (isPersistedAppearance) {
             int sz = com.meedx.providers.UnifiedSubtitleConfig.textSize(host);
             int vp = com.meedx.providers.UnifiedSubtitleConfig.vpos(host);
             int col = com.meedx.providers.UnifiedSubtitleConfig.textColor(host);
             boolean bg = com.meedx.providers.UnifiedSubtitleConfig.opaqueBg(host);
+            int bgOp = com.meedx.providers.UnifiedSubtitleConfig.bgOpacity(host);
+            int outline = com.meedx.providers.UnifiedSubtitleConfig.outlineLevel(host);
+            int outlineCol = com.meedx.providers.UnifiedSubtitleConfig.outlineColor(host);
             long del = com.meedx.providers.UnifiedSubtitleConfig.defaultDelayMs(host);
             switch (action) {
                 case "color" -> col = value;
                 case "size" -> sz = Math.max(18, Math.min(80, sz + value));
                 case "position" -> vp = Math.max(16, Math.min(200, vp + value));
                 case "background" -> bg = !bg;
-                case "reset" -> { sz = 36; vp = 64; col = android.graphics.Color.WHITE; bg = false; del = 0L; }
+                case "bg_opacity" -> {
+                    bgOp = value >= 0
+                            ? com.meedx.providers.UnifiedSubtitleConfig.normalizeBgOpacity(value)
+                            : com.meedx.providers.UnifiedSubtitleConfig.nextBgOpacity(bgOp);
+                    bg = bgOp > 0;
+                }
+                case "outline" -> outline = value >= 0
+                        ? Math.max(0, Math.min(3, value))
+                        : com.meedx.providers.UnifiedSubtitleConfig.nextOutlineLevel(outline);
+                case "outline_color" -> {
+                    outlineCol = com.meedx.providers.UnifiedSubtitleConfig.normalizeOutlineColor(value);
+                    if (outline == 0) outline = 2;
+                }
+                case "delay_reset" -> del = 0L;
+                case "reset" -> {
+                    sz = 36; vp = 64; col = android.graphics.Color.WHITE;
+                    bg = false; bgOp = 70; outline = 0; outlineCol = android.graphics.Color.BLACK; del = 0L;
+                }
             }
-            com.meedx.providers.UnifiedSubtitleConfig.saveAppearance(host, sz, vp, col, bg, del);
+            com.meedx.providers.UnifiedSubtitleConfig.saveAppearance(host, sz, vp, col, bg, bgOp, outline, outlineCol, del);
             if (host.connection != null) host.connection.sendSubtitleConfigToTv();
         }
         if (!host.connected || host.socket == null || !host.socket.isOpen()) {
-            host.notifyStatus("Connect to the TV first");
+            if (!isPersistedAppearance && !"dual_position".equals(action) && !"sub_clear_secondary".equals(action)) {
+                host.notifyStatus("Connect to the TV first");
+            }
             return;
         }
         try {

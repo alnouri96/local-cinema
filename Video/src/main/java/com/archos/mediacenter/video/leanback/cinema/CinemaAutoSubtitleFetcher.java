@@ -33,21 +33,71 @@ public final class CinemaAutoSubtitleFetcher {
             int episode,
             Consumer<Uri> onSavedUri,
             Runnable onNoMatchFallback) {
+        fetchNow(activity, targetVideoUri, rawTitle, englishTitleHint, null, knownImdb, 0L, knownYear,
+                isSeries, season, episode, null, 0L, null, null, false, onSavedUri, onNoMatchFallback);
+    }
+
+    public static void fetchNow(
+            Activity activity,
+            Uri targetVideoUri,
+            String rawTitle,
+            String englishTitleHint,
+            String knownImdb,
+            int knownYear,
+            boolean isSeries,
+            int season,
+            int episode,
+            String videoFilename,
+            long videoSize,
+            String videoHash,
+            String addonItemId,
+            Consumer<Uri> onSavedUri,
+            Runnable onNoMatchFallback) {
+        fetchNow(activity, targetVideoUri, rawTitle, englishTitleHint, null, knownImdb, 0L, knownYear,
+                isSeries, season, episode, videoFilename, videoSize, videoHash, addonItemId, false,
+                onSavedUri, onNoMatchFallback);
+    }
+
+    public static void fetchNow(
+            Activity activity,
+            Uri targetVideoUri,
+            String rawTitle,
+            String englishTitleHint,
+            String alternateDbTitle,
+            String knownImdb,
+            long knownTmdbId,
+            int knownYear,
+            boolean isSeries,
+            int season,
+            int episode,
+            String videoFilename,
+            long videoSize,
+            String videoHash,
+            String addonItemId,
+            boolean authoritativePosterTitle,
+            Consumer<Uri> onSavedUri,
+            Runnable onNoMatchFallback) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
         Toast.makeText(activity, R.string.cinema_sub_auto_fetching_now, Toast.LENGTH_SHORT).show();
 
         final String preferredLang = UnifiedSubtitleConfig.primaryLanguage(activity);
         final Set<String> sources = UnifiedSubtitleConfig.enabledSources(activity);
-        final String fileName = (targetVideoUri != null && targetVideoUri.getLastPathSegment() != null)
-                ? targetVideoUri.getLastPathSegment() : (rawTitle == null ? "" : rawTitle);
+        final String fileName = (videoFilename != null && !videoFilename.isBlank())
+                ? videoFilename
+                : ((targetVideoUri != null && targetVideoUri.getLastPathSegment() != null)
+                        ? targetVideoUri.getLastPathSegment() : (rawTitle == null ? "" : rawTitle));
+        final UnifiedSubtitleEngine.VideoParams videoParams = new UnifiedSubtitleEngine.VideoParams(
+                fileName, Math.max(0L, videoSize), videoHash == null ? "" : videoHash,
+                addonItemId == null ? "" : addonItemId);
 
         new Thread(() -> {
             try {
                 UnifiedSubtitleEngine.ResolvedQuery rq = UnifiedSubtitleEngine.resolveQuery(
                         activity.getApplicationContext(),
-                        rawTitle, englishTitleHint, knownImdb, knownYear, isSeries, season, episode);
+                        rawTitle, englishTitleHint, alternateDbTitle, knownImdb, knownTmdbId,
+                        knownYear, isSeries, season, episode, authoritativePosterTitle);
                 List<UnifiedSubtitleEngine.Candidate> found = UnifiedSubtitleEngine.search(
-                        activity.getApplicationContext(), rq, List.of(preferredLang), sources, fileName);
+                        activity.getApplicationContext(), rq, List.of(preferredLang), sources, videoParams);
 
                 if (found.isEmpty() || targetVideoUri == null) {
                     activity.runOnUiThread(() -> {

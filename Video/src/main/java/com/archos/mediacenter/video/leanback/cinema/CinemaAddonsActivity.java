@@ -55,6 +55,11 @@ public final class CinemaAddonsActivity extends FragmentActivity {
     private String hubFocus;
     private boolean browsing;
     private boolean focusOpeningPoster;
+    private String savedPosterId;
+    private int savedPosterIndex = -1;
+    private int savedGridFirstVisible = -1;
+    private int savedGridTopOffset;
+    private boolean pendingGridRestore;
     private EditText search;
     private RecyclerView grid;
     private int genreIndex, yearIndex, ratingIndex;
@@ -294,12 +299,86 @@ public final class CinemaAddonsActivity extends FragmentActivity {
     }
 
     private void openLive(boolean custom) {
+        captureGridPosition();
         startActivity(new Intent(this, CinemaLiveActivity.class).putExtra(CinemaLiveActivity.CUSTOM, custom));
+    }
+
+    private void captureGridPosition() {
+        if (!browsing || grid == null) return;
+        if (grid.getLayoutManager() instanceof GridLayoutManager lm) {
+            int first = lm.findFirstVisibleItemPosition();
+            if (first != RecyclerView.NO_POSITION) {
+                savedGridFirstVisible = first;
+                View firstView = lm.findViewByPosition(first);
+                savedGridTopOffset = firstView != null ? (firstView.getTop() - grid.getPaddingTop()) : 0;
+            }
+        }
+        if (focusedTile != null) {
+            var holder = grid.findContainingViewHolder(focusedTile);
+            if (holder instanceof PosterHolder ph) {
+                int pos = ph.getBindingAdapterPosition();
+                if (pos != RecyclerView.NO_POSITION) savedPosterIndex = pos;
+                if (ph.poster != null) savedPosterId = ph.poster.id();
+            }
+        }
+        pendingGridRestore = savedPosterIndex >= 0 || savedPosterId != null;
+    }
+
+    private void restoreGridPosition(int attempts) {
+        if (!browsing || grid == null || posterAdapter == null || posterAdapter.getItemCount() == 0) return;
+        int target = -1;
+        if (savedPosterId != null) {
+            for (int i = 0; i < posterAdapter.items.size(); i++) {
+                if (savedPosterId.equals(posterAdapter.items.get(i).id())) {
+                    target = i;
+                    break;
+                }
+            }
+        }
+        if (target < 0 && savedPosterIndex >= 0) {
+            target = Math.min(savedPosterIndex, posterAdapter.getItemCount() - 1);
+        }
+        if (target < 0) return;
+        if (savedGridFirstVisible >= 0 && savedGridFirstVisible < posterAdapter.getItemCount()
+                && grid.getLayoutManager() instanceof GridLayoutManager lm) {
+            lm.scrollToPositionWithOffset(savedGridFirstVisible, savedGridTopOffset);
+        }
+        final int focusPos = target;
+        grid.post(() -> {
+            if (!browsing || isFinishing() || isDestroyed() || grid == null) return;
+            var holder = grid.findViewHolderForAdapterPosition(focusPos);
+            if (holder instanceof PosterHolder ph) {
+                ph.tile.requestFocus();
+                pendingGridRestore = false;
+            } else if (attempts > 0) {
+                grid.scrollToPosition(focusPos);
+                restoreGridPosition(attempts - 1);
+            }
+        });
+    }
+
+    @Override protected void onPause() {
+        captureGridPosition();
+        super.onPause();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (browsing && pendingGridRestore) {
+            restoreGridPosition(3);
+        } else if (!browsing && section != null && hubFocus != null && getCurrentFocus() == null) {
+            section.refresh(hubFocus);
+        }
     }
 
     private void showGrid() {
         browsing = true;
         focusOpeningPoster = true;
+        savedPosterId = null;
+        savedPosterIndex = -1;
+        savedGridFirstVisible = -1;
+        savedGridTopOffset = 0;
+        pendingGridRestore = false;
         shell(selectedAddon == null ? getString(R.string.addon_tr_movies) : selectedAddon.name);
         search = new EditText(this);
         search.setSingleLine();
@@ -564,7 +643,14 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         if (requestedPoster != null && poster != requestedPoster) cancelSelection();
         updateHero(poster);
         var holder = grid == null ? null : grid.findContainingViewHolder(tile);
-        if (holder != null) maybeRequestMore(holder.getBindingAdapterPosition());
+        if (holder != null) {
+            int pos = holder.getBindingAdapterPosition();
+            if (pos != RecyclerView.NO_POSITION) {
+                savedPosterIndex = pos;
+                savedPosterId = poster.id();
+                maybeRequestMore(pos);
+            }
+        }
     }
 
     private void applyPosterFocus(View tile, boolean focused) {
@@ -618,6 +704,8 @@ public final class CinemaAddonsActivity extends FragmentActivity {
     }
 
     private void showPosterActions(StremioAddons.Poster poster) {
+        savedPosterId = poster.id();
+        captureGridPosition();
         selectPoster(selectedAddon, poster);
     }
 
@@ -649,16 +737,20 @@ public final class CinemaAddonsActivity extends FragmentActivity {
                     : poster.type();
             selectionWork = CinemaAddonPicker.request(this, io, handler,
                     () -> {
-                        String sid = (liveChannel || (streamAddon != null && !streamOnlyBrowse))
+                        String sid = (liveChannel || (streamAddon != null && !streamOnlyBrowse)
+                                || (!poster.id().startsWith("tmdb:") && !poster.id().isBlank()))
                                 ? poster.id() : StremioAddons.streamId(this, poster);
-                        return new CinemaAddonPicker.Selection(poster.title(), sid,
+                        if (sid.isBlank()) sid = StremioAddons.streamId(this, poster);
+                        return new CinemaAddonPicker.Selection(poster.title(), sid, poster.imdb(),
                                 tmdbId(poster), effectiveType, 0, 0, streamAddon, poster.image(), poster.title());
                     }, () -> selectionActive(request));
             return;
         }
         record Episodes(String id, List<StremioAddons.EpisodeChoice> rows) {}
         selectionWork = CinemaAddonPicker.load(this, io, handler, R.string.addon_loading_episodes, () -> {
-            String id = (addon != null && !streamOnlyBrowse) ? poster.id() : StremioAddons.streamId(this, poster);
+            String id = (addon != null && !streamOnlyBrowse) || (!poster.id().startsWith("tmdb:") && !poster.id().isBlank())
+                    ? poster.id() : StremioAddons.streamId(this, poster);
+            if (id.isBlank()) id = StremioAddons.streamId(this, poster);
             if (id.isBlank()) return null;
             var eps = StremioAddons.episodes(addon, poster.type(), id);
             if (eps.isEmpty() && !poster.imdb().isBlank() && !poster.imdb().equals(id)) {
@@ -719,24 +811,42 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         subsLp.setMarginStart(dp(8));
         topHeader.addView(subsPill, subsLp);
 
+        boolean rtl = CinemaUi.arabic(this);
         var list = new ListView(this);
         list.setId(View.generateViewId());
         list.setDivider(null);
-        list.setDividerHeight(dp(5));
-        list.setSelector(CinemaUi.posterFocusRing(this, 2f));
+        list.setDividerHeight(dp(6));
+        list.setPaddingRelative(dp(10), dp(6), dp(10), dp(6));
+        list.setClipChildren(true);
+        list.setClipToPadding(true);
+        var listSelector = new android.graphics.drawable.StateListDrawable();
+        listSelector.addState(new int[]{android.R.attr.state_focused}, CinemaUi.posterFocusRing(this, 2.5f));
+        listSelector.addState(new int[]{}, new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+        list.setSelector(listSelector);
         list.setDrawSelectorOnTop(true);
+        list.setItemsCanFocus(false);
+        // Hold focus off the episode list until the active season tab acquires initial focus.
+        list.setFocusable(false);
 
         var strip = new LinearLayout(this);
+        strip.setOrientation(LinearLayout.HORIZONTAL);
+        strip.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+        strip.setGravity(Gravity.CENTER_VERTICAL);
         strip.setClipChildren(false);
         strip.setClipToPadding(false);
-        if (seasons.size() > 1) {
-            var scroll = new HorizontalScrollView(this);
-            scroll.setHorizontalScrollBarEnabled(false);
-            scroll.setClipChildren(false);
-            scroll.setClipToPadding(false);
-            scroll.addView(strip, new FrameLayout.LayoutParams(-2, -2));
-            panel.addView(scroll, new LinearLayout.LayoutParams(-1, dp(54)));
-        }
+        strip.setPaddingRelative(dp(12), dp(8), dp(12), dp(8));
+
+        var scroll = new HorizontalScrollView(this);
+        scroll.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+        scroll.setHorizontalScrollBarEnabled(false);
+        scroll.setClipChildren(false);
+        scroll.setClipToPadding(false);
+        scroll.setSmoothScrollingEnabled(true);
+        scroll.addView(strip, new FrameLayout.LayoutParams(-2, -2));
+        var scrollLp = new LinearLayout.LayoutParams(-1, dp(62));
+        scrollLp.bottomMargin = dp(4);
+        panel.addView(scroll, scrollLp);
+
         int height = Math.min(310, getResources().getConfiguration().screenHeightDp / 2);
         panel.addView(list, new LinearLayout.LayoutParams(-1, dp(height)));
 
@@ -747,9 +857,10 @@ public final class CinemaAddonsActivity extends FragmentActivity {
             openTrailer(poster);
         });
         langPill.setOnClickListener(v -> CinemaLanguagePreferences.showDialog(this, null));
+        final int[] activeSeasonRef = {seasons.firstKey()};
         subsPill.setOnClickListener(v -> {
-            int firstSeason = seasons.firstKey();
-            var epList = seasons.get(firstSeason);
+            int curSeason = activeSeasonRef[0];
+            var epList = seasons.get(curSeason);
             int firstEp = (epList != null && !epList.isEmpty()) ? epList.get(0).episode() : 1;
             CinemaSubtitleHubDialog.create(this)
                     .title(poster.title())
@@ -757,8 +868,11 @@ public final class CinemaAddonsActivity extends FragmentActivity {
                         Intent search = new Intent(this, SubsourceSearchActivity.class);
                         search.putExtra("title", poster.title());
                         search.putExtra("addon_heading", poster.title());
-                        if (id != null && id.matches("tt[0-9]+")) search.putExtra("imdb_id", id);
-                        search.putExtra("season", firstSeason);
+                        String imdbForSubs = (id != null && id.matches("tt[0-9]+")) ? id
+                                : (poster.imdb() != null && poster.imdb().matches("tt[0-9]+") ? poster.imdb() : "");
+                        if (!imdbForSubs.isEmpty()) search.putExtra("imdb_id", imdbForSubs);
+                        if (id != null && !id.isBlank()) search.putExtra("addon_item_id", id);
+                        search.putExtra("season", curSeason);
                         search.putExtra("episode", firstEp);
                         search.putExtra("both_providers", true);
                         startActivity(search);
@@ -767,19 +881,32 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         });
         int openingSeason = seasons.firstKey();
         var tabs = new TreeMap<Integer, TextView>();
+        Runnable refreshTabVisuals = () -> tabs.forEach((num, button) -> {
+            boolean focused = button.hasFocus();
+            boolean selected = (num == activeSeasonRef[0]);
+            button.setSelected(selected);
+            if (focused) {
+                button.setTextColor(0xff141517);
+            } else if (selected) {
+                button.setTextColor(GOLD);
+            } else {
+                button.setTextColor(Color.WHITE);
+            }
+        });
         java.util.function.IntConsumer selectSeason = season -> {
-            tabs.forEach((number, button) -> button.setSelected(number == season));
+            activeSeasonRef[0] = season;
+            refreshTabVisuals.run();
             var rows = seasons.get(season);
             var labels = rows.stream().map(this::episodeLabel).toArray(String[]::new);
             list.setAdapter(new ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, labels) {
                 @Override public View getView(int position, View recycled, ViewGroup parent) {
                     TextView label = recycled instanceof TextView old ? old : CinemaUi.text(CinemaAddonsActivity.this, 16, true);
                     label.setGravity(Gravity.CENTER_VERTICAL);
-                    label.setPaddingRelative(dp(12), dp(8), dp(12), dp(8));
-                    label.setMinHeight(dp(45));
+                    label.setPaddingRelative(dp(14), dp(9), dp(14), dp(9));
+                    label.setMinHeight(dp(46));
                     label.setMaxLines(2);
                     label.setEllipsize(TextUtils.TruncateAt.END);
-                    label.setBackground(CinemaUi.rounded(0xff22201d, dp(8), 0xff43392b));
+                    label.setBackground(CinemaUi.rounded(0xff22201d, dp(10), 0xff43392b));
                     label.setText(getItem(position));
                     return label;
                 }
@@ -791,41 +918,102 @@ public final class CinemaAddonsActivity extends FragmentActivity {
                 String streamId = !episode.streamId().isBlank() ? episode.streamId() : id;
                 resolveEpisode(addon, poster, streamId, episode.season(), episode.episode(), episode.title());
             });
-            if (tabs.containsKey(season)) list.setNextFocusUpId(tabs.get(season).getId());
+            if (tabs.containsKey(season)) {
+                int tabId = tabs.get(season).getId();
+                list.setNextFocusUpId(tabId);
+                trailerPill.setNextFocusDownId(tabId);
+                langPill.setNextFocusDownId(tabId);
+                subsPill.setNextFocusDownId(tabId);
+            }
         };
 
-        if (seasons.size() > 1) {
-            for (int number : seasons.keySet()) {
-                var tab = CinemaUi.text(this, 15, true);
-                tab.setText(getString(R.string.addon_season_tab, number));
-                tab.setId(View.generateViewId());
-                tab.setGravity(Gravity.CENTER);
-                tab.setPaddingRelative(dp(13), 0, dp(13), 0);
-                tab.setFocusable(true);
-                tab.setNextFocusDownId(list.getId());
-                var states = new android.graphics.drawable.StateListDrawable();
-                states.addState(new int[]{android.R.attr.state_focused, android.R.attr.state_selected},
-                        CinemaUi.rounded(0xff604519, dp(8), GOLD));
-                states.addState(new int[]{android.R.attr.state_focused}, CinemaUi.rounded(0xff31291b, dp(8), GOLD));
-                states.addState(new int[]{android.R.attr.state_selected}, CinemaUi.rounded(0xff513a17, dp(8), 0xff9e7735));
-                states.addState(new int[]{}, CinemaUi.rounded(0xff26221b, dp(8), 0xff43392b));
-                tab.setBackground(states);
-                tab.setOnClickListener(v -> selectSeason.accept(number));
-                var size = new LinearLayout.LayoutParams(-2, dp(44));
-                size.setMarginEnd(dp(8));
-                strip.addView(tab, size);
-                tabs.put(number, tab);
+        var orderedSeasons = new ArrayList<>(seasons.keySet());
+        for (int idx = 0; idx < orderedSeasons.size(); idx++) {
+            final int seasonIdx = idx;
+            int number = orderedSeasons.get(idx);
+            var tab = CinemaUi.text(this, 15, true);
+            tab.setText(getString(R.string.addon_season_tab, number));
+            tab.setId(View.generateViewId());
+            tab.setGravity(Gravity.CENTER);
+            tab.setSingleLine(true);
+            tab.setPaddingRelative(dp(16), 0, dp(16), 0);
+            tab.setFocusable(true);
+            tab.setClickable(true);
+            tab.setNextFocusUpId(trailerPill.getId());
+            tab.setNextFocusDownId(list.getId());
+
+            var states = new android.graphics.drawable.StateListDrawable();
+            var focusedBg = CinemaUi.rounded(GOLD, dp(10), 0xffffd875);
+            focusedBg.setStroke(dp(2), 0xffffe394);
+            var selectedBg = CinemaUi.rounded(0xff352915, dp(10), GOLD);
+            selectedBg.setStroke(dp(2), GOLD);
+            states.addState(new int[]{android.R.attr.state_focused}, focusedBg);
+            states.addState(new int[]{android.R.attr.state_selected}, selectedBg);
+            states.addState(new int[]{}, CinemaUi.rounded(0xff24211c, dp(10), 0xff43392b));
+            tab.setBackground(states);
+
+            tab.setOnClickListener(v -> selectSeason.accept(number));
+            tab.setOnFocusChangeListener((v, focused) -> {
+                if (focused && activeSeasonRef[0] != number) {
+                    selectSeason.accept(number);
+                } else {
+                    refreshTabVisuals.run();
+                }
+                v.animate().scaleX(focused ? 1.05f : 1f).scaleY(focused ? 1.05f : 1f)
+                        .setDuration(CinemaUi.motion(this) ? 100 : 0).start();
+                if (focused && strip.getWidth() > scroll.getWidth()) {
+                    int targetScroll = Math.max(0, Math.min(
+                            strip.getWidth() - scroll.getWidth(),
+                            (v.getLeft() + v.getRight()) / 2 - scroll.getWidth() / 2));
+                    if (seasonIdx == 0) {
+                        targetScroll = rtl ? Math.max(0, strip.getWidth() - scroll.getWidth()) : 0;
+                    }
+                    scroll.smoothScrollTo(targetScroll, 0);
+                }
+            });
+            var size = new LinearLayout.LayoutParams(-2, dp(44));
+            if (idx < orderedSeasons.size() - 1) size.setMarginEnd(dp(10));
+            strip.addView(tab, size);
+            tabs.put(number, tab);
+        }
+        // Explicit horizontal D-pad focus chain across season tabs (RTL & LTR safe, clamped at ends)
+        for (int idx = 0; idx < orderedSeasons.size(); idx++) {
+            TextView cur = tabs.get(orderedSeasons.get(idx));
+            TextView prev = idx > 0 ? tabs.get(orderedSeasons.get(idx - 1)) : cur;
+            TextView next = idx < orderedSeasons.size() - 1 ? tabs.get(orderedSeasons.get(idx + 1)) : cur;
+            if (rtl) {
+                cur.setNextFocusRightId(prev.getId());
+                cur.setNextFocusLeftId(next.getId());
+            } else {
+                cur.setNextFocusLeftId(prev.getId());
+                cur.setNextFocusRightId(next.getId());
             }
         }
-        if (tabs.isEmpty()) {
-            trailerPill.setNextFocusDownId(list.getId());
-            langPill.setNextFocusDownId(list.getId());
-            list.setNextFocusUpId(trailerPill.getId());
-        }
+
         selectSeason.accept(openingSeason);
         dialog.show();
-        View focus = tabs.containsKey(openingSeason) ? tabs.get(openingSeason) : list;
-        focus.requestFocus();
+
+        TextView openingTab = tabs.get(openingSeason);
+        Runnable alignAndFocusSeason = () -> {
+            if (!dialog.isShowing()) return;
+            if (openingTab != null && strip.getWidth() > 0 && scroll.getWidth() > 0) {
+                int maxScroll = Math.max(0, strip.getWidth() - scroll.getWidth());
+                int startScroll = rtl ? maxScroll : 0;
+                scroll.scrollTo(startScroll, 0);
+                openingTab.requestFocus();
+                openingTab.requestFocusFromTouch();
+                refreshTabVisuals.run();
+            }
+            list.setFocusable(true);
+        };
+        strip.getViewTreeObserver().addOnGlobalLayoutListener(new android.view.ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override public void onGlobalLayout() {
+                if (strip.getWidth() <= 0 || scroll.getWidth() <= 0) return;
+                strip.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                alignAndFocusSeason.run();
+            }
+        });
+        scroll.post(alignAndFocusSeason);
     }
 
     private TextView dialogActionPill(String label, int iconRes) {
@@ -898,11 +1086,12 @@ public final class CinemaAddonsActivity extends FragmentActivity {
         int request = selectionGeneration;
         selectionWork = CinemaAddonPicker.request(this, io, handler,
                 () -> new CinemaAddonPicker.Selection(cleanTitle.isBlank() ? getString(R.string.addon_episode_numbered, season, episode) : cleanTitle,
-                        id, tmdbId(poster), poster.type(), season, episode, addon, poster.image(), poster.title()), () -> selectionActive(request));
+                        id, poster.imdb(), tmdbId(poster), poster.type(), season, episode, addon, poster.image(), poster.title()), () -> selectionActive(request));
     }
 
     private static long tmdbId(StremioAddons.Poster poster) {
-        return poster.id().matches("tmdb:[0-9]{1,12}") ? Long.parseLong(poster.id().substring(5)) : 0;
+        if (poster.tmdb() > 0) return poster.tmdb();
+        return poster.id().matches("(?i)tmdb:[0-9]{1,12}") ? Long.parseLong(poster.id().substring(5)) : 0;
     }
 
     private int dp(int n) { return CinemaUi.dp(this, n); }
@@ -968,7 +1157,7 @@ public final class CinemaAddonsActivity extends FragmentActivity {
             this.squareChannel = squareChannel;
             var cell = (FrameLayout) itemView;
             cell.setLayoutParams(new RecyclerView.LayoutParams(-1, -2));
-            cell.setPadding(dp(8), dp(8), dp(8), dp(8));
+            cell.setPadding(dp(10), dp(10), dp(10), dp(10));
             cell.setClipToPadding(false);
             cell.setClipChildren(false);
             tile = new LinearLayout(CinemaAddonsActivity.this);

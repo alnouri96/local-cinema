@@ -71,34 +71,15 @@ public class VideoViewClickedListener implements OnItemViewClickedListener {
     }
 
     public static void showVideoDetails(Activity activity, Video video, Presenter.ViewHolder itemViewHolder, boolean animate, boolean forceSelection, boolean shouldLoadBackdrop, long listId, Fragment fragment, int requestCode) {
-        Intent intent = new Intent(activity, VideoDetailsActivity.class);
+        Intent intent = new Intent(activity, com.archos.mediacenter.video.leanback.cinema.CinemaDetailsActivity.class);
         intent.putExtra(VideoDetailsFragment.EXTRA_VIDEO, video);
         intent.putExtra(VideoDetailsFragment.EXTRA_LIST_ID, listId);
         intent.putExtra(VideoDetailsFragment.EXTRA_FORCE_VIDEO_SELECTION, forceSelection);
         intent.putExtra(VideoDetailsFragment.EXTRA_SHOULD_LOAD_BACKDROP,shouldLoadBackdrop);
-        View sourceView = null;
-        if (itemViewHolder.view instanceof ImageCardView) {
-            sourceView = ((ImageCardView) itemViewHolder.view).getMainImageView();
-        } else if (itemViewHolder instanceof ListPresenter.ListViewHolder){
-            sourceView = ((ListPresenter.ListViewHolder)itemViewHolder).getImageView();
-        }
-        if(animate) {
-            Bundle bundle = ActivityOptionsCompat.makeSceneTransitionAnimation(
-                    activity,
-                    sourceView,
-                    VideoDetailsActivity.SHARED_ELEMENT_NAME).toBundle();
-
-            if (fragment == null || requestCode == -1)
-                activity.startActivity(intent, bundle);
-            else
-                fragment.startActivityForResult(intent, requestCode, bundle);
-        }
-        else{
-            if (fragment == null || requestCode == -1)
-                activity.startActivity(intent);
-            else
-                fragment.startActivityForResult(intent, requestCode);
-        }
+        if (fragment == null || requestCode == -1)
+            activity.startActivity(intent);
+        else
+            fragment.startActivityForResult(intent, requestCode);
     }
 
     public static void showTvshowDetails(Activity activity, Tvshow tvshow, Presenter.ViewHolder itemViewHolder) {

@@ -64,12 +64,7 @@ public class DbUtils {
 
         final ContentValues values = new ContentValues();
         values.put(VideoStore.Video.VideoColumns.BOOKMARK, PlayerActivity.LAST_POSITION_END);
-
-        // TRAKT_DB_MARKED must not be marked here or TraktService would think it is already synchronized
-        // But if there uis not trakt sync we want to have the flag in the UI as well, hence we write it here ourselves!
-        if (!traktSync) {
-            values.put(VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN, Trakt.TRAKT_DB_MARKED);
-        }
+        values.put(VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN, Trakt.TRAKT_DB_MARKED);
 
         cr.update(VideoStore.Video.Media.EXTERNAL_CONTENT_URI, values,
                 VideoStore.Video.VideoColumns._ID + " =?",
@@ -81,6 +76,40 @@ public class DbUtils {
 
         if (traktSync) {
             syncTrakt(context, video);
+        }
+    }
+
+    /** Clears only resumePositionMs (Continue Watching bookmark) without ever revoking watched = true. */
+    static public void clearResumeOnly(final Context context, final Video video) {
+        if (context == null || video == null) return;
+        final ContentResolver cr = context.getContentResolver();
+        boolean wasWatched = video.isWatched() || video.getResumeMs() == PlayerActivity.LAST_POSITION_END;
+        if (video.isIndexed() && video.getId() > 0) {
+            try (Cursor c = cr.query(VideoStore.Video.Media.EXTERNAL_CONTENT_URI,
+                    new String[]{VideoStore.Video.VideoColumns.BOOKMARK, VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN},
+                    VideoStore.Video.VideoColumns._ID + "=?",
+                    new String[]{Long.toString(video.getId())}, null)) {
+                if (c != null && c.moveToFirst()) {
+                    wasWatched |= c.getInt(0) == PlayerActivity.LAST_POSITION_END || c.getInt(1) == Trakt.TRAKT_DB_MARKED;
+                }
+            } catch (Exception ignored) {}
+            final ContentValues values = new ContentValues();
+            values.put(VideoStore.Video.VideoColumns.BOOKMARK, wasWatched
+                    ? PlayerActivity.LAST_POSITION_END : PlayerActivity.LAST_POSITION_UNKNOWN);
+            values.put(VideoStore.Video.VideoColumns.ARCHOS_BOOKMARK, 0);
+            values.put(VideoStore.Video.VideoColumns.ARCHOS_TRAKT_RESUME, 0);
+            if (wasWatched) {
+                values.put(VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN, Trakt.TRAKT_DB_MARKED);
+            }
+            cr.update(VideoStore.Video.Media.EXTERNAL_CONTENT_URI, values,
+                    VideoStore.Video.VideoColumns._ID + " =?",
+                    new String[]{Long.toString(video.getId())});
+        }
+        com.archos.mediacenter.video.leanback.cinema.CinemaMediaTime.clearResume(
+                video.getId(), video.getFilePath(), video.getFileUri());
+        if (wasWatched) {
+            com.archos.mediacenter.video.leanback.cinema.CinemaMediaTime.rememberState(
+                    video.getId(), video.getFileUri(), video.getDurationMs(), PlayerActivity.LAST_POSITION_END);
         }
     }
 

@@ -52,6 +52,7 @@ final class CinemaAddonsSectionController {
     private ImageButton gearBtn;
     private String movingKey;
     private String lastFocusedKey;
+    private int healthGeneration;
 
     CinemaAddonsSectionController(Activity host, ExecutorService io, Handler main,
                                   Consumer<StremioAddons.Addon> openStreamAddon,
@@ -213,6 +214,31 @@ final class CinemaAddonsSectionController {
         tiles.addAll(CinemaAddonsOrderStore.applyOrder(host, raw, TileItem::key));
         adapter.notifyDataSetChanged();
         focusKey(selected);
+        scheduleLiveHealthChecks();
+    }
+
+    private void scheduleLiveHealthChecks() {
+        List<StremioAddons.Addon> enabledAddons = new ArrayList<>();
+        for (TileItem item : tiles) {
+            if (item.addon() != null && item.addon().enabled) {
+                enabledAddons.add(item.addon());
+            }
+        }
+        int token = ++healthGeneration;
+        if (enabledAddons.isEmpty()) return;
+        io.execute(() -> {
+            for (StremioAddons.Addon addon : enabledAddons) {
+                if (host.isDestroyed() || host.isFinishing() || token != healthGeneration) return;
+                var report = StremioAddons.probeAddonHealth(addon, false);
+                main.post(() -> {
+                    if (host.isDestroyed() || host.isFinishing() || token != healthGeneration || grid == null) return;
+                    View tileView = grid.findViewWithTag(addon.manifestUrl);
+                    if (tileView instanceof FrameLayout tileFrame) {
+                        CinemaAddonTilePresenter.applyHealthState(host, tileFrame, addon, report.state());
+                    }
+                });
+            }
+        });
     }
 
     private void focusKey(String key) {
@@ -304,7 +330,7 @@ final class CinemaAddonsSectionController {
             FrameLayout cell = new FrameLayout(host);
             cell.setClipChildren(false);
             cell.setClipToPadding(false);
-            int pad = CinemaUi.dp(host, 7);
+            int pad = CinemaUi.dp(host, 10);
             cell.setPadding(pad, pad, pad, pad);
             cell.setLayoutParams(new RecyclerView.LayoutParams(-1, -2));
             return new TileHolder(cell);

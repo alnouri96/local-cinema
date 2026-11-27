@@ -132,7 +132,7 @@ public class Tvshow extends Base implements Serializable {
     }
 
     public boolean isWatched() {
-        return mEpisodeWatchedCount>=mEpisodeCount;
+        return mEpisodeCount > 0 && mEpisodeWatchedCount >= mEpisodeCount;
     }
 
     public boolean isPinned() {

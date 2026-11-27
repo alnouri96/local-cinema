@@ -15,9 +15,6 @@ import androidx.preference.PreferenceManager;
 import com.archos.mediacenter.video.CustomApplication;
 import com.archos.mediacenter.video.R;
 import com.archos.mediacenter.video.leanback.LeanbackActivity;
-import com.archos.mediacenter.video.leanback.settings.VideoSettingsActivity;
-import com.archos.mediacenter.video.leanback.network.NetworkRootActivity;
-import com.archos.mediacenter.video.utils.VideoPreferencesCommon;
 import java.util.Collections;
 import java.util.List;
 import static com.archos.mediacenter.video.leanback.cinema.CinemaUi.*;
@@ -30,8 +27,18 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     private boolean rootPage;
     private boolean resumedOnce;
     private String pageTitle;
+    private String currentPageId = "root";
+    private String persistedFocusKey;
+    private int persistedFocusIndex = -1;
+    private int persistedScrollY = -1;
+    private static final String PREF_SETTINGS_PAGE = "cinema_settings_last_page";
+    private static final String PREF_SETTINGS_KEY = "cinema_settings_last_key";
+    private static final String PREF_SETTINGS_INDEX = "cinema_settings_last_index";
+    private static final String PREF_SETTINGS_SCROLL_Y = "cinema_settings_last_scroll_y";
     private Runnable backTarget;
     private Runnable currentRender;
+    private boolean restoringPageFocus;
+    private final java.util.Map<String, String> savedFocusKeys = new java.util.HashMap<>();
     private final java.util.Map<String, Integer> savedFocusPositions = new java.util.HashMap<>();
     private final java.util.Map<String, Integer> savedScrollPositions = new java.util.HashMap<>();
     private final java.util.concurrent.ExecutorService io = java.util.concurrent.Executors.newSingleThreadExecutor();
@@ -48,7 +55,108 @@ public class CinemaSettingsActivity extends LeanbackActivity {
         androidx.core.content.ContextCompat.registerReceiver(this, syncReceiver,
                 settingsSyncActions(),
                 androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED);
-        showRoot();
+        restorePersistedSettingsPage();
+    }
+
+    private void seedParentBreadcrumbsFor(String pageId) {
+        if (pageId == null || "root".equals(pageId)) return;
+        switch (pageId) {
+            case "language" -> savedFocusKeys.putIfAbsent("root", focusKey(l("اللغة وأولوية اللغات", "Language & Priorities")));
+            case "appearance" -> savedFocusKeys.putIfAbsent("root", focusKey(l("المظهر وتخصيص الشاشة الرئيسية", "Appearance & Home Screen")));
+            case "playback_audio" -> savedFocusKeys.putIfAbsent("root", focusKey(l("التشغيل والصوت والترجمة", "Playback, Audio & Subtitles")));
+            case "cinema_engine" -> {
+                savedFocusKeys.putIfAbsent("playback_audio", focusKey(getString(com.archos.mediacenter.video.R.string.cinema_cinema_engine)));
+                savedFocusKeys.putIfAbsent("root", focusKey(l("التشغيل والصوت والترجمة", "Playback, Audio & Subtitles")));
+            }
+            case "playback_filters" -> savedFocusKeys.putIfAbsent("root", focusKey(l("المشاهدة العائلية وتخطي الإعلانات", "Family Watch & Skip Ads")));
+            case "library_posters" -> savedFocusKeys.putIfAbsent("root", focusKey(l("المكتبة والبوسترات والتخزين", "Library, Posters & Storage")));
+            case "storage_cache" -> {
+                savedFocusKeys.putIfAbsent("library_posters", focusKey(l("التخزين وتنظيف الكاش الآمن", "Storage & Safe Cache Cleaner")));
+                savedFocusKeys.putIfAbsent("root", focusKey(l("المكتبة والبوسترات والتخزين", "Library, Posters & Storage")));
+            }
+            case "metadata", "posters" -> {
+                savedFocusKeys.putIfAbsent("library_posters", focusKey(l("مصدر البيانات وتحديث البوسترات", "Metadata Source & Poster Refresh")));
+                savedFocusKeys.putIfAbsent("root", focusKey(l("المكتبة والبوسترات والتخزين", "Library, Posters & Storage")));
+            }
+            case "libraries" -> savedFocusKeys.putIfAbsent("root", focusKey(l("المكتبة والبوسترات والتخزين", "Library, Posters & Storage")));
+            case "connections" -> savedFocusKeys.putIfAbsent("root", focusKey(l("الاتصال ومزامنة الهاتف", "Connections & Phone Sync")));
+            case "remote" -> {
+                savedFocusKeys.putIfAbsent("connections", focusKey(l("ريموت الهاتف والأذونات", "Phone Remote & Permissions")));
+                savedFocusKeys.putIfAbsent("root", focusKey(l("الاتصال ومزامنة الهاتف", "Connections & Phone Sync")));
+            }
+            case "phone_sync" -> {
+                savedFocusKeys.putIfAbsent("connections", focusKey(l("حالة مزامنة الهاتف", "Phone Sync Status")));
+                savedFocusKeys.putIfAbsent("root", focusKey(l("الاتصال ومزامنة الهاتف", "Connections & Phone Sync")));
+            }
+            case "trakt" -> {
+                savedFocusKeys.putIfAbsent("phone_sync", focusKey(l("حالة ومزامنة Trakt", "Trakt Sync Status")));
+                savedFocusKeys.putIfAbsent("connections", focusKey(l("حالة مزامنة الهاتف", "Phone Sync Status")));
+                savedFocusKeys.putIfAbsent("root", focusKey(l("الاتصال ومزامنة الهاتف", "Connections & Phone Sync")));
+            }
+            case "system" -> savedFocusKeys.putIfAbsent("root", focusKey(l("النظام والصلاحيات والتحديثات", "System, Permissions & Updates")));
+            case "about" -> {
+                savedFocusKeys.putIfAbsent("system", focusKey(getString(R.string.cinema_about_licenses)));
+                savedFocusKeys.putIfAbsent("root", focusKey(l("النظام والصلاحيات والتحديثات", "System, Permissions & Updates")));
+            }
+            case "network" -> {
+                savedFocusKeys.putIfAbsent("system", focusKey(getString(com.archos.mediacenter.video.R.string.cinema_network)));
+                savedFocusKeys.putIfAbsent("root", focusKey(l("النظام والصلاحيات والتحديثات", "System, Permissions & Updates")));
+            }
+        }
+    }
+
+    private void restorePersistedSettingsPage() {
+        String savedPage = prefs.getString(PREF_SETTINGS_PAGE, "root");
+        String resolvedPage = savedPage == null ? "root" : savedPage;
+        persistedFocusKey = prefs.getString(PREF_SETTINGS_KEY, null);
+        persistedFocusIndex = prefs.getInt(PREF_SETTINGS_INDEX, -1);
+        persistedScrollY = prefs.getInt(PREF_SETTINGS_SCROLL_Y, -1);
+        if (persistedFocusKey != null && !persistedFocusKey.isBlank()) {
+            savedFocusKeys.put(resolvedPage, persistedFocusKey);
+        }
+        if (persistedFocusIndex >= 0) {
+            savedFocusPositions.put(resolvedPage, persistedFocusIndex);
+        }
+        if (persistedScrollY >= 0) {
+            savedScrollPositions.put(resolvedPage, persistedScrollY);
+        }
+        seedParentBreadcrumbsFor(resolvedPage);
+        switch (resolvedPage) {
+            case "storage_cache" -> storageAndCachePage();
+            case "language" -> languageGroup();
+            case "library_posters" -> libraryAndPostersGroup();
+            case "playback_audio" -> playbackAudioGroup();
+            case "playback_filters" -> playbackFiltersPage();
+            case "libraries" -> librariesPage();
+            case "metadata" -> metadataPage();
+            case "connections" -> connectionsGroup();
+            case "phone_sync" -> phoneSyncStatusPage();
+            case "system" -> systemGroup();
+            case "about" -> aboutLicenses();
+            case "network" -> networkPage();
+            case "cinema_engine" -> cinemaEngine();
+            case "trakt" -> traktSettings();
+            case "appearance" -> appearance();
+            case "remote" -> remoteSettings();
+            case "posters" -> posterSettings();
+            default -> showRoot();
+        }
+    }
+
+    private void persistSettingsFocusState() {
+        if (prefs == null) return;
+        saveCurrentFocusState();
+        String pid = currentPageId != null ? currentPageId : "root";
+        String focusKeyVal = savedFocusKeys.get(pid);
+        int focusIdx = savedFocusPositions.getOrDefault(pid, -1);
+        int scrollY = scrollView != null ? scrollView.getScrollY() : savedScrollPositions.getOrDefault(pid, 0);
+        SharedPreferences.Editor ed = prefs.edit()
+                .putString(PREF_SETTINGS_PAGE, pid)
+                .putInt(PREF_SETTINGS_INDEX, focusIdx)
+                .putInt(PREF_SETTINGS_SCROLL_Y, Math.max(0, scrollY));
+        if (focusKeyVal != null && !focusKeyVal.isBlank()) ed.putString(PREF_SETTINGS_KEY, focusKeyVal);
+        else ed.remove(PREF_SETTINGS_KEY);
+        ed.apply();
     }
     private static android.content.IntentFilter settingsSyncActions() {
         var filter = new android.content.IntentFilter(CinemaLinkServer.ACTION_API_SYNC_UPDATED);
@@ -56,6 +164,10 @@ public class CinemaSettingsActivity extends LeanbackActivity {
         return filter;
     }
 
+    @Override public void onPause(){
+        persistSettingsFocusState();
+        super.onPause();
+    }
     @Override public void onResume(){
         super.onResume();
         if(!resumedOnce){resumedOnce=true;return;}
@@ -66,37 +178,46 @@ public class CinemaSettingsActivity extends LeanbackActivity {
         io.shutdownNow();mainHandler.removeCallbacksAndMessages(null);super.onDestroy();
     }
     private void saveCurrentFocusState(){
-        if(pageTitle==null||content==null)return;
+        if(restoringPageFocus||currentPageId==null||content==null)return;
         View focused=getCurrentFocus();
         if(focused!=null&&focused.getParent()==content){
             int idx=content.indexOfChild(focused);
-            if(idx>=0)savedFocusPositions.put(pageTitle,idx);
+            if(idx>=0)savedFocusPositions.put(currentPageId,idx);
+            String keyVal = focused.getTag() instanceof String t ? t
+                    : (focused instanceof TextView tv ? focusKey(tv.getText().toString()) : null);
+            if(keyVal!=null&&!keyVal.isBlank())savedFocusKeys.put(currentPageId,keyVal);
         }
-        if(scrollView!=null)savedScrollPositions.put(pageTitle,scrollView.getScrollY());
+        if(scrollView!=null)savedScrollPositions.put(currentPageId,Math.max(0,scrollView.getScrollY()));
     }
     private void page(String name){
-        View oldFocus=getCurrentFocus();
-        String restore=name.equals(pageTitle)&&oldFocus instanceof TextView?focusKey(((TextView)oldFocus).getText().toString()):null;
-        saveCurrentFocusState();
+        final String pid = currentPageId != null ? currentPageId : "root";
+        seedParentBreadcrumbsFor(pid);
         pageTitle=name;
         rootPage=false;
+        restoringPageFocus=true;
         ScrollView scroll=new ScrollView(this);scroll.setBackground(CinemaUi.surface());scrollView=scroll;
         if(arabic(this))scroll.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
         content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);content.setPadding(dp(this,CinemaTokens.UTILITY_GUTTER),dp(this,CinemaTokens.SAFE),dp(this,CinemaTokens.UTILITY_GUTTER),dp(this,CinemaTokens.SAFE));
+        content.setDescendantFocusability(android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         scroll.addView(content);setContentView(scroll);
         TextView title=text(this,CinemaTokens.PAGE_TITLE,true);title.setText(name);title.setPadding(0,0,0,dp(this,18));content.addView(title);
         LinearLayout pageContent=content;
-        int savedIndex=savedFocusPositions.getOrDefault(name,1);
-        int savedScrollY=savedScrollPositions.getOrDefault(name,0);
-        pageContent.post(()->{
-            if(content!=pageContent||isFinishing())return;
-            if(savedScrollY>0)scroll.scrollTo(0,savedScrollY);
+        String restore=persistedFocusKey!=null?persistedFocusKey:savedFocusKeys.get(pid);
+        int savedIndex=persistedFocusIndex>=0?persistedFocusIndex:savedFocusPositions.getOrDefault(pid,1);
+        int savedScrollY=persistedScrollY>=0?persistedScrollY:savedScrollPositions.getOrDefault(pid,0);
+        persistedFocusKey=null;
+        persistedFocusIndex=-1;
+        persistedScrollY=-1;
+        final String restoreKey = restore;
+        androidx.core.view.OneShotPreDrawListener.add(scroll, () -> {
+            if(content!=pageContent||isFinishing()||isDestroyed())return;
+            pageContent.setDescendantFocusability(android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS);
             View target=null;
-            if(restore!=null){
+            if(restoreKey!=null&&!restoreKey.isBlank()){
                 for(int n=1;n<pageContent.getChildCount();n++){
                     View child=pageContent.getChildAt(n);
                     String childKey = child.getTag() instanceof String t ? t : (child instanceof TextView tv ? focusKey(tv.getText().toString()) : null);
-                    if(child.isFocusable() && childKey != null && childKey.equals(restore)){
+                    if(child.isFocusable() && childKey != null && childKey.equals(restoreKey)){
                         target=child;
                         break;
                     }
@@ -115,10 +236,24 @@ public class CinemaSettingsActivity extends LeanbackActivity {
                     if(d<bestDist){bestDist=d;target=child;}
                 }
             }
-            if(target!=null){
-                target.requestFocus();
-                if(savedScrollY>0)scroll.post(()->scroll.scrollTo(0,savedScrollY));
+            if(savedScrollY>0){
+                scroll.scrollTo(0,savedScrollY);
             }
+            if(target!=null){
+                final View finalTarget = target;
+                finalTarget.requestFocus();
+                int scrollH = scroll.getHeight();
+                if (scrollH > 0) {
+                    int curY = scroll.getScrollY();
+                    int top = finalTarget.getTop() - dp(this, 18);
+                    int bottom = finalTarget.getBottom() + dp(this, 18);
+                    if (top < curY) scroll.scrollTo(0, Math.max(0, top));
+                    else if (bottom > curY + scrollH) scroll.scrollTo(0, Math.max(0, bottom - scrollH));
+                    else if (savedScrollY > 0) scroll.scrollTo(0, savedScrollY);
+                }
+            }
+            restoringPageFocus=false;
+            saveCurrentFocusState();
         });
     }
     private String focusKey(String label){return label.replaceFirst("^[✓✕○]\\s*", "").split(" · ",2)[0].trim();}
@@ -129,24 +264,32 @@ public class CinemaSettingsActivity extends LeanbackActivity {
         rowButton(iconRes, title, subtitle, null, action);
     }
     private void rowButton(int iconRes, String title, String subtitle, Boolean toggleState, Runnable action){
-        final String currentPageTitle = pageTitle;
+        final String ownerPageId = currentPageId;
+        final String cardKey = focusKey(title);
         final LinearLayout[] holder = {null};
         Runnable rememberFocus = () -> {
-            if (currentPageTitle != null && holder[0] != null) {
+            if (restoringPageFocus) return;
+            if (ownerPageId != null && holder[0] != null && content != null && holder[0].getParent() == content) {
                 int idx = content.indexOfChild(holder[0]);
-                if (idx >= 0) savedFocusPositions.put(currentPageTitle, idx);
-                if (scrollView != null) savedScrollPositions.put(currentPageTitle, scrollView.getScrollY());
+                if (idx >= 0) savedFocusPositions.put(ownerPageId, idx);
+                savedFocusKeys.put(ownerPageId, cardKey);
+                if (scrollView != null) savedScrollPositions.put(ownerPageId, Math.max(0, scrollView.getScrollY()));
             }
         };
         holder[0] = CinemaUi.settingsCard(this, content, iconRes, title, subtitle, toggleState, rememberFocus, action == null ? null : () -> {
-            rememberFocus.run();
+            if (ownerPageId != null && holder[0] != null && content != null && holder[0].getParent() == content) {
+                int idx = content.indexOfChild(holder[0]);
+                if (idx >= 0) savedFocusPositions.put(ownerPageId, idx);
+                savedFocusKeys.put(ownerPageId, cardKey);
+                if (scrollView != null) savedScrollPositions.put(ownerPageId, Math.max(0, scrollView.getScrollY()));
+            }
             action.run();
         });
         if (action == null) {
             holder[0].setClickable(false);
             holder[0].setAlpha(0.5f);
         }
-        holder[0].setTag(focusKey(title));
+        holder[0].setTag(cardKey);
     }
     private void note(String value){TextView t=text(this,CinemaTokens.LABEL,false);t.setText(value);t.setPadding(0,dp(this,8),0,dp(this,14));content.addView(t);}
     private void sectionHeader(String title) {
@@ -159,7 +302,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
         content.addView(header);
     }
     private String l(String ar,String en){return label(this,ar,en);}
-    private void advanced(){startActivity(new Intent(this,VideoSettingsActivity.class));}
+    private void advanced(){CinemaNovaLegacyPrefs.openLegacyAdvancedPlayerSettings(this);}
     private String storageSubtitleCache;
 
     private String formatMb(long bytes) {
@@ -184,7 +327,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     }
 
     private void showRoot(){
-        homePage=false;backTarget=null;currentRender=this::showRoot;
+        currentPageId="root";homePage=false;backTarget=null;currentRender=this::showRoot;
         page(getString(com.archos.mediacenter.video.R.string.cinema_settings));
         rootPage=true;
         if (storageSubtitleCache == null) {
@@ -196,8 +339,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
         iconButton(R.drawable.cinema_globe,
                 l("اللغة وأولوية اللغات", "Language & Priorities"),
                 l("التطبيق: ", "App: ") + currentAppLanguageLabel()
-                        + l(" · البوسترات: ", " · Posters: ") + currentMetadataLangLabel()
-                        + l(" · الصوت: ", " · Audio: ") + CinemaPreferredAudio.label(this),
+                        + l(" · البوسترات: ", " · Posters: ") + currentMetadataLangLabel(),
                 this::languageGroup);
         iconButton(R.drawable.cinema_ic_appearance,
                 l("المظهر وتخصيص الشاشة الرئيسية", "Appearance & Home Screen"),
@@ -211,7 +353,8 @@ public class CinemaSettingsActivity extends LeanbackActivity {
                 this::playbackAudioGroup);
         iconButton(R.drawable.cinema_ic_shield,
                 l("المشاهدة العائلية وتخطي الإعلانات", "Family Watch & Skip Ads"),
-                l("توقيتات CleanStream وملفات التوقيت المحلية", "CleanStream timings and local timing files"),
+                l("المشاهدة العائلية: ", "Family Watch: ") + CinemaPlaybackOption.FAMILY_WATCH.state(this)
+                        + l(" · تخطّي الإعلانات: ", " · Skip Ads: ") + CinemaPlaybackOption.SKIP_ADS.state(this),
                 this::playbackFiltersPage);
         iconButton(R.drawable.cinema_addons, getString(R.string.addon_hub_title),
                 getString(R.string.addon_settings_description), this::addonsSettings);
@@ -236,6 +379,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     private void storageAndCachePage() {
         homePage = false;
         backTarget = this::libraryAndPostersGroup;
+        currentPageId = "storage_cache";
         currentRender = this::storageAndCachePage;
         page(l("التخزين وتنظيف الكاش الآمن", "Storage & Safe Cache Cleaner"));
 
@@ -410,7 +554,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     }
 
     private void languageGroup(){
-        homePage=false;backTarget=this::showRoot;currentRender=this::languageGroup;
+        currentPageId="language";homePage=false;backTarget=this::showRoot;currentRender=this::languageGroup;
         page(l("اللغة وأولوية اللغات", "Language & Priorities"));
         iconButton(R.drawable.cinema_globe,
                 l("لغة التطبيق", "App Language"),
@@ -420,22 +564,14 @@ public class CinemaSettingsActivity extends LeanbackActivity {
                 l("لغة البوسترات والتقييمات", "Posters & Metadata Language"),
                 l("المختار حالياً: ", "Selected: ") + currentMetadataLangLabel(),
                 this::metadataLanguage);
-        iconButton(R.drawable.cinema_ic_audio,
-                getString(R.string.cinema_pref_audio_lang),
-                CinemaPreferredAudio.label(this),
-                () -> CinemaPreferredAudio.choose(this, this::languageGroup));
-        iconButton(R.drawable.cinema_subtitles,
-                getString(R.string.cinema_pref_subtitle_lang_title),
-                CinemaLanguagePreferences.localizedSubtitleLabel(this, CinemaLanguagePreferences.primarySubtitleLanguage(this)),
-                () -> CinemaLanguagePreferences.choosePreferredSubtitleLanguage(this, this::languageGroup));
     }
 
     private void libraryAndPostersGroup(){
-        homePage=false;backTarget=this::showRoot;currentRender=this::libraryAndPostersGroup;
+        currentPageId="library_posters";homePage=false;backTarget=this::showRoot;currentRender=this::libraryAndPostersGroup;
         page(l("المكتبة والبوسترات والتخزين", "Library, Posters & Storage"));
         iconButton(R.drawable.cinema_network, getString(com.archos.mediacenter.video.R.string.cinema_manage_library_sources),
                 l("مجلدات الشبكة (SMB) والتخزين الداخلي وUSB", "SMB network shares, internal & USB video folders"),
-                () -> startActivity(new Intent(this, NetworkRootActivity.class)));
+                () -> startActivity(new Intent(this, CinemaNetworkActivity.class)));
         iconButton(R.drawable.cinema_ic_posters, l("مصدر البيانات وتحديث البوسترات", "Metadata Source & Poster Refresh"),
                 l("المصدر: ", "Source: ") + (OpenMetadata.enabled(this) ? l("مصادر مفتوحة", "Open Providers") : "TMDb")
                         + l(" · التحديث التلقائي: ", " · Auto-refresh: ") + currentAutoRefreshLabel(),
@@ -445,7 +581,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
                 () -> startActivity(new Intent(this, CinemaRatingsActivity.class)));
         iconButton(R.drawable.cinema_folder, getString(com.archos.mediacenter.video.R.string.cinema_advanced_library_lists),
                 l("استعراض وإدارة قوائم الفيديو المخصّصة", "Browse and manage custom video lists"),
-                () -> startActivity(new Intent(this, com.archos.mediacenter.video.leanback.VideosByListActivity.class)));
+                () -> CinemaNovaLegacyPrefs.openLegacyCustomVideoLists(this));
         iconButton(R.drawable.cinema_ic_system,
                 l("التخزين وتنظيف الكاش الآمن", "Storage & Safe Cache Cleaner"),
                 storageSubtitleCache != null ? storageSubtitleCache
@@ -454,12 +590,12 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     }
 
     private void playbackAudioGroup(){
-        homePage=false;backTarget=this::showRoot;currentRender=this::playbackAudioGroup;
+        currentPageId="playback_audio";homePage=false;backTarget=this::showRoot;currentRender=this::playbackAudioGroup;
         page(l("التشغيل والصوت والترجمة", "Playback, Audio & Subtitles"));
         iconButton(R.drawable.cinema_ic_audio, getString(R.string.addon_preferred_audio),
                 CinemaPreferredAudio.label(this), () -> CinemaPreferredAudio.choose(this, this::playbackAudioGroup));
         iconButton(R.drawable.cinema_ic_audio, getString(com.archos.mediacenter.video.R.string.cinema_cinema_engine),
-                currentDisplayModeLabel() + " · " + (prefs.getInt("cinema_display_delay_ms", 1500) / 1000.0) + " s", this::cinemaEngine);
+                currentDisplayModeLabel() + " · " + (CinemaEngineBoundary.getDisplaySwitchDelayMs(this) / 1000.0) + " s", this::cinemaEngine);
         iconButton(R.drawable.cinema_subtitles,
                 l("إعدادات الترجمة الموحّدة ومصادرها", "Unified Subtitle Settings & Sources"),
                 com.meedx.providers.UnifiedSubtitleConfig.searchSelectionSummary(this, arabic(this))
@@ -467,6 +603,10 @@ public class CinemaSettingsActivity extends LeanbackActivity {
                                 com.meedx.providers.UnifiedSubtitleConfig.primaryLanguage(this), arabic(this))
                         + l(" · المظهر والمزامنة مع الهاتف", " · Appearance & Phone Sync"),
                 () -> SubtitleSources.settings(this));
+        iconButton(R.drawable.cinema_ic_appearance,
+                l("مظهر وموضع وتوقيت الترجمة", "Subtitle Appearance, Position & Timing"),
+                com.meedx.providers.UnifiedSubtitleConfig.appearanceSummary(this, arabic(this)),
+                () -> CinemaSubtitleAppearancePanel.showStandaloneDialog(this, this::playbackAudioGroup));
         iconButton(R.drawable.cinema_play_movie, getString(com.archos.mediacenter.video.R.string.cinema_advanced_video_and_audio_settings),
                 l("إعدادات فك الترميز والمزامنة والمشغّل المتقدمة والاستيراد/التصدير", "Hardware decoding, A/V, player preferences & import/export"), this::advanced);
     }
@@ -474,6 +614,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     private void playbackFiltersPage() {
         homePage = false;
         backTarget = this::showRoot;
+        currentPageId = "playback_filters";
         currentRender = this::playbackFiltersPage;
         page(l("المشاهدة العائلية وتخطي الإعلانات", "Family Watch & Skip Ads"));
         for (CinemaPlaybackOption option : CinemaPlaybackOption.values()) {
@@ -488,27 +629,28 @@ public class CinemaSettingsActivity extends LeanbackActivity {
                         "Skips marked ads, intros and breaks using online timings, chapters or .edl files");
             rowButton(option.icon, getString(option.title), source, option.enabled(this), () -> {
                 option.toggle(this);
+                CinemaLinkServer.notifyTvSettingsMutated(this);
                 playbackFiltersPage();
             });
         }
     }
 
     private void librariesPage(){
-        homePage=false;backTarget=this::libraryAndPostersGroup;currentRender=this::librariesPage;
+        currentPageId="libraries";homePage=false;backTarget=this::libraryAndPostersGroup;currentRender=this::librariesPage;
         page(getString(com.archos.mediacenter.video.R.string.cinema_libraries));
         iconButton(R.drawable.cinema_network, getString(com.archos.mediacenter.video.R.string.cinema_manage_library_sources),
                 l("إضافة أو تعديل مجلدات الفيديو على الشبكة والتخزين", "Add or manage network & storage video folders"),
-                ()->startActivity(new Intent(this,NetworkRootActivity.class)));
+                ()->startActivity(new Intent(this,CinemaNetworkActivity.class)));
         iconButton(R.drawable.cinema_ic_posters, getString(com.archos.mediacenter.video.R.string.cinema_rating_sources),
                 l("تحديث قاعدة بيانات IMDb وإعداد مفتاح OMDb", "Update IMDb dataset & configure OMDb key"),
                 ()->startActivity(new Intent(this,CinemaRatingsActivity.class)));
         iconButton(R.drawable.cinema_folder, getString(com.archos.mediacenter.video.R.string.cinema_advanced_library_lists),
                 l("استعراض وإدارة قوائم الفيديو المخصّصة", "Browse and manage custom video lists"),
-                ()->startActivity(new Intent(this,com.archos.mediacenter.video.leanback.VideosByListActivity.class)));
+                ()->CinemaNovaLegacyPrefs.openLegacyCustomVideoLists(this));
     }
 
     private void metadataPage(){
-        homePage=false;backTarget=this::libraryAndPostersGroup;currentRender=this::metadataPage;
+        currentPageId="metadata";homePage=false;backTarget=this::libraryAndPostersGroup;currentRender=this::metadataPage;
         page(l("مصدر البيانات وتحديث البوسترات", "Metadata Source & Poster Refresh"));
         metadataSourceRow();
         autoRefreshMetadataRow(this::metadataPage);
@@ -536,7 +678,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     }
 
     private void connectionsGroup(){
-        homePage=false;backTarget=this::showRoot;currentRender=this::connectionsGroup;
+        currentPageId="connections";homePage=false;backTarget=this::showRoot;currentRender=this::connectionsGroup;
         com.meedx.providers.TraktSyncClient.migrateAndCleanCredentials(this);
         page(l("الاتصال ومزامنة الهاتف", "Connections & Phone Sync"));
         iconButton(R.drawable.cinema_qr,
@@ -554,7 +696,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     }
 
     private void phoneSyncStatusPage() {
-        homePage=false;backTarget=this::connectionsGroup;currentRender=this::phoneSyncStatusPage;
+        currentPageId="phone_sync";homePage=false;backTarget=this::connectionsGroup;currentRender=this::phoneSyncStatusPage;
         com.meedx.providers.TraktSyncClient.migrateAndCleanCredentials(this);
         page(l("حالة مزامنة الهاتف", "Phone Sync Status"));
         var linkPrefs = getSharedPreferences("cinema_link", 0);
@@ -606,7 +748,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     }
 
     private void systemGroup(){
-        homePage=false;backTarget=this::showRoot;currentRender=this::systemGroup;
+        currentPageId="system";homePage=false;backTarget=this::showRoot;currentRender=this::systemGroup;
         page(l("النظام والصلاحيات والتحديثات", "System, Permissions & Updates"));
         note("Local Cinema · Android TV\nMEEDX\n"+com.meedx.updates.AppUpdates.displayVersion(com.archos.mediacenter.video.BuildConfig.VERSION_NAME));
         iconButton(R.drawable.cinema_ic_updates,
@@ -626,6 +768,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     private void aboutLicenses() {
         homePage = false;
         backTarget = this::systemGroup;
+        currentPageId = "about";
         currentRender = this::aboutLicenses;
         page(getString(R.string.cinema_about_licenses));
         note(getString(R.string.cinema_open_source_free));
@@ -636,16 +779,16 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     }
 
     private void networkPage(){
-        homePage=false;backTarget=this::systemGroup;currentRender=this::networkPage;
+        currentPageId="network";homePage=false;backTarget=this::systemGroup;currentRender=this::networkPage;
         page(getString(com.archos.mediacenter.video.R.string.cinema_network));
         iconButton(R.drawable.cinema_network, getString(com.archos.mediacenter.video.R.string.cinema_smb_files_and_network_sources),
-                l("تعديل مجلدات الشبكة المتصلة", "Configure SMB & local network shares"), ()->startActivity(new Intent(this,NetworkRootActivity.class)));
+                l("تعديل مجلدات الشبكة المتصلة", "Configure SMB & local network shares"), ()->startActivity(new Intent(this,CinemaNetworkActivity.class)));
     }
 
     private void cinemaEngine(){
-        homePage=false;backTarget=this::playbackAudioGroup;currentRender=this::cinemaEngine;
+        currentPageId="cinema_engine";homePage=false;backTarget=this::playbackAudioGroup;currentRender=this::cinemaEngine;
         page(getString(com.archos.mediacenter.video.R.string.cinema_cinema_engine));
-        var profile=com.archos.mediacenter.video.player.HardwareCapabilityProfiler.inspect(this,
+        var profile=CinemaEngineBoundary.inspectHardware(this,
                 getWindow().getDecorView().getDisplay());
         note(getString(com.archos.mediacenter.video.R.string.cinema_engine_hardware_summary,
                 profile.ramBytes()/1073741824.0,availability(profile.dolbyVision()),availability(profile.hdr10Plus()),
@@ -653,15 +796,19 @@ public class CinemaSettingsActivity extends LeanbackActivity {
         String[] modes={getString(com.archos.mediacenter.video.R.string.cinema_off),getString(com.archos.mediacenter.video.R.string.cinema_refresh_rate_only),getString(com.archos.mediacenter.video.R.string.cinema_refresh_rate_and_resolution)};
         iconButton(R.drawable.cinema_play_movie, getString(com.archos.mediacenter.video.R.string.cinema_display_matching),
                 l("المختار حالياً: ", "Selected: ") + currentDisplayModeLabel(), ()->
-                dialog(this).setItems(modes,(d,n)->{prefs.edit().putInt("cinema_display_mode",n).apply();cinemaEngine();}).show());
+                dialog(this).setItems(modes,(d,n)->{CinemaEngineBoundary.setDisplayMode(this,n);cinemaEngine();}).show());
         String[] delays=new String[11];
         for(int n=0;n<delays.length;n++)delays[n]=String.format(java.util.Locale.US,"%.1f s",n/2.0);
         iconButton(R.drawable.cinema_ic_timer, getString(com.archos.mediacenter.video.R.string.cinema_display_switch_delay),
-                l("التأخير الحالي: ", "Current delay: ") + (prefs.getInt("cinema_display_delay_ms",1500)/1000.0)+" s",()->
-                dialog(this).setItems(delays,(d,n)->{prefs.edit().putInt("cinema_display_delay_ms",500*n).apply();cinemaEngine();}).show());
-        toggle(R.drawable.cinema_ic_audio, getString(com.archos.mediacenter.video.R.string.cinema_automatic_audio_sync),
-                VideoPreferencesCommon.KEY_ENABLE_DYNAMIC_AUDIO_DELAY,true,this::cinemaEngine);
-        note(profile.displayModes());
+                l("التأخير الحالي: ", "Current delay: ") + (CinemaEngineBoundary.getDisplaySwitchDelayMs(this)/1000.0)+" s",()->
+                dialog(this).setItems(delays,(d,n)->{CinemaEngineBoundary.setDisplaySwitchDelayMs(this,500*n);cinemaEngine();}).show());
+        boolean dynAudio = CinemaNovaLegacyPrefs.isDynamicAudioDelayEnabled(this);
+        rowButton(R.drawable.cinema_ic_audio, getString(com.archos.mediacenter.video.R.string.cinema_automatic_audio_sync),
+                null, dynAudio, () -> {
+                    CinemaNovaLegacyPrefs.setDynamicAudioDelayEnabled(this, !dynAudio);
+                    cinemaEngine();
+                });
+        note(profile.displayModesSummary());
     }
 
     private String currentAppLanguageLabel() {
@@ -705,7 +852,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
 
     private String currentDisplayModeLabel() {
         String[] modes={getString(com.archos.mediacenter.video.R.string.cinema_off),getString(com.archos.mediacenter.video.R.string.cinema_refresh_rate_only),getString(com.archos.mediacenter.video.R.string.cinema_refresh_rate_and_resolution)};
-        int mode=prefs.getInt("cinema_display_mode",-1);
+        int mode=CinemaEngineBoundary.getDisplayMode(this);
         return mode>=0&&mode<modes.length?modes[mode]:getString(com.archos.mediacenter.video.R.string.cinema_existing_player_setting);
     }
 
@@ -722,10 +869,9 @@ public class CinemaSettingsActivity extends LeanbackActivity {
             d.dismiss();
             String tag = tags[index];
             if (index == selected) return;
-            prefs.edit().putString(VideoPreferencesCommon.KEY_UI_LANG,
-                    tag.isEmpty() ? VideoPreferencesCommon.KEY_UI_LANG_SYSTEM : tag)
-                    .putString(CinemaPosters.REFRESH, "missing")
-                    .apply();
+            var langEditor = prefs.edit();
+            CinemaNovaLegacyPrefs.writeUiLanguage(langEditor, tag);
+            langEditor.putString(CinemaPosters.REFRESH, "missing").apply();
             CinemaMetadataPrefetcher.clearLanguageTextCachesOnly(this);
             CinemaMetadataPrefetcher.runAsync(this, false);
             if (android.os.Build.VERSION.SDK_INT >= 33) {
@@ -769,7 +915,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     }
 
     private void traktSettings() {
-        homePage = false;backTarget=this::phoneSyncStatusPage;currentRender=this::traktSettings;
+        currentPageId="trakt";homePage = false;backTarget=this::phoneSyncStatusPage;currentRender=this::traktSettings;
         com.meedx.providers.TraktSyncClient.migrateAndCleanCredentials(this);
         page(label(this, "مزامنة Trakt", "Trakt Sync"));
         boolean connected = com.meedx.providers.TraktSyncClient.isConnected(this);
@@ -837,82 +983,6 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     }
 
     private void addonsSettings() { new CinemaAddonsManagerDialog(this, io, mainHandler, () -> {}).show(); }
-    private void subtitleAddonsSettings() { addonSettings(true); }
-
-    private void addonSettings(boolean subtitles) {
-        homePage = false;
-        backTarget = subtitles ? this::playbackAudioGroup : this::showRoot;
-        currentRender = () -> addonSettings(subtitles);
-        page(getString(subtitles ? R.string.addon_subtitle_settings : R.string.addon_hub_title));
-        note(getString(subtitles ? R.string.addon_subtitle_settings_description : R.string.addon_settings_description));
-        button(getString(R.string.addon_sync_now), () -> android.widget.Toast.makeText(this,
-                CinemaLinkServer.requestAddonSync() ? R.string.addon_sync_requested : R.string.addon_pair_phone,
-                android.widget.Toast.LENGTH_LONG).show());
-        button(label(this, "+ إضافة رابط manifest.json", "+ Add manifest.json URL"), () -> {
-            android.widget.EditText input = new android.widget.EditText(this);
-            input.setHint("https://example.com/manifest.json");
-            input.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
-            dialog(this)
-                    .setTitle(label(this, "إضافة Stremio / Nuvio", "Add Stremio / Nuvio Addon"))
-                    .setView(CinemaPhoneLink.withPasteBadge(input))
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .setPositiveButton(label(this, "تحقق وحفظ", "Verify & Save"), (d, w) -> {
-                        String raw = input.getText().toString().trim();
-                        if (raw.isEmpty()) return;
-                        android.widget.Toast.makeText(this,
-                                label(this, "جاري فحص manifest.json...", "Verifying manifest.json..."),
-                                android.widget.Toast.LENGTH_SHORT).show();
-                        io.execute(() -> {
-                            try {
-                                com.meedx.providers.StremioAddons.Addon added =
-                                        com.meedx.providers.StremioAddons.fetchAndAdd(getApplicationContext(), raw);
-                                CinemaLinkServer.broadcastAddonsSync(getApplicationContext());
-                                mainHandler.post(() -> {
-                                    if (isFinishing() || isDestroyed()) return;
-                                    android.widget.Toast.makeText(this,
-                                            label(this, "تمت إضافة: ", "Added: ") + added.name,
-                                            android.widget.Toast.LENGTH_SHORT).show();
-                                    addonSettings(subtitles);
-                                });
-                            } catch (Exception e) {
-                                mainHandler.post(() -> {
-                                    if (!isFinishing() && !isDestroyed()) {
-                                        android.widget.Toast.makeText(this,
-                                                label(this, "تعذّر التحقق من الإضافة: ", "Invalid addon: ") + e.getMessage(),
-                                                android.widget.Toast.LENGTH_LONG).show();
-                                    }
-                                });
-                            }
-                        });
-                    }).show();
-        });
-
-        var addons = com.meedx.providers.StremioAddons.list(this).stream().filter(addon ->
-                subtitles == com.meedx.providers.StremioAddons.subtitleOnly(addon)).collect(java.util.stream.Collectors.toList());
-        if (addons.isEmpty()) {
-            note(getString(subtitles ? R.string.addon_empty_subtitles : R.string.addon_empty));
-            return;
-        }
-        for (com.meedx.providers.StremioAddons.Addon a : addons) {
-            String titleStr = a.name + (a.version != null && !a.version.isEmpty() ? "  v" + a.version : "");
-            String subStr = com.meedx.providers.StremioAddons.localizedDescription(a.description, this);
-            rowButton(R.drawable.cinema_ic_addons, titleStr, subStr, a.enabled, () -> {
-                String[] actions = {
-                        a.enabled ? label(this, "تعطيل الإضافة", "Disable") : label(this, "تفعيل الإضافة", "Enable"),
-                        label(this, "حذف الإضافة", "Remove")
-                };
-                dialog(this).setTitle(a.name).setItems(actions, (d, which) -> {
-                    if (which == 0) {
-                        com.meedx.providers.StremioAddons.setEnabled(this, a.manifestUrl, !a.enabled);
-                        CinemaLinkServer.sendAddonEnabled(a.manifestUrl, !a.enabled);
-                    } else {
-                        com.meedx.providers.StremioAddons.remove(this, a.manifestUrl);
-                    }
-                    addonSettings(subtitles);
-                }).setNegativeButton(android.R.string.cancel, null).show();
-            });
-        }
-    }
 
     private void metadataSourceRow() {
         String[] options = {label(this, "مصادر مفتوحة تلقائياً · بدون مفتاح", "Automatic open providers · No key"),
@@ -994,7 +1064,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     }
 
     private void appearance(){
-        homePage=false;backTarget=this::showRoot;currentRender=this::appearance;
+        currentPageId="appearance";homePage=false;backTarget=this::showRoot;currentRender=this::appearance;
         page(l("المظهر وتخصيص الشاشة الرئيسية", "Appearance & Home Screen"));
 
         sectionHeader(l("أقسام الشاشة الرئيسية وأولوية الترتيب", "Home Screen Sections & Priority Order"));
@@ -1159,7 +1229,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
         rowButton(iconRes, title, null, on, ()->{prefs.edit().putBoolean(key,!on).apply();refresh.run();});
     }
     private void remoteSettings() {
-        homePage = false;backTarget=this::connectionsGroup;currentRender=this::remoteSettings;
+        currentPageId="remote";homePage = false;backTarget=this::connectionsGroup;currentRender=this::remoteSettings;
         page(getString(com.archos.mediacenter.video.R.string.cinema_phone_remote));
         var connection = getSharedPreferences("cinema_link", MODE_PRIVATE);
         boolean webRemote = CinemaLinkServer.isWebRemoteEnabled(this);
@@ -1315,7 +1385,7 @@ public class CinemaSettingsActivity extends LeanbackActivity {
     }
 
     private void posterSettings() {
-        homePage = false;backTarget=this::libraryAndPostersGroup;currentRender=this::posterSettings;
+        currentPageId="posters";homePage = false;backTarget=this::libraryAndPostersGroup;currentRender=this::posterSettings;
         page(getString(com.archos.mediacenter.video.R.string.cinema_refresh_posters));
         autoRefreshMetadataRow(this::posterSettings);
         iconButton(R.drawable.cinema_ic_posters, getString(com.archos.mediacenter.video.R.string.cinema_fetch_missing_posters),

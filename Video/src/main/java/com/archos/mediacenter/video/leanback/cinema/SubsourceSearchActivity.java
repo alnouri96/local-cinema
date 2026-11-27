@@ -59,13 +59,21 @@ public class SubsourceSearchActivity extends LeanbackActivity {
 
     private Video video;
     private String imdb = "";
+    private long tmdbId = 0L;
     private int season = -1;
     private int episode = -1;
     private int year = -1;
     private boolean isSeries = false;
+    private boolean hasIndexedMetadata = false;
     private String rawDisplayTitle = "";
+    private String alternateDbTitle = "";
+    private String cleanedFilenameFallback = "";
     private String intentEnglishHint = "";
     private String resolvedEnglishTitle = "";
+    private String videoFilenameHint = "";
+    private long videoSizeHint = 0L;
+    private String videoHashHint = "";
+    private String addonItemIdHint = "";
     private String language;
     private List<UnifiedSubtitleEngine.TitleCandidate> titleCandidates = List.of();
     private String activeChipKey = "";
@@ -186,6 +194,7 @@ public class SubsourceSearchActivity extends LeanbackActivity {
 
         results = new LinearLayout(this);
         results.setOrientation(LinearLayout.VERTICAL);
+        results.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
         results.setClipChildren(false);
         results.setClipToPadding(false);
         content.addView(results);
@@ -231,13 +240,15 @@ public class SubsourceSearchActivity extends LeanbackActivity {
     private void renderTitleCandidateChips() {
         candidatesRow.removeAllViews();
         boolean hasAny = false;
+        Set<String> shownNormTitles = new LinkedHashSet<>();
 
-        // 1. Top 1–3 verified English/IMDb candidates
+        // 1. Priority 1 & 2: Clean MediaDB/Poster English/Original Title + Alternate DB Title
         for (int i = 0; i < Math.min(3, titleCandidates.size()); i++) {
             final UnifiedSubtitleEngine.TitleCandidate cand = titleCandidates.get(i);
             String chipLabel = cand.title() + (cand.year() > 0 ? " (" + cand.year() + ")" : "");
             String chipKey = "cand:" + cand.title() + ":" + cand.imdbId();
             boolean active = chipKey.equals(activeChipKey);
+            shownNormTitles.add(cand.title().trim().toLowerCase(Locale.ROOT));
             addCandidateChip(chipLabel, active, () -> {
                 if (busy) return;
                 activeChipKey = chipKey;
@@ -252,42 +263,43 @@ public class SubsourceSearchActivity extends LeanbackActivity {
             hasAny = true;
         }
 
-        // 2. Original source title chip (e.g. Persian / Arabic / filename title as-is)
-        if (rawDisplayTitle != null && !rawDisplayTitle.isBlank()) {
-            boolean alreadyShown = false;
-            for (UnifiedSubtitleEngine.TitleCandidate c : titleCandidates) {
-                if (c.title().equalsIgnoreCase(rawDisplayTitle)) {
-                    alreadyShown = true;
-                    break;
-                }
-            }
-            if (!alreadyShown) {
-                String origKey = "orig:" + rawDisplayTitle;
-                boolean active = origKey.equals(activeChipKey);
-                addCandidateChip(getString(R.string.cinema_sub_chip_source_title, rawDisplayTitle), active, () -> {
-                    if (busy) return;
-                    activeChipKey = origKey;
-                    resolvedEnglishTitle = rawDisplayTitle;
-                    imdb = "";
-                    query.setText(rawDisplayTitle);
-                    query.setSelection(query.getText().length());
-                    renderTitleCandidateChips();
-                    runSearch();
-                });
-                hasAny = true;
-            }
+        // Ensure Alternate DB Title (Priority 2) is clickable even if not in top 3
+        if (alternateDbTitle != null && !alternateDbTitle.isBlank()
+                && shownNormTitles.add(alternateDbTitle.trim().toLowerCase(Locale.ROOT))) {
+            final String altTitle = alternateDbTitle;
+            String altKey = "alt:" + altTitle;
+            boolean active = altKey.equals(activeChipKey);
+            addCandidateChip(altTitle, active, () -> {
+                if (busy) return;
+                activeChipKey = altKey;
+                resolvedEnglishTitle = altTitle;
+                query.setText(altTitle);
+                query.setSelection(query.getText().length());
+                renderTitleCandidateChips();
+                runSearch();
+            });
+            hasAny = true;
         }
 
-        // 3. Manual Edit / Phone Paste chip
-        addCandidateChip(getString(R.string.cinema_sub_chip_manual_paste), false, () -> {
-            query.requestFocus();
-            query.selectAll();
-            try {
-                InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-                if (imm != null) imm.showSoftInput(query, InputMethodManager.SHOW_IMPLICIT);
-            } catch (Exception ignored) {}
-        });
-        hasAny = true;
+        // 2. Priority 3 (Secondary clickable chip when indexed; primary only when unindexed): Cleaned Filename
+        String secondaryFileChip = !cleanedFilenameFallback.isBlank() ? cleanedFilenameFallback : rawDisplayTitle;
+        if (secondaryFileChip != null && !secondaryFileChip.isBlank()
+                && shownNormTitles.add(secondaryFileChip.trim().toLowerCase(Locale.ROOT))) {
+            final String fileChipTitle = secondaryFileChip;
+            String origKey = "orig:" + fileChipTitle;
+            boolean active = origKey.equals(activeChipKey);
+            addCandidateChip(getString(R.string.cinema_sub_chip_source_title, fileChipTitle), active, () -> {
+                if (busy) return;
+                activeChipKey = origKey;
+                resolvedEnglishTitle = fileChipTitle;
+                imdb = "";
+                query.setText(fileChipTitle);
+                query.setSelection(query.getText().length());
+                renderTitleCandidateChips();
+                runSearch();
+            });
+            hasAny = true;
+        }
 
         candidatesScroll.setVisibility(hasAny ? View.VISIBLE : View.GONE);
     }
@@ -342,13 +354,20 @@ public class SubsourceSearchActivity extends LeanbackActivity {
                     }
                 }
                 String intentTitle = cleanTitle(getIntent().getStringExtra("title"));
+                String intentPosterTitle = cleanTitle(getIntent().getStringExtra(SubtitleSources.EXTRA_POSTER_TITLE));
                 intentEnglishHint = cleanTitle(getIntent().getStringExtra("english_title"));
                 String intentHeading = cleanTitle(getIntent().getStringExtra("addon_heading"));
                 String intentImdb = cleanTitle(getIntent().getStringExtra("imdb_id"));
+                long intentTmdb = getIntent().getLongExtra(SubtitleSources.EXTRA_TMDB_ID, 0L);
                 int intentYear = getIntent().getIntExtra("release_year", -1);
                 int intentSeason = getIntent().getIntExtra("season", -1);
                 int intentEpisode = getIntent().getIntExtra("episode", -1);
+                videoFilenameHint = cleanTitle(getIntent().getStringExtra("video_filename"));
+                videoSizeHint = Math.max(0L, getIntent().getLongExtra("video_size", 0L));
+                videoHashHint = cleanTitle(getIntent().getStringExtra("video_hash"));
+                addonItemIdHint = cleanTitle(getIntent().getStringExtra("addon_item_id"));
                 if (intentImdb.matches("tt[0-9]+")) imdb = intentImdb;
+                if (intentTmdb > 0L) tmdbId = intentTmdb;
                 if (intentYear > 0) year = intentYear;
                 if (intentSeason > 0) season = intentSeason;
                 if (intentEpisode > 0) episode = intentEpisode;
@@ -360,59 +379,89 @@ public class SubsourceSearchActivity extends LeanbackActivity {
                     isSeries = true;
                 }
                 if (video != null) {
-                    BaseTags tags = video.getFullScraperTags(getApplicationContext());
-                    if (tags != null && imdb.isEmpty() && tags.getImdbId() != null) imdb = tags.getImdbId();
-                    rawDisplayTitle = cleanTitle(video.getName());
-                    if (tags instanceof com.archos.mediascraper.EpisodeTags epTags) {
-                        isSeries = true;
-                        com.archos.mediascraper.ShowTags show = com.archos.mediascraper.TagsFactory
-                                .buildShowTags(getApplicationContext(), epTags.getShowId());
-                        if (show != null) {
-                            if (imdb.isEmpty() && show.getImdbId() != null) imdb = show.getImdbId();
-                            if (!cleanTitle(show.getTitle()).isEmpty()) rawDisplayTitle = cleanTitle(show.getTitle());
+                    if (videoFilenameHint.isEmpty() && video.getFileNameWithExtension() != null) {
+                        videoFilenameHint = video.getFileNameWithExtension();
+                    }
+                    if (videoSizeHint <= 0L && video.getSize() > 0L) {
+                        videoSizeHint = video.getSize();
+                    }
+                    Uri localCheckUri = video.getFileUri();
+                    if (videoHashHint.isEmpty() && localCheckUri != null
+                            && (localCheckUri.getScheme() == null || "file".equalsIgnoreCase(localCheckUri.getScheme()))
+                            && localCheckUri.getPath() != null) {
+                        java.io.File f = new java.io.File(localCheckUri.getPath());
+                        if (f.isFile() && f.length() > 0L) {
+                            if (videoSizeHint <= 0L) videoSizeHint = f.length();
+                            String computed = com.archos.mediacenter.video.utils.OpenSubtitlesHasher.computeHash(f);
+                            if (computed != null) videoHashHint = computed;
                         }
                     }
-                    Uri uri = video.getFileUri();
-                    boolean isHttp = uri != null && ("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()));
-                    if (!isHttp && uri != null) {
-                        try {
-                            com.archos.mediascraper.preprocess.SearchInfo parsed =
-                                    com.archos.mediascraper.preprocess.SearchPreprocessor.instance().parseFileBased(uri, uri);
-                            if (parsed instanceof com.archos.mediascraper.preprocess.MovieSearchInfo m) {
-                                String fn = cleanTitle(m.getName());
-                                if (!fn.isEmpty() && (!UnifiedSubtitleEngine.containsNonLatin(fn) || rawDisplayTitle.isEmpty())) {
-                                    if (intentEnglishHint.isEmpty() && !UnifiedSubtitleEngine.containsNonLatin(fn)) {
-                                        intentEnglishHint = fn;
+
+                    // Strict 3-tier resolution:
+                    // 1) Clean Poster/MediaDB Title (preferring TMDb English/Original)
+                    // 2) Alternate/Localized DB Title (cleaned of '|', 720p/1080p, extensions)
+                    // 3) Cleaned Filename (auto-used ONLY when unindexed; secondary chip when indexed)
+                    String bestPosterHint = !intentPosterTitle.isEmpty() ? intentPosterTitle : intentHeading;
+                    SubtitleSources.MediaSearchSeed seed = SubtitleSources.resolveSeed(
+                            getApplicationContext(), video, bestPosterHint, intentEnglishHint, imdb, tmdbId, year);
+                    hasIndexedMetadata = seed.hasIndexedRecord();
+                    cleanedFilenameFallback = seed.cleanedFilename();
+                    alternateDbTitle = seed.alternateDbTitle();
+                    if (!seed.imdbId().isEmpty()) imdb = seed.imdbId();
+                    if (seed.tmdbId() > 0L) tmdbId = seed.tmdbId();
+                    if (seed.year() > 0) year = seed.year();
+                    if (seed.isSeries()) isSeries = true;
+                    if (season <= 0 && seed.season() > 0) season = seed.season();
+                    if (episode <= 0 && seed.episode() > 0) episode = seed.episode();
+
+                    if (hasIndexedMetadata) {
+                        rawDisplayTitle = seed.primaryPosterTitle();
+                        if (!seed.englishTitleHint().isEmpty()) intentEnglishHint = seed.englishTitleHint();
+                    } else {
+                        rawDisplayTitle = seed.cleanedFilename();
+                        Uri uri = video.getFileUri();
+                        boolean isHttp = uri != null && ("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()));
+                        if (!isHttp && uri != null) {
+                            try {
+                                com.archos.mediascraper.preprocess.SearchInfo parsed =
+                                        com.archos.mediascraper.preprocess.SearchPreprocessor.instance().parseFileBased(uri, uri);
+                                if (parsed instanceof com.archos.mediascraper.preprocess.MovieSearchInfo m) {
+                                    String fn = UnifiedSubtitleEngine.cleanRawTitle(m.getName());
+                                    if (!fn.isEmpty() && (!UnifiedSubtitleEngine.containsNonLatin(fn) || rawDisplayTitle.isEmpty())) {
+                                        if (intentEnglishHint.isEmpty() && !UnifiedSubtitleEngine.containsNonLatin(fn)) {
+                                            intentEnglishHint = fn;
+                                        }
+                                        if (rawDisplayTitle.isEmpty()) rawDisplayTitle = fn;
                                     }
-                                    if (rawDisplayTitle.isEmpty()) rawDisplayTitle = fn;
-                                }
-                                if (year <= 0) {
-                                    try { year = Integer.parseInt(m.getYear()); } catch (Exception ignored) {}
-                                }
-                            } else if (parsed instanceof com.archos.mediascraper.preprocess.TvShowSearchInfo s) {
-                                isSeries = true;
-                                String fn = cleanTitle(s.getShowName());
-                                if (!fn.isEmpty() && (!UnifiedSubtitleEngine.containsNonLatin(fn) || rawDisplayTitle.isEmpty())) {
-                                    if (intentEnglishHint.isEmpty() && !UnifiedSubtitleEngine.containsNonLatin(fn)) {
-                                        intentEnglishHint = fn;
+                                    if (year <= 0) {
+                                        try { year = Integer.parseInt(m.getYear()); } catch (Exception ignored) {}
                                     }
-                                    if (rawDisplayTitle.isEmpty()) rawDisplayTitle = fn;
+                                } else if (parsed instanceof com.archos.mediascraper.preprocess.TvShowSearchInfo s) {
+                                    isSeries = true;
+                                    String fn = UnifiedSubtitleEngine.cleanRawTitle(s.getShowName());
+                                    if (!fn.isEmpty() && (!UnifiedSubtitleEngine.containsNonLatin(fn) || rawDisplayTitle.isEmpty())) {
+                                        if (intentEnglishHint.isEmpty() && !UnifiedSubtitleEngine.containsNonLatin(fn)) {
+                                            intentEnglishHint = fn;
+                                        }
+                                        if (rawDisplayTitle.isEmpty()) rawDisplayTitle = fn;
+                                    }
+                                    if (season <= 0) season = s.getSeason();
+                                    if (episode <= 0) episode = s.getEpisode();
                                 }
-                                if (season <= 0) season = s.getSeason();
-                                if (episode <= 0) episode = s.getEpisode();
-                            }
-                        } catch (Exception ignored) {}
+                            } catch (Exception ignored) {}
+                        }
                     }
                 }
                 if (!intentHeading.isEmpty() && (rawDisplayTitle.isEmpty() || "video".equalsIgnoreCase(rawDisplayTitle))) {
-                    rawDisplayTitle = intentHeading;
+                    rawDisplayTitle = UnifiedSubtitleEngine.cleanRawTitle(intentHeading);
                 } else if (!intentTitle.isEmpty() && (rawDisplayTitle.isEmpty() || "video".equalsIgnoreCase(rawDisplayTitle))) {
-                    rawDisplayTitle = stripEpisodeSuffix(intentTitle);
+                    rawDisplayTitle = UnifiedSubtitleEngine.cleanRawTitle(stripEpisodeSuffix(intentTitle));
                 }
                 if (season > 0 || episode > 0) isSeries = true;
 
                 UnifiedSubtitleEngine.ResolvedQuery rq = UnifiedSubtitleEngine.resolveQuery(
-                        getApplicationContext(), rawDisplayTitle, intentEnglishHint, imdb, year, isSeries, season, episode);
+                        getApplicationContext(), rawDisplayTitle, intentEnglishHint, alternateDbTitle,
+                        imdb, tmdbId, year, isSeries, season, episode, hasIndexedMetadata);
                 resolvedEnglishTitle = rq.englishTitle;
                 titleCandidates = rq.candidates;
                 if (!rq.imdbId.isEmpty()) imdb = rq.imdbId;
@@ -425,7 +474,8 @@ public class SubsourceSearchActivity extends LeanbackActivity {
                     var top = titleCandidates.get(0);
                     activeChipKey = "cand:" + top.title() + ":" + top.imdbId();
                 } else {
-                    activeChipKey = "orig:" + rawDisplayTitle;
+                    String fallbackChip = !cleanedFilenameFallback.isBlank() ? cleanedFilenameFallback : rawDisplayTitle;
+                    activeChipKey = "orig:" + fallbackChip;
                 }
 
                 handler.post(() -> {
@@ -476,7 +526,7 @@ public class SubsourceSearchActivity extends LeanbackActivity {
 
     private void openSourcePickerDialog() {
         boolean rtl = arabic(this);
-        List<UnifiedSubtitleConfig.ProviderInfo> providers = UnifiedSubtitleConfig.allProviders();
+        List<UnifiedSubtitleConfig.ProviderInfo> providers = UnifiedSubtitleConfig.allProviders(this);
         boolean allMode = UnifiedSubtitleConfig.MODE_ALL.equals(UnifiedSubtitleConfig.searchSelectionMode(this));
         Set<String> selected = new LinkedHashSet<>(UnifiedSubtitleConfig.selectedSearchSources(this));
 
@@ -597,7 +647,10 @@ public class SubsourceSearchActivity extends LeanbackActivity {
         status.setText(l("جارٍ البحث في ", "Searching ") + runnable.size()
                 + l(" مصدر… (", " source(s)… (") + UnifiedSubtitleConfig.searchSelectionSummary(this, rtl) + ")");
 
-        String videoFileName = video != null ? video.getFileNameWithExtension() : inputTitle;
+        String videoFileName = !videoFilenameHint.isBlank() ? videoFilenameHint
+                : (video != null && video.getFileNameWithExtension() != null ? video.getFileNameWithExtension() : inputTitle);
+        UnifiedSubtitleEngine.VideoParams videoParams = new UnifiedSubtitleEngine.VideoParams(
+                videoFileName, videoSizeHint, videoHashHint, addonItemIdHint);
         boolean manualEdited = !inputTitle.equalsIgnoreCase(resolvedEnglishTitle);
         boolean explicitlyPickedOriginal = activeChipKey.startsWith("orig:");
         String chosenLang = language;
@@ -622,13 +675,13 @@ public class SubsourceSearchActivity extends LeanbackActivity {
                 else langs.addAll(UnifiedSubtitleConfig.languagePriorities(getApplicationContext()));
 
                 List<UnifiedSubtitleEngine.Candidate> found = UnifiedSubtitleEngine.search(
-                        getApplicationContext(), rq, langs, targetSources, videoFileName);
+                        getApplicationContext(), rq, langs, targetSources, videoParams);
 
                 boolean usedOtherLangFallback = false;
                 if (found.isEmpty() && "arabic".equals(chosenLang)) {
                     // Automatically look for English / Persian / other available subtitles that can be translated to Arabic!
                     List<UnifiedSubtitleEngine.Candidate> alt = UnifiedSubtitleEngine.search(
-                            getApplicationContext(), rq, List.of("english", "persian", ""), targetSources, videoFileName);
+                            getApplicationContext(), rq, List.of("english", "persian", ""), targetSources, videoParams);
                     if (!alt.isEmpty()) {
                         found = alt;
                         usedOtherLangFallback = true;

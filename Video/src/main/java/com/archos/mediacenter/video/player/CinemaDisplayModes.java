@@ -2,10 +2,10 @@ package com.archos.mediacenter.video.player;
 
 import android.view.Display;
 
-final class CinemaDisplayModes {
+public final class CinemaDisplayModes {
     private CinemaDisplayModes(){}
 
-    static Display.Mode select(Display.Mode current,Display.Mode[] modes,float fps,int width,int height){
+    public static Display.Mode select(Display.Mode current,Display.Mode[] modes,float fps,int width,int height){
         Display.Mode best=current;
         double bestScore=Double.POSITIVE_INFINITY;
         for(Display.Mode mode:modes){

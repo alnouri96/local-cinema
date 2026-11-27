@@ -42,11 +42,14 @@ public class Subtitle3DTextView extends LinearLayout {
     public Subtitle3DTextView(Context context, AttributeSet attrs) {
         super(context, attrs);
         setPadding(0,0,0,0);
+        setBackgroundColor(Color.TRANSPARENT);
         mAttrs = attrs;
         mPrimaryTV = new SubtitleTextView(context, attrs);
         mPrimaryTV.setVisibility(VISIBLE); //no matter what was in attrs (visibility is taken into account in parent layout, not in textview)
         mPrimaryFrameLayout = new FrameLayout(context);
+        mPrimaryFrameLayout.setBackgroundColor(Color.TRANSPARENT);
         mSecondaryFrameLayout = new FrameLayout(context);
+        mSecondaryFrameLayout.setBackgroundColor(Color.TRANSPARENT);
         mSecondaryTV = new SubtitleTextView(context, attrs);
         mSecondaryTV.setVisibility(VISIBLE); //no matter what was in attrs (visibility is taken into account in parent layout, not in textview)
         addView(mPrimaryFrameLayout);
@@ -135,6 +138,25 @@ public class Subtitle3DTextView extends LinearLayout {
     public void setOutlineState(boolean outline) {
         mPrimaryTV.setOutlineState(outline);
         mSecondaryTV.setOutlineState(outline);
+    }
+
+    public void setOutlineLevel(int level) {
+        mPrimaryTV.setOutlineLevel(level);
+        mSecondaryTV.setOutlineLevel(level);
+    }
+
+    public void setOutlineColor(int color) {
+        mPrimaryTV.setOutlineColor(color);
+        mSecondaryTV.setOutlineColor(color);
+    }
+
+    public void setSubtitleBackground(boolean enabled, int opacityPercent) {
+        // Never paint the full-screen container; draw word-bounded box on the text views only.
+        setBackgroundColor(Color.TRANSPARENT);
+        mPrimaryFrameLayout.setBackgroundColor(Color.TRANSPARENT);
+        mSecondaryFrameLayout.setBackgroundColor(Color.TRANSPARENT);
+        mPrimaryTV.setSubtitleBackground(enabled, opacityPercent);
+        mSecondaryTV.setSubtitleBackground(enabled, opacityPercent);
     }
 
     public void setTextSize(float v) {

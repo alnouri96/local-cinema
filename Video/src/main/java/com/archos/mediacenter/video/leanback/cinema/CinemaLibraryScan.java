@@ -25,6 +25,16 @@ import java.util.concurrent.Executors;
 public final class CinemaLibraryScan {
     public static final String ACTION_CHANGED = "com.meedx.localcinema.tv.INDEXED_LIBRARIES_CHANGED";
     private static final String TAG = "CinemaLibraryScan";
+    private static final java.util.concurrent.atomic.AtomicLong STATE_EPOCH =
+            new java.util.concurrent.atomic.AtomicLong(1L);
+
+    public static long stateEpoch() {
+        return STATE_EPOCH.get();
+    }
+
+    public static void bumpStateEpoch() {
+        STATE_EPOCH.incrementAndGet();
+    }
     private static final Set<String> SYSTEM = Set.of("appdata", "$recycle.bin", "system volume information");
     private static final Set<String> LIBRARIES = Set.of("movies", "films", "shows", "tv shows", "series",
             "cartoon", "cartoons", "animation", "anime", "أفلام", "مسلسلات", "رسوم متحركة");
@@ -187,6 +197,7 @@ public final class CinemaLibraryScan {
     }
 
     private static void signalChange(Context context) {
+        STATE_EPOCH.incrementAndGet();
         context.sendBroadcast(new android.content.Intent(ACTION_CHANGED).setPackage(context.getPackageName()));
     }
 

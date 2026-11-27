@@ -30,6 +30,7 @@ public final class UnifiedSubtitleConfig {
     public static final String SRC_YIFY = "yify";
     public static final String SRC_GESTDOWN = "gestdown";
     public static final String SRC_STREMIO_ADDONS = "stremio_addons";
+    public static final String PREFIX_STREMIO_SUB = "stremio_sub:";
     public static final String SRC_SUBSOURCE = "subsource";
     public static final String SRC_SUBDL = "subdl";
     public static final String SRC_OPENSUBTITLES_API = "opensubtitles_api";
@@ -47,10 +48,20 @@ public final class UnifiedSubtitleConfig {
         public final boolean supportsMovies;
         public final boolean supportsSeries;
         public final String keyUrl;
+        public final boolean isStremioAddon;
+        public final String addonManifestUrl;
+        public final String addonBaseUrl;
 
         public ProviderInfo(String id, String name, String arType, String enType,
                             boolean keyless, String apiKeyName,
                             boolean supportsMovies, boolean supportsSeries, String keyUrl) {
+            this(id, name, arType, enType, keyless, apiKeyName, supportsMovies, supportsSeries, keyUrl, false, "", "");
+        }
+
+        public ProviderInfo(String id, String name, String arType, String enType,
+                            boolean keyless, String apiKeyName,
+                            boolean supportsMovies, boolean supportsSeries, String keyUrl,
+                            boolean isStremioAddon, String addonManifestUrl, String addonBaseUrl) {
             this.id = id;
             this.name = name;
             this.arType = arType;
@@ -60,10 +71,13 @@ public final class UnifiedSubtitleConfig {
             this.supportsMovies = supportsMovies;
             this.supportsSeries = supportsSeries;
             this.keyUrl = keyUrl;
+            this.isStremioAddon = isStremioAddon;
+            this.addonManifestUrl = addonManifestUrl == null ? "" : addonManifestUrl;
+            this.addonBaseUrl = addonBaseUrl == null ? "" : addonBaseUrl;
         }
     }
 
-    private static final List<ProviderInfo> PROVIDERS = List.of(
+    private static final List<ProviderInfo> CORE_KEYLESS_PROVIDERS = List.of(
             new ProviderInfo(SRC_OPENSUBTITLES_V3, "OpenSubtitles v3",
                     "مدمج · مفتوح المصدر (Stremio) · بدون مفتاح",
                     "Built-in · Open Source (Stremio) · No API Key",
@@ -79,11 +93,10 @@ public final class UnifiedSubtitleConfig {
             new ProviderInfo(SRC_GESTDOWN, "Gestdown (Addic7ed)",
                     "مدمج · API مفتوح المصدر · للمسلسلات والحلقات",
                     "Built-in · Open API · TV Series & Episodes",
-                    true, null, false, true, ""),
-            new ProviderInfo(SRC_STREMIO_ADDONS, "Stremio Subtitle Add-ons",
-                    "إضافات Stremio المثبّتة التي تدعم الترجمة",
-                    "Installed Stremio Add-ons with subtitle support",
-                    true, null, true, true, ""),
+                    true, null, false, true, "")
+    );
+
+    private static final List<ProviderInfo> CORE_API_PROVIDERS = List.of(
             new ProviderInfo(SRC_SUBSOURCE, "Subsource API",
                     "مصدر احترافي · يتطلب مفتاح API اختياري",
                     "Pro source · Optional API key",
@@ -98,6 +111,14 @@ public final class UnifiedSubtitleConfig {
                     false, ProviderKeys.OPEN_SUBTITLES, true, true, "https://www.opensubtitles.com/en/consumers")
     );
 
+    private static final List<ProviderInfo> PROVIDERS;
+    static {
+        List<ProviderInfo> base = new ArrayList<>(CORE_KEYLESS_PROVIDERS.size() + CORE_API_PROVIDERS.size());
+        base.addAll(CORE_KEYLESS_PROVIDERS);
+        base.addAll(CORE_API_PROVIDERS);
+        PROVIDERS = Collections.unmodifiableList(base);
+    }
+
     public static final List<String> SUPPORTED_LANGUAGES = List.of(
             "arabic", "english", "french", "spanish", "german",
             "turkish", "persian", "kurdish", "chinese", "japanese", "korean", "italian", "portuguese", "russian"
@@ -105,16 +126,183 @@ public final class UnifiedSubtitleConfig {
 
     private UnifiedSubtitleConfig() {}
 
+    public static boolean isStremioSubProviderId(String id) {
+        return id != null && id.startsWith(PREFIX_STREMIO_SUB) && id.length() > PREFIX_STREMIO_SUB.length();
+    }
+
+    public static String addonProviderId(String addonId, String manifestUrl, String name) {
+        String hay = ((addonId == null ? "" : addonId) + " "
+                + (manifestUrl == null ? "" : manifestUrl) + " "
+                + (name == null ? "" : name)).toLowerCase(Locale.ROOT);
+        if (hay.contains("opensubtitles-v3.strem.io") || "org.stremio.opensubtitlesv3".equals(addonId)) {
+            return SRC_OPENSUBTITLES_V3;
+        }
+        if (hay.contains("uss.ezerche.com") || hay.contains("turkcealtyazi")
+                || hay.contains("ultimate-smart-subs") || hay.contains("ultimate smart subs")
+                || hay.contains("smartsubs")) {
+            return PREFIX_STREMIO_SUB + "uss";
+        }
+        if (hay.contains("subsense")) {
+            return PREFIX_STREMIO_SUB + "subsense";
+        }
+        String rawKey = (addonId != null && !addonId.isBlank() && !addonId.startsWith("http")) ? addonId.trim() : "";
+        if (rawKey.isEmpty() && manifestUrl != null && !manifestUrl.isBlank()) {
+            try {
+                String h = android.net.Uri.parse(manifestUrl).getHost();
+                if (h != null) rawKey = h;
+            } catch (Exception ignored) {}
+        }
+        if (rawKey.isEmpty() && name != null) rawKey = name.trim();
+        String sanitized = rawKey.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9._-]+", "_").replaceAll("^_+|_+$", "");
+        if (sanitized.isEmpty()) sanitized = "addon";
+        return PREFIX_STREMIO_SUB + sanitized;
+    }
+
+    private static ProviderInfo buildAddonProviderInfo(String providerId, String name, String manifestUrl, String baseUrl) {
+        String cleanName = (name == null || name.isBlank()) ? "Stremio Subtitle Add-on" : name.trim();
+        String arDesc;
+        String enDesc;
+        if ((PREFIX_STREMIO_SUB + "uss").equals(providerId)) {
+            arDesc = "إضافة ترجمة ذكية (Stremio) · متعددة المصادر والعربية";
+            enDesc = "Stremio Smart Subtitle Add-on · Multi-source & Arabic";
+        } else if ((PREFIX_STREMIO_SUB + "subsense").equals(providerId)) {
+            arDesc = "إضافة ترجمة (Stremio) · أفلام ومسلسلات وأنمي";
+            enDesc = "Stremio Subtitle Add-on · Movies, Series & Anime";
+        } else {
+            arDesc = "إضافة ترجمة Stremio مفعّلة · بدون مفتاح";
+            enDesc = "Installed Stremio Subtitle Add-on · Active";
+        }
+        String resolvedBase = (baseUrl != null && !baseUrl.isBlank())
+                ? baseUrl
+                : (manifestUrl != null && !manifestUrl.isBlank() ? StremioAddons.baseUrlFromManifest(manifestUrl) : "");
+        return new ProviderInfo(providerId, cleanName, arDesc, enDesc,
+                true, null, true, true, "", true,
+                manifestUrl == null ? "" : manifestUrl, resolvedBase);
+    }
+
+    /** Discovers all active Stremio subtitle add-on providers (local + synced from TV). */
+    public static List<ProviderInfo> installedStremioSubtitleProviders(Context context) {
+        if (context == null) return Collections.emptyList();
+        Map<String, ProviderInfo> found = new LinkedHashMap<>();
+        Set<String> locallyDisabledIds = new LinkedHashSet<>();
+        try {
+            for (StremioAddons.Addon a : StremioAddons.list(context)) {
+                if (a == null || !StremioAddons.isDedicatedSubtitleAddon(a)) continue;
+                String pid = addonProviderId(a.id, a.manifestUrl, a.name);
+                if (SRC_OPENSUBTITLES_V3.equals(pid)) continue;
+                if (!a.enabled) {
+                    locallyDisabledIds.add(pid);
+                    continue;
+                }
+                found.put(pid, buildAddonProviderInfo(pid, a.name, a.manifestUrl, a.baseUrl));
+            }
+        } catch (Exception ignored) {}
+
+        // Merge synced TV dedicated subtitle add-on descriptors (so Phone displays USS, SubSense, etc. installed on TV)
+        try {
+            String rawSynced = sp(context).getString("synced_stremio_sub_addons", null);
+            if (rawSynced != null && !rawSynced.isBlank()) {
+                JSONArray arr = new JSONArray(rawSynced);
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject o = arr.optJSONObject(i);
+                    if (o == null || !o.optBoolean("addon_enabled", true)) continue;
+                    String mUrl = o.optString("manifest_url", "").trim();
+                    String bUrl = o.optString("base_url", "").trim();
+                    String aId = o.optString("addon_id", "").trim();
+                    String nm = o.optString("name", "").trim();
+                    int mask = o.optInt("resources_mask", -1);
+                    if (!StremioAddons.isDedicatedSubtitleDescriptor(aId, mUrl, nm, mask, true)) continue;
+                    String pid = o.optString("provider_id", "").trim();
+                    if (!isStremioSubProviderId(pid)) pid = addonProviderId(aId, mUrl, nm);
+                    if (SRC_OPENSUBTITLES_V3.equals(pid) || locallyDisabledIds.contains(pid)) continue;
+                    if (!found.containsKey(pid) && (!mUrl.isEmpty() || !bUrl.isEmpty())) {
+                        found.put(pid, buildAddonProviderInfo(pid, nm, mUrl, bUrl));
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return new ArrayList<>(found.values());
+    }
+
+    /** Updates cached TV dedicated subtitle add-on descriptors when Phone receives TV_ADDONS_LIST / ADDONS_SYNC. */
+    public static void syncFromTvAddonsJson(Context context, JSONArray tvAddons) {
+        if (context == null || tvAddons == null) return;
+        try {
+            JSONArray synced = new JSONArray();
+            for (int i = 0; i < tvAddons.length(); i++) {
+                JSONObject o = tvAddons.optJSONObject(i);
+                if (o == null || !o.optBoolean("enabled", true)) continue;
+                String mUrl = o.optString("manifestUrl", o.optString("manifest_url", "")).trim();
+                String id = o.optString("id", "").trim();
+                String name = o.optString("name", "").trim();
+                int mask = o.optInt("resources_mask", -1);
+                boolean providesSub = o.optBoolean("provides_subtitles", false);
+                if (!StremioAddons.isDedicatedSubtitleDescriptor(id, mUrl, name, mask, providesSub)) continue;
+                String pid = addonProviderId(id, mUrl, name);
+                if (SRC_OPENSUBTITLES_V3.equals(pid)) continue;
+                synced.put(new JSONObject()
+                        .put("provider_id", pid)
+                        .put("addon_id", id)
+                        .put("name", name)
+                        .put("manifest_url", mUrl)
+                        .put("base_url", o.optString("baseUrl", StremioAddons.baseUrlFromManifest(mUrl)))
+                        .put("resources_mask", mask)
+                        .put("addon_enabled", true));
+            }
+            sp(context).edit().putString("synced_stremio_sub_addons", synced.toString()).apply();
+        } catch (Exception ignored) {}
+    }
+
     public static List<ProviderInfo> allProviders() {
         return PROVIDERS;
     }
 
+    /** Returns the complete list of built-in keyless sources, installed Stremio subtitle add-ons (USS, SubSense, etc.), and optional API sources. */
+    public static List<ProviderInfo> allProviders(Context context) {
+        if (context == null) return PROVIDERS;
+        List<ProviderInfo> addons = installedStremioSubtitleProviders(context);
+        if (addons.isEmpty()) return PROVIDERS;
+        List<ProviderInfo> combined = new ArrayList<>(CORE_KEYLESS_PROVIDERS.size() + addons.size() + CORE_API_PROVIDERS.size());
+        combined.addAll(CORE_KEYLESS_PROVIDERS);
+        combined.addAll(addons);
+        combined.addAll(CORE_API_PROVIDERS);
+        return Collections.unmodifiableList(combined);
+    }
+
     public static ProviderInfo providerById(String id) {
-        if (id == null) return null;
+        return providerById(null, id);
+    }
+
+    public static ProviderInfo providerById(Context context, String id) {
+        if (id == null || id.isBlank()) return null;
         for (ProviderInfo p : PROVIDERS) {
             if (p.id.equals(id)) return p;
         }
+        if (context != null) {
+            for (ProviderInfo p : installedStremioSubtitleProviders(context)) {
+                if (p.id.equals(id)) return p;
+            }
+        }
+        if (isStremioSubProviderId(id)) {
+            String fallbackName = switch (id) {
+                case PREFIX_STREMIO_SUB + "uss" -> "Ultimate Smart Subs (USS)";
+                case PREFIX_STREMIO_SUB + "subsense" -> "SubSense";
+                case PREFIX_STREMIO_SUB + "persian_stremio" -> "Persian Stremio";
+                default -> id.substring(PREFIX_STREMIO_SUB.length());
+            };
+            return buildAddonProviderInfo(id, fallbackName, "", "");
+        }
         return null;
+    }
+
+    public static List<String> activeAddonSourceNames(Context context) {
+        if (context == null) return Collections.emptyList();
+        Set<String> active = runnableSources(context, selectedSearchSources(context));
+        List<String> names = new ArrayList<>();
+        for (ProviderInfo p : installedStremioSubtitleProviders(context)) {
+            if (active.contains(p.id)) names.add(p.name);
+        }
+        return names;
     }
 
     private static SharedPreferences sp(Context context) {
@@ -144,23 +332,51 @@ public final class UnifiedSubtitleConfig {
         return "";
     }
 
+    private static Set<String> readDisabledSources(SharedPreferences prefs) {
+        Set<String> disabled = new LinkedHashSet<>();
+        String raw = prefs.getString("disabled_sources", null);
+        if (raw != null) {
+            try {
+                JSONArray arr = new JSONArray(raw);
+                for (int i = 0; i < arr.length(); i++) {
+                    String id = arr.optString(i, "").trim();
+                    if (!id.isEmpty()) disabled.add(id);
+                }
+            } catch (Exception ignored) {}
+        }
+        return disabled;
+    }
+
     public static Set<String> enabledSources(Context context) {
         SharedPreferences prefs = sp(context);
         String raw = prefs.getString("enabled_sources", null);
+        Set<String> disabled = readDisabledSources(prefs);
+        List<ProviderInfo> all = allProviders(context);
         Set<String> out = new LinkedHashSet<>();
         if (raw == null) {
-            for (ProviderInfo p : PROVIDERS) {
-                if (p.keyless || hasKey(context, p)) out.add(p.id);
+            for (ProviderInfo p : all) {
+                if (!disabled.contains(p.id) && (p.keyless || hasKey(context, p))) out.add(p.id);
             }
             return out;
         }
+        Set<String> explicitSaved = new LinkedHashSet<>();
         try {
             JSONArray arr = new JSONArray(raw);
             for (int i = 0; i < arr.length(); i++) {
                 String id = arr.optString(i, "").trim();
-                if (providerById(id) != null) out.add(id);
+                if (!id.isEmpty()) explicitSaved.add(id);
             }
         } catch (Exception ignored) {}
+
+        for (ProviderInfo p : all) {
+            if (disabled.contains(p.id)) continue;
+            if (p.isStremioAddon) {
+                // Installed & enabled Stremio subtitle add-ons (e.g. USS, SubSense) are enabled by default unless explicitly disabled
+                out.add(p.id);
+            } else if (explicitSaved.contains(p.id)) {
+                out.add(p.id);
+            }
+        }
         if (out.isEmpty()) {
             out.add(SRC_OPENSUBTITLES_V3);
             out.add(SRC_OPENSUBTITLES_FREE);
@@ -173,24 +389,51 @@ public final class UnifiedSubtitleConfig {
     }
 
     public static void setSourceEnabled(Context context, String sourceId, boolean enabled) {
-        if (providerById(sourceId) == null) return;
+        if (providerById(context, sourceId) == null) return;
+        SharedPreferences prefs = sp(context);
+        Set<String> disabled = readDisabledSources(prefs);
         Set<String> current = new LinkedHashSet<>(enabledSources(context));
-        if (enabled) current.add(sourceId);
-        else current.remove(sourceId);
-        if (current.isEmpty()) current.add(SRC_OPENSUBTITLES_V3);
-        saveEnabledSources(context, current);
+        if (enabled) {
+            current.add(sourceId);
+            disabled.remove(sourceId);
+        } else {
+            current.remove(sourceId);
+            disabled.add(sourceId);
+        }
+        if (current.isEmpty()) {
+            current.add(SRC_OPENSUBTITLES_V3);
+            disabled.remove(SRC_OPENSUBTITLES_V3);
+        }
+        saveEnabledAndDisabledSources(context, current, disabled);
     }
 
     public static void saveEnabledSources(Context context, Set<String> sources) {
+        Set<String> safe = sources == null ? Collections.emptySet() : sources;
+        Set<String> disabled = readDisabledSources(sp(context));
+        for (ProviderInfo p : allProviders(context)) {
+            if (safe.contains(p.id)) disabled.remove(p.id);
+            else disabled.add(p.id);
+        }
+        saveEnabledAndDisabledSources(context, safe, disabled);
+    }
+
+    private static void saveEnabledAndDisabledSources(Context context, Set<String> sources, Set<String> disabled) {
         JSONArray arr = new JSONArray();
         if (sources != null) {
             for (String s : sources) {
-                if (providerById(s) != null) arr.put(s);
+                if (providerById(context, s) != null) arr.put(s);
             }
         }
         if (arr.length() == 0) arr.put(SRC_OPENSUBTITLES_V3);
+        JSONArray disArr = new JSONArray();
+        if (disabled != null) {
+            for (String d : disabled) {
+                if (d != null && !d.isBlank()) disArr.put(d);
+            }
+        }
         sp(context).edit()
                 .putString("enabled_sources", arr.toString())
+                .putString("disabled_sources", disArr.toString())
                 .putLong("updated_at", System.currentTimeMillis())
                 .apply();
     }
@@ -212,7 +455,13 @@ public final class UnifiedSubtitleConfig {
                 JSONArray arr = new JSONArray(raw);
                 for (int i = 0; i < arr.length(); i++) {
                     String id = arr.optString(i, "").trim();
-                    if (providerById(id) != null) selected.add(id);
+                    if (SRC_STREMIO_ADDONS.equals(id)) {
+                        for (ProviderInfo p : installedStremioSubtitleProviders(context)) {
+                            selected.add(p.id);
+                        }
+                    } else if (providerById(context, id) != null) {
+                        selected.add(id);
+                    }
                 }
             } catch (Exception ignored) {}
         }
@@ -233,7 +482,7 @@ public final class UnifiedSubtitleConfig {
         }
         JSONArray arr = new JSONArray();
         for (String s : sources) {
-            if (providerById(s) != null) arr.put(s);
+            if (providerById(context, s) != null) arr.put(s);
         }
         if (arr.length() == 0) {
             setSearchSelectionAll(context);
@@ -255,12 +504,13 @@ public final class UnifiedSubtitleConfig {
         }
         Set<String> sel = selectedSearchSources(context);
         if (sel.size() == 1) {
-            ProviderInfo p = providerById(sel.iterator().next());
-            return p != null ? p.name : sel.iterator().next();
+            String first = sel.iterator().next();
+            ProviderInfo p = providerById(context, first);
+            return p != null ? p.name : first;
         }
         List<String> names = new ArrayList<>();
         for (String id : sel) {
-            ProviderInfo p = providerById(id);
+            ProviderInfo p = providerById(context, id);
             if (p != null) names.add(p.name);
         }
         if (names.size() <= 2) return String.join(" + ", names);
@@ -271,8 +521,20 @@ public final class UnifiedSubtitleConfig {
 
     public static Set<String> runnableSources(Context context, Set<String> requested) {
         Set<String> out = new LinkedHashSet<>();
+        if (requested == null) return out;
+        List<ProviderInfo> availableAddons = installedStremioSubtitleProviders(context);
+        Set<String> activeAddonIds = new LinkedHashSet<>();
+        for (ProviderInfo ap : availableAddons) activeAddonIds.add(ap.id);
         for (String id : requested) {
-            ProviderInfo p = providerById(id);
+            if (SRC_STREMIO_ADDONS.equals(id)) {
+                out.addAll(activeAddonIds);
+                continue;
+            }
+            if (isStremioSubProviderId(id)) {
+                if (activeAddonIds.contains(id)) out.add(id);
+                continue;
+            }
+            ProviderInfo p = providerById(context, id);
             if (p != null && (p.keyless || hasKey(context, p))) {
                 out.add(id);
             }
@@ -462,8 +724,154 @@ public final class UnifiedSubtitleConfig {
         return sp(context).getInt("text_color", Color.WHITE);
     }
 
+    public static final int[] TEXT_COLORS = {
+            Color.WHITE,
+            0xffffd54f, // Yellow
+            0xffe5a93b, // Gold
+            0xff4dd0e1, // Cyan
+            0xff81c784, // Green
+            0xffff9800, // Orange
+            0xffff8a80, // Coral
+            0xff64b5f6, // Sky Blue
+            0xffcfd8dc  // Silver
+    };
+
+    public static final int[] OUTLINE_COLORS = {
+            Color.BLACK, // Black (Default)
+            0xff374151,  // Dark Gray
+            0xffe5a93b,  // Gold
+            Color.WHITE, // White
+            0xff1e3a8a   // Dark Blue
+    };
+
+    public static boolean isSameSubtitleColor(int actual, int swatch) {
+        if (actual == swatch) return true;
+        if (swatch == 0xffffd54f && actual == Color.YELLOW) return true;
+        if (swatch == 0xffe5a93b && (actual == 0xffe5b94c || actual == 0xffd4af37)) return true;
+        if (swatch == 0xff4dd0e1 && (actual == Color.CYAN || actual == 0xff00e5ff)) return true;
+        if (swatch == 0xff81c784 && actual == Color.GREEN) return true;
+        return false;
+    }
+
+    public static String textColorLabel(int color, boolean arabic) {
+        if (isSameSubtitleColor(color, 0xffffd54f)) return arabic ? "أصفر" : "Yellow";
+        if (isSameSubtitleColor(color, 0xffe5a93b)) return arabic ? "ذهبي" : "Gold";
+        if (isSameSubtitleColor(color, 0xff4dd0e1)) return arabic ? "سماوي" : "Cyan";
+        if (isSameSubtitleColor(color, 0xff81c784)) return arabic ? "أخضر" : "Green";
+        if (isSameSubtitleColor(color, 0xffff9800)) return arabic ? "برتقالي" : "Orange";
+        if (isSameSubtitleColor(color, 0xffff8a80)) return arabic ? "مرجاني" : "Coral";
+        if (isSameSubtitleColor(color, 0xff64b5f6)) return arabic ? "أزرق" : "Sky Blue";
+        if (isSameSubtitleColor(color, 0xffcfd8dc)) return arabic ? "فضي" : "Silver";
+        return arabic ? "أبيض" : "White";
+    }
+
     public static boolean opaqueBg(Context context) {
         return sp(context).getBoolean("opaque_bg", false);
+    }
+
+    public static int bgOpacity(Context context) {
+        return normalizeBgOpacity(sp(context).getInt("bg_opacity", 70));
+    }
+
+    /** Clamps background opacity to 0..100 in clean 10% increments (0, 10, 20, ..., 100). */
+    public static int normalizeBgOpacity(int percent) {
+        int clamped = Math.max(0, Math.min(100, percent));
+        return Math.max(0, Math.min(100, Math.round(clamped / 10f) * 10));
+    }
+
+    public static int stepBgOpacity(int currentPercent, int deltaPercent) {
+        return normalizeBgOpacity(normalizeBgOpacity(currentPercent) + deltaPercent);
+    }
+
+    public static int nextBgOpacity(int currentPercent) {
+        int next = normalizeBgOpacity(currentPercent) + 10;
+        return next > 100 ? 0 : next;
+    }
+
+    public static int bgColorWithOpacity(boolean enabled, int opacityPercent) {
+        if (!enabled) return Color.TRANSPARENT;
+        int clamped = normalizeBgOpacity(opacityPercent);
+        if (clamped <= 0) return Color.TRANSPARENT;
+        int alpha = Math.round(255f * clamped / 100f);
+        return Color.argb(alpha, 0, 0, 0);
+    }
+
+    public static int outlineLevel(Context context) {
+        return Math.max(0, Math.min(3, sp(context).getInt("outline_level", 0)));
+    }
+
+    public static int nextOutlineLevel(int currentLevel) {
+        return (Math.max(0, Math.min(3, currentLevel)) + 1) % 4;
+    }
+
+    public static float outlineStrokeDp(int level) {
+        return switch (Math.max(0, Math.min(3, level))) {
+            case 1 -> 2.0f;
+            case 2 -> 3.6f;
+            case 3 -> 5.4f;
+            default -> 0f;
+        };
+    }
+
+    public static String outlineLevelLabel(int level, boolean arabic) {
+        return switch (Math.max(0, Math.min(3, level))) {
+            case 1 -> arabic ? "رفيع" : "Thin";
+            case 2 -> arabic ? "متوسط" : "Medium";
+            case 3 -> arabic ? "سميك" : "Thick";
+            default -> arabic ? "بدون إطار" : "None";
+        };
+    }
+
+    public static int outlineColor(Context context) {
+        return normalizeOutlineColor(sp(context).getInt("outline_color", Color.BLACK));
+    }
+
+    public static int normalizeOutlineColor(int color) {
+        for (int c : OUTLINE_COLORS) {
+            if (isSameOutlineColor(color, c)) return c;
+        }
+        return (color | 0xff000000);
+    }
+
+    public static boolean isSameOutlineColor(int actual, int swatch) {
+        int a = actual | 0xff000000;
+        int s = swatch | 0xff000000;
+        if (a == s) return true;
+        if (s == 0xffe5a93b && (a == 0xffe5b94c || a == 0xffd4af37)) return true;
+        return false;
+    }
+
+    public static int nextOutlineColor(int currentColor) {
+        for (int i = 0; i < OUTLINE_COLORS.length; i++) {
+            if (isSameOutlineColor(currentColor, OUTLINE_COLORS[i])) {
+                return OUTLINE_COLORS[(i + 1) % OUTLINE_COLORS.length];
+            }
+        }
+        return OUTLINE_COLORS[0];
+    }
+
+    public static String outlineColorLabel(int color, boolean arabic) {
+        if (isSameOutlineColor(color, 0xff374151)) return arabic ? "رمادي داكن" : "Dark Gray";
+        if (isSameOutlineColor(color, 0xffe5a93b)) return arabic ? "ذهبي" : "Gold";
+        if (isSameOutlineColor(color, Color.WHITE)) return arabic ? "أبيض" : "White";
+        if (isSameOutlineColor(color, 0xff1e3a8a)) return arabic ? "أزرق داكن" : "Dark Blue";
+        return arabic ? "أسود" : "Black";
+    }
+
+    public static String appearanceSummary(Context context, boolean arabic) {
+        int sz = textSize(context);
+        String col = textColorLabel(textColor(context), arabic);
+        boolean bg = opaqueBg(context);
+        int bgOp = bgOpacity(context);
+        int outLvl = outlineLevel(context);
+        String outDesc = outLvl > 0
+                ? (outlineLevelLabel(outLvl, arabic) + " · " + outlineColorLabel(outlineColor(context), arabic))
+                : outlineLevelLabel(0, arabic);
+        String bgDesc = bg ? ((arabic ? "داكنة " : "Dark ") + bgOp + "%") : (arabic ? "شفافة" : "Transparent");
+        return (arabic ? "اللون: " : "Color: ") + col
+                + " · " + (arabic ? "الحجم: " : "Size: ") + sz
+                + " · " + (arabic ? "الخلفية: " : "BG: ") + bgDesc
+                + " · " + (arabic ? "الإطار: " : "Outline: ") + outDesc;
     }
 
     public static long defaultDelayMs(Context context) {
@@ -471,11 +879,24 @@ public final class UnifiedSubtitleConfig {
     }
 
     public static void saveAppearance(Context context, int size, int vpos, int color, boolean opaqueBg, long delayMs) {
+        saveAppearance(context, size, vpos, color, opaqueBg, bgOpacity(context), outlineLevel(context), outlineColor(context), delayMs);
+    }
+
+    public static void saveAppearance(Context context, int size, int vpos, int color, boolean opaqueBg,
+                                      int bgOpacityPercent, int outlineLevel, long delayMs) {
+        saveAppearance(context, size, vpos, color, opaqueBg, bgOpacityPercent, outlineLevel, outlineColor(context), delayMs);
+    }
+
+    public static void saveAppearance(Context context, int size, int vpos, int color, boolean opaqueBg,
+                                      int bgOpacityPercent, int outlineLevel, int outlineColor, long delayMs) {
         sp(context).edit()
                 .putInt("text_size", Math.max(18, Math.min(80, size)))
                 .putInt("vpos", Math.max(16, Math.min(200, vpos)))
                 .putInt("text_color", color)
                 .putBoolean("opaque_bg", opaqueBg)
+                .putInt("bg_opacity", normalizeBgOpacity(bgOpacityPercent))
+                .putInt("outline_level", Math.max(0, Math.min(3, outlineLevel)))
+                .putInt("outline_color", normalizeOutlineColor(outlineColor))
                 .putLong("default_delay_ms", Math.max(-30000L, Math.min(30000L, delayMs)))
                 .putLong("updated_at", System.currentTimeMillis())
                 .apply();
@@ -489,9 +910,23 @@ public final class UnifiedSubtitleConfig {
     public static JSONObject exportSyncJson(Context context) {
         JSONObject obj = new JSONObject();
         try {
+            JSONArray subAddons = new JSONArray();
+            for (ProviderInfo p : installedStremioSubtitleProviders(context)) {
+                subAddons.put(new JSONObject()
+                        .put("provider_id", p.id)
+                        .put("addon_id", p.id.substring(PREFIX_STREMIO_SUB.length()))
+                        .put("name", p.name)
+                        .put("manifest_url", p.addonManifestUrl)
+                        .put("base_url", p.addonBaseUrl)
+                        .put("addon_enabled", true));
+            }
+            obj.put("stremio_subtitle_addons", subAddons);
             JSONArray enArr = new JSONArray();
             for (String s : enabledSources(context)) enArr.put(s);
             obj.put("enabled_sources", enArr);
+            JSONArray disArr = new JSONArray();
+            for (String d : readDisabledSources(sp(context))) disArr.put(d);
+            obj.put("disabled_sources", disArr);
             obj.put("search_mode", searchSelectionMode(context));
             JSONArray selArr = new JSONArray();
             for (String s : selectedSearchSources(context)) selArr.put(s);
@@ -509,6 +944,9 @@ public final class UnifiedSubtitleConfig {
             obj.put("vpos", vpos(context));
             obj.put("text_color", textColor(context));
             obj.put("opaque_bg", opaqueBg(context));
+            obj.put("bg_opacity", bgOpacity(context));
+            obj.put("outline_level", outlineLevel(context));
+            obj.put("outline_color", outlineColor(context));
             obj.put("default_delay_ms", defaultDelayMs(context));
             obj.put("updated_at", updatedAt(context));
         } catch (Exception ignored) {}
@@ -521,18 +959,44 @@ public final class UnifiedSubtitleConfig {
      */
     public static boolean importSyncJson(Context context, JSONObject obj, boolean force) {
         if (context == null || obj == null) return false;
+        // Always refresh remote dedicated Stremio subtitle add-on descriptors when provided
+        JSONArray incomingSubAddons = obj.optJSONArray("stremio_subtitle_addons");
+        if (incomingSubAddons != null) {
+            JSONArray filtered = new JSONArray();
+            for (int i = 0; i < incomingSubAddons.length(); i++) {
+                JSONObject o = incomingSubAddons.optJSONObject(i);
+                if (o == null || !o.optBoolean("addon_enabled", true)) continue;
+                String aId = o.optString("addon_id", "").trim();
+                String mUrl = o.optString("manifest_url", "").trim();
+                String nm = o.optString("name", "").trim();
+                int mask = o.optInt("resources_mask", -1);
+                if (StremioAddons.isDedicatedSubtitleDescriptor(aId, mUrl, nm, mask, true)) {
+                    filtered.put(o);
+                }
+            }
+            sp(context).edit().putString("synced_stremio_sub_addons", filtered.toString()).commit();
+        }
         long remoteTs = obj.optLong("updated_at", 0L);
         long localTs = updatedAt(context);
         if (!force && localTs > 0L && remoteTs > 0L && remoteTs < localTs) {
-            return false;
+            return incomingSubAddons != null && incomingSubAddons.length() > 0;
         }
         SharedPreferences.Editor ed = sp(context).edit();
+        JSONArray disArr = obj.optJSONArray("disabled_sources");
+        if (disArr != null) {
+            JSONArray cleanDis = new JSONArray();
+            for (int i = 0; i < disArr.length(); i++) {
+                String id = disArr.optString(i, "").trim();
+                if (!id.isEmpty()) cleanDis.put(id);
+            }
+            ed.putString("disabled_sources", cleanDis.toString());
+        }
         JSONArray enArr = obj.optJSONArray("enabled_sources");
         if (enArr != null && enArr.length() > 0) {
             JSONArray clean = new JSONArray();
             for (int i = 0; i < enArr.length(); i++) {
                 String id = enArr.optString(i, "").trim();
-                if (providerById(id) != null) clean.put(id);
+                if (providerById(context, id) != null) clean.put(id);
             }
             if (clean.length() > 0) ed.putString("enabled_sources", clean.toString());
         }
@@ -545,7 +1009,7 @@ public final class UnifiedSubtitleConfig {
             JSONArray clean = new JSONArray();
             for (int i = 0; i < selArr.length(); i++) {
                 String id = selArr.optString(i, "").trim();
-                if (providerById(id) != null) clean.put(id);
+                if (providerById(context, id) != null) clean.put(id);
             }
             ed.putString("selected_search_sources", clean.toString());
         }
@@ -573,6 +1037,9 @@ public final class UnifiedSubtitleConfig {
         if (obj.has("vpos")) ed.putInt("vpos", Math.max(16, Math.min(200, obj.optInt("vpos", 64))));
         if (obj.has("text_color")) ed.putInt("text_color", obj.optInt("text_color", Color.WHITE));
         if (obj.has("opaque_bg")) ed.putBoolean("opaque_bg", obj.optBoolean("opaque_bg", false));
+        if (obj.has("bg_opacity")) ed.putInt("bg_opacity", normalizeBgOpacity(obj.optInt("bg_opacity", 70)));
+        if (obj.has("outline_level")) ed.putInt("outline_level", Math.max(0, Math.min(3, obj.optInt("outline_level", 0))));
+        if (obj.has("outline_color")) ed.putInt("outline_color", normalizeOutlineColor(obj.optInt("outline_color", Color.BLACK)));
         if (obj.has("default_delay_ms")) ed.putLong("default_delay_ms", Math.max(-30000L, Math.min(30000L, obj.optLong("default_delay_ms", 0L))));
         ed.putLong("updated_at", remoteTs > 0L ? remoteTs : System.currentTimeMillis());
         ed.commit();
@@ -733,8 +1200,9 @@ public final class UnifiedSubtitleConfig {
                 || t.equals("mis") || t.equals("mul") || t.equals("none") || t.equals("off")) {
             return "";
         }
-        String base = t.contains("-") ? t.substring(0, t.indexOf('-')) : t;
-        if (t.contains("عرب") || base.equals("ar") || base.equals("ara") || base.equals("arb") || base.equals("arabic")) return "arabic";
+        String rawToken = t.split("[\\s(\\[/|]+")[0];
+        String base = rawToken.contains("-") ? rawToken.substring(0, rawToken.indexOf('-')) : rawToken;
+        if (t.contains("عرب") || t.contains("arabic") || base.equals("ar") || base.equals("ara") || base.equals("arb") || base.equals("arabic")) return "arabic";
         if (base.equals("en") || base.equals("eng") || base.equals("english")) return "english";
         if (base.equals("fr") || base.equals("fre") || base.equals("fra") || base.equals("french") || base.equals("français")) return "french";
         if (base.equals("es") || base.equals("spa") || base.equals("spanish") || base.equals("español")) return "spanish";

@@ -74,7 +74,7 @@
     <string name="cinema_mark_as_watched_cinemaseriesactivity">Mark as Watched</string>
     <string name="cinema_medium">Medium</string>
     <string name="cinema_more">More</string>
-    <string name="cinema_more_details_and_advanced_actions">More details and advanced actions</string>
+    <string name="cinema_more_details_and_advanced_actions">Technical Details &amp; More</string>
     <string name="cinema_move_down">Move down</string>
     <string name="cinema_move_up">Move up</string>
     <string name="cinema_movie_files_scan_started">Movie files scan started</string>
@@ -98,7 +98,7 @@
     <string name="cinema_official_trailer_unavailable">Official trailer unavailable</string>
     <string name="cinema_oldest_first">Oldest first</string>
     <string name="cinema_only_the_app_library_source_will_be_removed_video_files_and_the_network_folder_will_be_preserved">Only the app library source will be removed. Video files and the network folder will be preserved.</string>
-    <string name="cinema_open_details">Open details</string>
+    <string name="cinema_open_details">Open Media Page</string>
     <string name="cinema_open_library">Open Library</string>
     <string name="cinema_other_videos">Other videos</string>
     <string name="cinema_phone_remote">Phone remote</string>
@@ -110,7 +110,7 @@
     <string name="cinema_recently_added">Recently Added</string>
     <string name="cinema_recently_added_movies">Recently Added Movies</string>
     <string name="cinema_recently_added_tv_shows">Recently Added TV Shows</string>
-    <string name="cinema_refresh_poster_choose_another_poster">Refresh poster / Choose another poster</string>
+    <string name="cinema_refresh_poster_choose_another_poster">Change Poster</string>
     <string name="cinema_refresh_posters">Refresh Posters</string>
     <string name="cinema_refresh_rate_and_resolution">Refresh rate and resolution</string>
     <string name="cinema_refresh_rate_only">Refresh rate only</string>

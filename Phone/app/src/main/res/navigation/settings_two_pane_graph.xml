@@ -2,32 +2,72 @@
 <navigation xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/settings_two_pane_nav"
-    app:startDestination="@id/appearanceSettingsFragment">
+    app:startDestination="@id/torrentEngineSettingsFragment">
 
     <action
+        android:id="@+id/action_torrent_engine_settings"
+        app:destination="@id/torrentEngineSettingsFragment" />
+    <action
         android:id="@+id/action_appearance_settings"
-        app:destination="@id/appearanceSettingsFragment" />
+        app:destination="@id/appearanceSettingsFragment"
+        app:enterAnim="?attr/navEnterAnim"
+        app:exitAnim="?attr/navExitAnim"
+        app:popEnterAnim="?attr/navPopEnterAnim"
+        app:popExitAnim="?attr/navPopExitAnim" />
     <action
         android:id="@+id/action_behavior_settings"
-        app:destination="@id/behaviorSettingsFragment" />
+        app:destination="@id/behaviorSettingsFragment"
+        app:enterAnim="?attr/navEnterAnim"
+        app:exitAnim="?attr/navExitAnim"
+        app:popEnterAnim="?attr/navPopEnterAnim"
+        app:popExitAnim="?attr/navPopExitAnim" />
     <action
         android:id="@+id/action_network_settings"
-        app:destination="@id/networkSettingsFragment" />
+        app:destination="@id/networkSettingsFragment"
+        app:enterAnim="?attr/navEnterAnim"
+        app:exitAnim="?attr/navExitAnim"
+        app:popEnterAnim="?attr/navPopEnterAnim"
+        app:popExitAnim="?attr/navPopExitAnim" />
     <action
         android:id="@+id/action_storage_settings"
-        app:destination="@id/storageSettingsFragment" />
+        app:destination="@id/storageSettingsFragment"
+        app:enterAnim="?attr/navEnterAnim"
+        app:exitAnim="?attr/navExitAnim"
+        app:popEnterAnim="?attr/navPopEnterAnim"
+        app:popExitAnim="?attr/navPopExitAnim" />
     <action
         android:id="@+id/action_limitation_settings"
-        app:destination="@id/limitationsSettingsFragment" />
+        app:destination="@id/limitationsSettingsFragment"
+        app:enterAnim="?attr/navEnterAnim"
+        app:exitAnim="?attr/navExitAnim"
+        app:popEnterAnim="?attr/navPopEnterAnim"
+        app:popExitAnim="?attr/navPopExitAnim" />
     <action
         android:id="@+id/action_scheduling_settings"
-        app:destination="@id/schedulingSettingsFragment" />
+        app:destination="@id/schedulingSettingsFragment"
+        app:enterAnim="?attr/navEnterAnim"
+        app:exitAnim="?attr/navExitAnim"
+        app:popEnterAnim="?attr/navPopEnterAnim"
+        app:popExitAnim="?attr/navPopExitAnim" />
     <action
         android:id="@+id/action_feed_settings"
-        app:destination="@id/feedSettingsFragment" />
+        app:destination="@id/feedSettingsFragment"
+        app:enterAnim="?attr/navEnterAnim"
+        app:exitAnim="?attr/navExitAnim"
+        app:popEnterAnim="?attr/navPopEnterAnim"
+        app:popExitAnim="?attr/navPopExitAnim" />
     <action
         android:id="@+id/action_streaming_settings"
-        app:destination="@id/streamingSettingsFragment" />
+        app:destination="@id/streamingSettingsFragment"
+        app:enterAnim="?attr/navEnterAnim"
+        app:exitAnim="?attr/navExitAnim"
+        app:popEnterAnim="?attr/navPopEnterAnim"
+        app:popExitAnim="?attr/navPopExitAnim" />
+
+    <fragment
+        android:id="@+id/torrentEngineSettingsFragment"
+        android:name="org.proninyaroslav.libretorrent.ui.settings.TorrentEngineSettingsFragment"
+        android:label="TorrentEngineSettingsFragment" />
 
     <fragment
         android:id="@+id/appearanceSettingsFragment"

@@ -20,7 +20,7 @@ public enum CinemaPlaybackOption {
         this.icon = icon;
     }
 
-    public boolean available() { return this != FAMILY_WATCH; }
+    public boolean available() { return true; }
 
     public boolean enabled(Context context) {
         if (!available()) return false;
@@ -34,6 +34,8 @@ public enum CinemaPlaybackOption {
 
     public String state(Context context) {
         if (!available()) return CinemaUi.label(context, "قريباً", "Coming Soon");
-        return context.getString(enabled(context) ? R.string.cinema_playback_option_on : R.string.cinema_off);
+        return enabled(context)
+                ? "✓ " + context.getString(R.string.cinema_playback_option_on)
+                : context.getString(R.string.cinema_off);
     }
 }

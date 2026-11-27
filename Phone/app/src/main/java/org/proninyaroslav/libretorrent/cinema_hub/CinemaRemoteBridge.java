@@ -169,6 +169,26 @@ public final class CinemaRemoteBridge {
     public static Bitmap getCastArt() { return castArt; }
     public static int getVolumePercent() { return volumeMuted ? 0 : volumePercent; }
 
+    static android.net.Network pairingWifi(Context context, java.net.InetAddress target) {
+        var manager = context.getSystemService(android.net.ConnectivityManager.class);
+        if (manager == null) return null;
+        android.net.Network fallback = null;
+        for (var network : manager.getAllNetworks()) {
+            var capabilities = manager.getNetworkCapabilities(network);
+            if (capabilities == null || !capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                    || capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) continue;
+            if (fallback == null || network.equals(manager.getActiveNetwork())) fallback = network;
+            var properties = manager.getLinkProperties(network);
+            if (properties == null) continue;
+            for (var address : properties.getLinkAddresses()) {
+                if (address.getAddress() instanceof java.net.Inet4Address
+                        && new android.net.IpPrefix(address.getAddress(), address.getPrefixLength()).contains(target))
+                    return network;
+            }
+        }
+        return fallback;
+    }
+
     public static WebSocketClient getConnectedSocket() {
         if (hubConnected && hubSocket != null && hubSocket.isOpen()) return hubSocket;
         if (bgConnected && bgSocket != null && bgSocket.isOpen()) return bgSocket;
@@ -384,10 +404,21 @@ public final class CinemaRemoteBridge {
                                     msg.optBoolean("adb_enabled", false),
                                     msg.optBoolean("web_remote_active", true));
                             send(new JSONObject().put("type", "PLAYBACK").put("ms", 0).toString());
+                            LocalCinemaBackupManager.onTvHandshakeConnected(
+                                    appContext,
+                                    this,
+                                    msg.optLong("tv_settings_updated_at", 0L),
+                                    msg.optString("tv_settings_hash", ""));
                         } else if ("REMOTE_STATUS".equals(t)) {
                             updateRemoteCapabilities(
                                     msg.optBoolean("adb_enabled", false),
                                     msg.optBoolean("web_remote_active", true));
+                        } else if ("TV_SETTINGS_CHANGED".equals(t)) {
+                            LocalCinemaBackupManager.onTvSettingsChangedNotification(
+                                    appContext,
+                                    this,
+                                    msg.optLong("tv_settings_updated_at", 0L),
+                                    msg.optString("tv_settings_hash", ""));
                         } else if ("PLAYBACK".equals(t)) {
                             cancelBgCallbacks();
                             int vol = msg.optInt("volume", -1);
@@ -428,9 +459,11 @@ public final class CinemaRemoteBridge {
                                 appContext.startActivity(i);
                             });
                         } else if ("TV_BACKUP_DATA".equals(t)) {
-                            LocalCinemaBackupManager.cacheTvBackup(appContext, msg);
+                            if (!LocalCinemaBackupManager.handleRequestedTvBackup(this, msg)) {
+                                LocalCinemaBackupManager.onLiveTvBackupReceived(appContext, msg, true);
+                            }
                         } else if ("TV_BACKUP_RESTORED".equals(t) && msg.optBoolean("ok", false)) {
-                            LocalCinemaBackupManager.clearPendingTvRestore(appContext);
+                            LocalCinemaBackupManager.onTvRestoreConfirmed(appContext, msg);
                         }
                     } catch (Exception ignored) {}
                     });
@@ -442,6 +475,8 @@ public final class CinemaRemoteBridge {
                     MAIN.post(() -> onBgConnectionFailed(appContext, this, attempt));
                 }
             };
+            var wifi = pairingWifi(context, java.net.InetAddress.getByName(host));
+            if (wifi != null) client.setSocketFactory(wifi.getSocketFactory());
             bgSocket = client;
             bgReconnecting = true;
             FloatingTvDpadController.onRemoteConnectionChanged();

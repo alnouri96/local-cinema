@@ -28,8 +28,9 @@ public final class CinemaArtwork {
     private static final Map<String,Uri> QUICK_POSTERS=new java.util.concurrent.ConcurrentHashMap<>();
     private static final Map<String,Uri> DUAL_POSTERS=new java.util.concurrent.ConcurrentHashMap<>();
     private static final Map<String,Art> QUICK_HERO=new java.util.concurrent.ConcurrentHashMap<>();
+    private static final Map<String,Boolean> VALID_FILE_CACHE=new java.util.concurrent.ConcurrentHashMap<>();
     private static final android.util.LruCache<String,android.graphics.Bitmap> POSTER_BITMAPS=
-            new android.util.LruCache<String,android.graphics.Bitmap>(16*1024*1024){
+            new android.util.LruCache<String,android.graphics.Bitmap>(28*1024*1024){
                 @Override protected int sizeOf(String key,android.graphics.Bitmap value){
                     return value.getAllocationByteCount();
                 }
@@ -100,7 +101,13 @@ public final class CinemaArtwork {
         if(uri==null)return false;
         if("file".equals(uri.getScheme())){
             String p=uri.getPath();
-            return p!=null&&new File(p).isFile();
+            if(p==null||p.isEmpty())return false;
+            Boolean known=VALID_FILE_CACHE.get(p);
+            if(known!=null)return known;
+            boolean exists=new File(p).isFile();
+            if(VALID_FILE_CACHE.size()>4096)VALID_FILE_CACHE.clear();
+            VALID_FILE_CACHE.put(p,exists);
+            return exists;
         }
         return true;
     }
@@ -199,6 +206,9 @@ public final class CinemaArtwork {
     public static synchronized void putCachedPoster(Context c,String key,Uri uri){
         if(key==null||uri==null)return;
         ensureQuickLoaded(c);
+        if("file".equals(uri.getScheme())&&uri.getPath()!=null){
+            VALID_FILE_CACHE.put(uri.getPath(),Boolean.TRUE);
+        }
         Uri prev=QUICK_POSTERS.put(key,uri);
         if(!uri.equals(prev)&&c!=null){
             c.getApplicationContext().getSharedPreferences("cinema_quick_cache_v2",Context.MODE_PRIVATE)
@@ -209,6 +219,9 @@ public final class CinemaArtwork {
 
     static synchronized void removeCachedPoster(Context context, String key, Uri expected) {
         ensureQuickLoaded(context);
+        if (expected != null && "file".equals(expected.getScheme()) && expected.getPath() != null) {
+            VALID_FILE_CACHE.remove(expected.getPath());
+        }
         if (QUICK_POSTERS.remove(key, expected)) {
             context.getSharedPreferences("cinema_quick_cache_v2", Context.MODE_PRIVATE)
                     .edit().remove("p:" + key).apply();
@@ -224,6 +237,7 @@ public final class CinemaArtwork {
         QUICK_POSTERS.clear();
         DUAL_POSTERS.clear();
         QUICK_HERO.clear();
+        VALID_FILE_CACHE.clear();
         POSTER_BITMAPS.evictAll();
         if (context != null) {
             Context app = context.getApplicationContext();

@@ -23,11 +23,8 @@ import com.archos.mediacenter.video.browser.adapters.object.Episode;
 import com.archos.mediacenter.video.browser.adapters.object.Video;
 import com.archos.mediacenter.video.browser.adapters.object.Movie;
 import com.archos.mediacenter.video.leanback.LeanbackActivity;
-import com.archos.mediacenter.video.leanback.details.VideoDetailsActivity;
 import com.archos.mediacenter.video.leanback.details.VideoDetailsFragment;
-import com.archos.mediacenter.video.player.PlayerActivity;
 import com.archos.mediacenter.video.utils.DbUtils;
-import com.archos.mediacenter.video.utils.PlayUtils;
 import com.archos.mediascraper.BaseTags;
 import com.archos.mediascraper.ScraperImage;
 import com.archos.mediascraper.ScraperTrailer;
@@ -194,7 +191,7 @@ public class CinemaDetailsActivity extends LeanbackActivity {
         long dur = effectiveDuration();
         long res = effectiveResume();
         int pct;
-        if (watched || res == PlayerActivity.LAST_POSITION_END) {
+        if (watched || CinemaPlaybackRouter.isCompletedBookmark(res)) {
             pct = 100;
         } else if (dur > 0 && res > 0) {
             pct = (int) Math.min(99, Math.max(1, res * 100L / dur));
@@ -244,34 +241,27 @@ public class CinemaDetailsActivity extends LeanbackActivity {
         reloadVideoFromDb();
     }
     private void moreMenu(View anchor){
-        java.util.List<CinemaActionMenu.Action> actions=new java.util.ArrayList<>();
-        actions.add(new CinemaActionMenu.Action(l("مصادر الإضافات (Nuvio / Stremio)", "Addon Streams (Nuvio / Stremio)"),
-                () -> CinemaAddonPicker.show(this, io, handler, video, publicMetadata, 0, 0)));
-        if(effectiveResume()>0){
-            actions.add(new CinemaActionMenu.Action(getString(com.archos.mediacenter.video.R.string.cinema_remove_from_continue_watching),()->{
-                io.execute(()->{
-                    try{
-                        DbUtils.markAsNotRead(getApplicationContext(),video);
-                        CinemaLinkServer.broadcastWatchSync(CinemaWatchStore.buildSyncRecordForVideo(
-                                getApplicationContext(),video,0L,false,true));
-                        CinemaWatchStore.removePlaybackProgressFromTraktAsync(
-                                getApplicationContext(), video.getId(), video.getFilePath(), video.getName(),
-                                publicMetadata != null ? publicMetadata.imdb() : null,
-                                video instanceof Movie m ? m.getOnlineId() : 0L, 0, 0);
-                        CinemaWatchStore.pushVideoWatchedToTraktAsync(getApplicationContext(),video,false);
-                        CinemaWatchStore.syncWithTraktAsync(getApplicationContext());
-                        handler.post(()->{if(!isDestroyed()){watched=false;applyPlayIcon();updateLabels();Toast.makeText(this,getString(com.archos.mediacenter.video.R.string.cinema_removed_from_continue_watching),Toast.LENGTH_SHORT).show();}});
-                    }catch(Exception ignored){}
-                });
-            }));
-        }
-        actions.add(new CinemaActionMenu.Action(getString(com.archos.mediacenter.video.R.string.cinema_more_details_and_advanced_actions),()->{
-            Intent intent=new Intent(this,VideoDetailsActivity.class);
-            intent.putExtra(VideoDetailsFragment.EXTRA_VIDEO,video);
-            intent.putExtra(VideoDetailsFragment.EXTRA_FORCE_VIDEO_SELECTION,true);
-            startActivity(intent);
-        }));
-        CinemaActionMenu.show(anchor,actions.toArray(new CinemaActionMenu.Action[0]));
+        CinemaMediaMoreDialog.with(this)
+                .video(video)
+                .metadata(trackMetadata)
+                .publicMetadata(publicMetadata)
+                .displayTitle(formatHeaderTitle(video))
+                .onPlayResume(() -> play(false))
+                .onPlayFromBeginning(() -> play(true))
+                .onOpenAudioTracks(this::audioTracks)
+                .onOpenSubtitles(() -> subtitleMenu(anchor))
+                .onOpenAddonStreams(() -> CinemaAddonPicker.show(this, io, handler, video, publicMetadata,
+                        video instanceof Episode ep ? ep.getSeasonNumber() : 0,
+                        video instanceof Episode ep ? ep.getEpisodeNumber() : 0))
+                .onStateChanged(() -> {
+                    if (isDestroyed()) return;
+                    watched = video.isWatched() || CinemaPlaybackRouter.isCompletedBookmark(effectiveResume());
+                    applyPlayIcon();
+                    updateLabels();
+                    refreshInfo();
+                    reloadVideoFromDb();
+                })
+                .show();
     }
 
     private void subtitleMenu(View anchor){
@@ -298,14 +288,34 @@ public class CinemaDetailsActivity extends LeanbackActivity {
                             Toast.makeText(this, getString(com.archos.mediacenter.video.R.string.cinema_subtitle_choice_saved_for_playback), Toast.LENGTH_SHORT).show();
                         },
                         () -> {
-                            int yr = video instanceof Movie m ? m.getYear() : -1;
+                            int yr = detailsArt != null && detailsArt.year() > 0 ? detailsArt.year()
+                                    : (video instanceof Movie m ? m.getYear() : -1);
+                            try {
+                                if (publicMetadata != null && !publicMetadata.year().isBlank()) {
+                                    yr = Integer.parseInt(publicMetadata.year().replaceAll("[^0-9]", ""));
+                                }
+                            } catch (Exception ignored) {}
                             String knownImdbId = publicMetadata != null && publicMetadata.imdb() != null && !publicMetadata.imdb().isBlank()
                                     ? publicMetadata.imdb()
-                                    : (detailsArt != null ? detailsArt.imdbId() : null);
-                            CinemaAutoSubtitleFetcher.fetchNow(this, video.getFileUri(), video.getName(),
-                                    null, knownImdbId, yr, false, -1, -1,
+                                    : (detailsArt != null && detailsArt.imdbId() != null && !detailsArt.imdbId().isBlank()
+                                            ? detailsArt.imdbId() : showImdb);
+                            String posterTitle = publicMetadata != null && !publicMetadata.title().isBlank()
+                                    ? publicMetadata.title()
+                                    : (detailsArt != null && detailsArt.title() != null && !detailsArt.title().isBlank()
+                                            ? detailsArt.title() : showTitle);
+                            long tmdbId = video instanceof Movie m ? m.getOnlineId() : 0L;
+                            final int fYr = yr;
+                            SubtitleSources.MediaSearchSeed seed = SubtitleSources.resolveSeed(
+                                    this, video, posterTitle, null, knownImdbId, tmdbId, fYr);
+                            CinemaAutoSubtitleFetcher.fetchNow(this, video.getFileUri(),
+                                    seed.primaryPosterTitle(), seed.englishTitleHint(), seed.alternateDbTitle(),
+                                    seed.imdbId(), seed.tmdbId(), seed.year(),
+                                    seed.isSeries(), seed.season(), seed.episode(),
+                                    video.getFileNameWithExtension(), video.getSize(), null, null,
+                                    seed.hasIndexedRecord(),
                                     savedUri -> CinemaTrackChoices.embedded(this, video.getFileUri(), -3),
-                                    () -> SubtitleSources.search(this, video));
+                                    () -> SubtitleSources.search(this, video, posterTitle, seed.englishTitleHint(),
+                                            seed.imdbId(), seed.tmdbId(), seed.year()));
                         },
                         () -> {
                             CinemaSubtitleHubDialog.saveCentralMode(this,
@@ -327,7 +337,25 @@ public class CinemaDetailsActivity extends LeanbackActivity {
                 });
             }
         }
-        hub.onSearchOnline(() -> SubtitleSources.search(this, video))
+        hub.onSearchOnline(() -> {
+            int yr = detailsArt != null && detailsArt.year() > 0 ? detailsArt.year()
+                    : (video instanceof Movie m ? m.getYear() : -1);
+            try {
+                if (publicMetadata != null && !publicMetadata.year().isBlank()) {
+                    yr = Integer.parseInt(publicMetadata.year().replaceAll("[^0-9]", ""));
+                }
+            } catch (Exception ignored) {}
+            String knownImdbId = publicMetadata != null && publicMetadata.imdb() != null && !publicMetadata.imdb().isBlank()
+                    ? publicMetadata.imdb()
+                    : (detailsArt != null && detailsArt.imdbId() != null && !detailsArt.imdbId().isBlank()
+                            ? detailsArt.imdbId() : showImdb);
+            String posterTitle = publicMetadata != null && !publicMetadata.title().isBlank()
+                    ? publicMetadata.title()
+                    : (detailsArt != null && detailsArt.title() != null && !detailsArt.title().isBlank()
+                            ? detailsArt.title() : showTitle);
+            long tmdbId = video instanceof Movie m ? m.getOnlineId() : 0L;
+            SubtitleSources.search(this, video, posterTitle, null, knownImdbId, tmdbId, yr);
+        })
                 .onPickMovieSource(() -> startActivityForResult(
                         CinemaFileBrowserActivity.subtitlePickerIntent(this, video.getFileUri(), false), 914))
                 .show();
@@ -452,8 +480,7 @@ public class CinemaDetailsActivity extends LeanbackActivity {
         return name+"\n"+size;
     }
     private void loadTechnical(){io.execute(()->{try{
-        com.archos.mediacenter.video.utils.VideoMetadata metadata=video.getMetadata();if(metadata==null||metadata.getVideoTrack()==null)metadata=com.archos.mediacenter.video.info.VideoInfoCommonClass.retrieveMetadata(video,getApplicationContext());
-        com.archos.mediacenter.video.utils.VideoMetadata resolved=metadata;
+        com.archos.mediacenter.video.utils.VideoMetadata resolved=CinemaEngineBoundary.probeMediaMetadata(this,video);
         handler.post(()->{if(isDestroyed()||isFinishing())return;trackMetadata=resolved;if(resolved!=null){if(resolved.getDuration()>0){measuredDuration=resolved.getDuration();CinemaMediaTime.remember(video.getFilePath(),measuredDuration);refreshInfo();applyPlayIcon();}if(fileView!=null&&resolved.getFileSize()>0)fileView.setText(formatFileSummary(resolved.getFileSize()));String dimensions=resolved.getVideoWidth()>0&&resolved.getVideoHeight()>0?resolved.getVideoWidth()+" × "+resolved.getVideoHeight():null;videoCapsule=join(dimensions,resolved.getVideoTrack()==null?null:resolved.getVideoTrack().format);}renderTechnical();});
     }catch(Exception failure){handler.post(()->{if(!isDestroyed()){technical.removeAllViews();}});}});}
     private void play(boolean beginning){
@@ -462,13 +489,11 @@ public class CinemaDetailsActivity extends LeanbackActivity {
             return;
         }
         long r=effectiveResume();
-        int resumeMode=beginning||r<=0?PlayerActivity.RESUME_NO:PlayerActivity.RESUME_FROM_LAST_POS;
-        int resumePos=beginning?0:(int)Math.max(0,r);
         if(video instanceof Episode ep && seasonEpisodes!=null && !seasonEpisodes.isEmpty()){
-            PlayUtils.startEpisodeForResult(this,ep,seasonEpisodes,showTitle,resumeMode,false,resumePos,-1,REQ_EPISODE_PLAYER,showImdb);
+            CinemaPlaybackRouter.playEpisode(this,ep,seasonEpisodes,showTitle,showImdb,beginning,false,r,REQ_EPISODE_PLAYER);
             return;
         }
-        PlayUtils.startVideo(this,video,resumeMode,false,resumePos,null,-1);
+        CinemaPlaybackRouter.playVideo(this,video,beginning,r);
     }
 
     @Override
@@ -491,7 +516,7 @@ public class CinemaDetailsActivity extends LeanbackActivity {
             return;
         }
         if (requestCode == REQ_EPISODE_PLAYER && resultCode == RESULT_OK && data != null && seasonEpisodes != null) {
-            int newIdx = data.getIntExtra(PlayUtils.EXTRA_EPISODE_INDEX, -1);
+            int newIdx = CinemaPlaybackRouter.extractReturnedEpisodeIndex(data);
             if (newIdx >= 0 && newIdx < seasonEpisodes.size() && newIdx != episodeIndex) {
                 switchToEpisode(newIdx);
                 return;
@@ -801,8 +826,8 @@ public class CinemaDetailsActivity extends LeanbackActivity {
     private void reloadVideoFromDb(){
         if(video==null||!video.isIndexed()||playButton==null)return;
         long id=video.getId();
-        io.execute(()->{try(android.database.Cursor cursor=getContentResolver().query(com.archos.mediaprovider.video.VideoStore.Video.Media.EXTERNAL_CONTENT_URI,com.archos.mediacenter.video.browser.loader.VideoLoader.mProjection,"_id=?",new String[]{Long.toString(id)},null)){if(cursor!=null&&cursor.moveToFirst()){var mapper=new com.archos.mediacenter.video.browser.adapters.mappers.VideoCursorMapper();mapper.bindColumns(cursor);Video refreshed=(Video)mapper.bind(cursor);handler.post(()->{if(isDestroyed())return;video=refreshed;watched=video.isWatched()||effectiveResume()==PlayerActivity.LAST_POSITION_END;applyPlayIcon();updateLabels();refreshInfo();});}}catch(Exception ignored){}});
+        io.execute(()->{try(android.database.Cursor cursor=getContentResolver().query(com.archos.mediaprovider.video.VideoStore.Video.Media.EXTERNAL_CONTENT_URI,com.archos.mediacenter.video.browser.loader.VideoLoader.mProjection,"_id=?",new String[]{Long.toString(id)},null)){if(cursor!=null&&cursor.moveToFirst()){var mapper=new com.archos.mediacenter.video.browser.adapters.mappers.VideoCursorMapper();mapper.bindColumns(cursor);Video refreshed=(Video)mapper.bind(cursor);handler.post(()->{if(isDestroyed())return;video=refreshed;watched=video.isWatched()||CinemaPlaybackRouter.isCompletedBookmark(effectiveResume());applyPlayIcon();updateLabels();refreshInfo();});}}catch(Exception ignored){}});
     }
-    @Override public void onResume(){super.onResume();if(video==null||playButton==null)return;watched=video.isWatched()||effectiveResume()==PlayerActivity.LAST_POSITION_END;applyPlayIcon();updateLabels();refreshInfo();reloadVideoFromDb();handler.postDelayed(()->{if(!isDestroyed())reloadVideoFromDb();},450);}
+    @Override public void onResume(){super.onResume();if(video==null||playButton==null)return;watched=video.isWatched()||CinemaPlaybackRouter.isCompletedBookmark(effectiveResume());applyPlayIcon();updateLabels();refreshInfo();reloadVideoFromDb();handler.postDelayed(()->{if(!isDestroyed())reloadVideoFromDb();},450);}
     @Override public void onDestroy(){handler.removeCallbacksAndMessages(null);io.shutdownNow();if(backdrop!=null)Picasso.get().cancelRequest(backdrop);if(logo!=null)Picasso.get().cancelRequest(logo);super.onDestroy();}
 }

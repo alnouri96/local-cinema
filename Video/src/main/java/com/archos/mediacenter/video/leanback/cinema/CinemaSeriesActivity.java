@@ -21,10 +21,7 @@ import com.archos.mediacenter.video.browser.loader.EpisodesLoader;
 import com.archos.mediacenter.video.leanback.LeanbackActivity;
 import com.archos.mediacenter.video.leanback.details.VideoDetailsFragment;
 import com.archos.mediacenter.video.leanback.tvshow.TvshowFragment;
-import com.archos.mediacenter.video.player.PlayerActivity;
-import com.archos.mediacenter.video.player.PlayerService;
 import com.archos.mediacenter.video.utils.DbUtils;
-import com.archos.mediacenter.video.utils.PlayUtils;
 import com.squareup.picasso.Picasso;
 import java.util.*;
 import java.util.concurrent.*;
@@ -75,6 +72,10 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
     private final java.util.Set<Integer> seasonTrailerAttempted=new java.util.HashSet<>();
     private String launchedEpisode;
     private String returningEpisode;
+    private int savedMainScrollY = -1;
+    private int savedEpisodeScrollX = -1;
+    private int savedSeasonScrollX = -1;
+    private boolean pendingScrollRestore;
     private boolean rebuildingEpisodes;
     private boolean suppressTabFocusSwitch=false;
 
@@ -85,7 +86,7 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
     private boolean rtl;
     @Override public void onCreate(Bundle state){super.onCreate(state);show=(Tvshow)getIntent().getSerializableExtra(TvshowFragment.EXTRA_TVSHOW);if(show==null){finish();return;}
         rtl=CinemaUi.arabic(this);
-        if(state!=null){selectedSeason=state.getInt("season",-1);selectedEpisode=state.getString("episode");launchedEpisode=state.getString("launchedEpisode");returningEpisode=state.getString("returningEpisode");showMode=state.getBoolean("showMode",true);if(state.containsKey("show_season"))selectedShowSeason=state.getInt("show_season");}
+        if(state!=null){selectedSeason=state.getInt("season",-1);selectedEpisode=state.getString("episode");launchedEpisode=state.getString("launchedEpisode");returningEpisode=state.getString("returningEpisode");showMode=state.getBoolean("showMode",true);if(state.containsKey("show_season"))selectedShowSeason=state.getInt("show_season");savedMainScrollY=state.getInt("saved_main_y",-1);savedEpisodeScrollX=state.getInt("saved_ep_x",-1);savedSeasonScrollX=state.getInt("saved_season_x",-1);}
         else if(getIntent().hasExtra("open_season")){selectedSeason=getIntent().getIntExtra("open_season",-1);showMode=false;}
         FrameLayout root=new FrameLayout(this);root.setBackgroundColor(CinemaTokens.CANVAS);root.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);setContentView(root);
         backdrop=new ImageView(this);backdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);root.addView(backdrop,new FrameLayout.LayoutParams(-1,-1));
@@ -179,9 +180,51 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
         settingsNav=null;refreshShowMetadata();LoaderManager.getInstance(this).initLoader(1,null,this);loadArtwork();registerLibraryRefresh();
     }
 
+    private void captureScrollState() {
+        savedMainScrollY = mainScroll != null ? mainScroll.getScrollY() : -1;
+        savedEpisodeScrollX = episodeScroll != null ? episodeScroll.getScrollX() : -1;
+        savedSeasonScrollX = seasonPostersScroll != null ? seasonPostersScroll.getScrollX() : -1;
+    }
+
+    private void restoreScrollAndFocusState() {
+        if (isDestroyed() || isFinishing()) return;
+        int mainY = savedMainScrollY;
+        int epX = savedEpisodeScrollX;
+        int seasonX = savedSeasonScrollX;
+        if (!showMode) {
+            focusCurrentEpisodeCard();
+            if (episodeScroll != null && epX >= 0) {
+                episodeScroll.post(() -> {
+                    if (!isDestroyed() && !showMode && episodeScroll != null) {
+                        episodeScroll.scrollTo(epX, 0);
+                        focusCurrentEpisodeCard();
+                    }
+                });
+            }
+        } else {
+            focusSelectedSeasonCard();
+            if (seasonPostersScroll != null && seasonX >= 0) {
+                seasonPostersScroll.post(() -> {
+                    if (!isDestroyed() && showMode && seasonPostersScroll != null) {
+                        seasonPostersScroll.scrollTo(seasonX, 0);
+                        focusSelectedSeasonCard();
+                    }
+                });
+            }
+        }
+        if (mainScroll != null && mainY >= 0) {
+            mainScroll.post(() -> {
+                if (!isDestroyed() && mainScroll != null) mainScroll.scrollTo(0, mainY);
+            });
+        }
+    }
+
     private void openEpisodeDetails(int season, Episode episode) {
         if (episode == null) return;
         selectedEpisode = Long.toString(episode.getId());
+        launchedEpisode = selectedEpisode;
+        captureScrollState();
+        pendingScrollRestore = true;
         List<Episode> seasonList = data.getOrDefault(season, List.of());
         int idx = 0;
         for (int i = 0; i < seasonList.size(); i++) {
@@ -221,7 +264,7 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
             return;
         }
         if (requestCode != 412 && requestCode != 415) return;
-        returningEpisode = requestCode == 415 ? launchedEpisode : null;
+        returningEpisode = launchedEpisode != null ? launchedEpisode : selectedEpisode;
         launchedEpisode = null;
         if (resultCode == RESULT_OK && resultData != null) {
             long epId = resultData.getLongExtra("current_episode_id", -1L);
@@ -230,7 +273,7 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
         if (returningEpisode != null) {
             selectedEpisode = returningEpisode;
             // Restore against the cards already on screen. The loader refreshes their progress.
-            if (!showMode) focusCurrentEpisodeCard();
+            restoreScrollAndFocusState();
         }
         Loader<Cursor> loader = LoaderManager.getInstance(this).getLoader(1);
         if (loader != null) loader.onContentChanged();
@@ -244,12 +287,14 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
         }
         selectedEpisode=Long.toString(e.getId());
         launchedEpisode=selectedEpisode;
-        PlayerService.requestBingePlayMode(binge);
+        captureScrollState();
+        pendingScrollRestore=true;
         long r=fromBeginning?0:episodeResume(e);
         List<Episode> seasonList=data.getOrDefault(e.getSeasonNumber(),List.of());
         String showTitle=publicMetadata!=null&&!publicMetadata.title().isBlank()?publicMetadata.title()
                 :(seriesArt!=null&&seriesArt.title()!=null&&!seriesArt.title().isBlank()?seriesArt.title():show.getName());
-        PlayUtils.startEpisodeForResult(this,e,seasonList,showTitle,fromBeginning||r<=0?PlayerActivity.RESUME_NO:PlayerActivity.RESUME_FROM_LAST_POS,false,fromBeginning?0:(int)Math.max(0,r),-1,415,enrichedImdbId != null ? enrichedImdbId : (publicMetadata != null ? publicMetadata.imdb() : null));
+        String showImdb=enrichedImdbId != null ? enrichedImdbId : (publicMetadata != null ? publicMetadata.imdb() : null);
+        CinemaPlaybackRouter.playEpisode(this,e,seasonList,showTitle,showImdb,fromBeginning,binge,r,415);
     }
 
     private void playSeason(int season){
@@ -257,7 +302,7 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
         if(list.isEmpty())return;
         Episode start=null;
         for(Episode ep:list)if(episodeResume(ep)>0){start=ep;break;}
-        if(start==null)for(Episode ep:list)if(!ep.isWatched()&&episodeResume(ep)!=PlayerActivity.LAST_POSITION_END){start=ep;break;}
+        if(start==null)for(Episode ep:list)if(!ep.isWatched()&&!CinemaPlaybackRouter.isCompletedBookmark(episodeResume(ep))){start=ep;break;}
         if(start==null)start=list.get(0);
         selectedEpisode=Long.toString(start.getId());
         playEpisode(start,false,true);
@@ -270,14 +315,7 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
             return;
         }
         io.execute(() -> {
-            com.archos.mediacenter.video.utils.VideoMetadata metadata = null;
-            try {
-                metadata = episode.getMetadata();
-                if (metadata == null || metadata.getAudioTrackNb() == 0) {
-                    metadata = com.archos.mediacenter.video.info.VideoInfoCommonClass.retrieveMetadata(episode, getApplicationContext());
-                }
-            } catch (Exception ignored) {}
-            final com.archos.mediacenter.video.utils.VideoMetadata resolved = metadata;
+            com.archos.mediacenter.video.utils.VideoMetadata resolved = CinemaEngineBoundary.probeMediaMetadata(this, episode);
             handler.post(() -> {
                 if (isFinishing() || isDestroyed()) return;
                 int count = resolved == null ? 0 : resolved.getAudioTrackNb();
@@ -354,19 +392,44 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
                             if (episode.getFileUri() != null) CinemaTrackChoices.embedded(this, episode.getFileUri(), -3);
                             Toast.makeText(this, getString(com.archos.mediacenter.video.R.string.cinema_subtitle_choice_saved_for_playback), Toast.LENGTH_SHORT).show();
                         },
-                        () -> CinemaAutoSubtitleFetcher.fetchNow(this, episode.getFileUri(), episode.getShowName(),
-                                null, null, -1, true, episode.getSeasonNumber(), episode.getEpisodeNumber(),
-                                savedUri -> {
-                                    if (episode.getFileUri() != null) CinemaTrackChoices.embedded(this, episode.getFileUri(), -3);
-                                },
-                                () -> SubtitleSources.search(this, episode)),
+                        () -> {
+                            String posterShow = publicMetadata != null && !publicMetadata.title().isBlank()
+                                    ? publicMetadata.title()
+                                    : (seriesArt != null && seriesArt.title() != null && !seriesArt.title().isBlank()
+                                            ? seriesArt.title() : episode.getShowName());
+                            String knownImdb = enrichedImdbId != null && !enrichedImdbId.isBlank()
+                                    ? enrichedImdbId
+                                    : (publicMetadata != null ? publicMetadata.imdb() : null);
+                            SubtitleSources.MediaSearchSeed seed = SubtitleSources.resolveSeed(
+                                    this, episode, posterShow, null, knownImdb, onlineId, -1);
+                            CinemaAutoSubtitleFetcher.fetchNow(this, episode.getFileUri(),
+                                    seed.primaryPosterTitle(), seed.englishTitleHint(), seed.alternateDbTitle(),
+                                    seed.imdbId(), seed.tmdbId(), seed.year(),
+                                    true, episode.getSeasonNumber(), episode.getEpisodeNumber(),
+                                    episode.getFileNameWithExtension(), episode.getSize(), null, null,
+                                    seed.hasIndexedRecord(),
+                                    savedUri -> {
+                                        if (episode.getFileUri() != null) CinemaTrackChoices.embedded(this, episode.getFileUri(), -3);
+                                    },
+                                    () -> SubtitleSources.search(this, episode, posterShow, seed.englishTitleHint(),
+                                            seed.imdbId(), seed.tmdbId(), seed.year()));
+                        },
                         () -> {
                             CinemaSubtitleHubDialog.saveCentralMode(this,
                                     com.meedx.providers.UnifiedSubtitleConfig.SUB_MODE_OFF);
                             if (episode.getFileUri() != null) CinemaTrackChoices.embedded(this, episode.getFileUri(), -1);
                             Toast.makeText(this, getString(com.archos.mediacenter.video.R.string.cinema_subtitle_choice_saved_for_playback), Toast.LENGTH_SHORT).show();
                         })
-                .onSearchOnline(() -> SubtitleSources.search(this, episode))
+                .onSearchOnline(() -> {
+                    String posterShow = publicMetadata != null && !publicMetadata.title().isBlank()
+                            ? publicMetadata.title()
+                            : (seriesArt != null && seriesArt.title() != null && !seriesArt.title().isBlank()
+                                    ? seriesArt.title() : episode.getShowName());
+                    String knownImdb = enrichedImdbId != null && !enrichedImdbId.isBlank()
+                            ? enrichedImdbId
+                            : (publicMetadata != null ? publicMetadata.imdb() : null);
+                    SubtitleSources.search(this, episode, posterShow, null, knownImdb, onlineId, -1);
+                })
                 .onPickMovieSource(() -> startActivityForResult(
                         CinemaFileBrowserActivity.subtitlePickerIntent(this, episode.getFileUri(), false), 914))
                 .show();
@@ -374,28 +437,32 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
 
     private void moreMenu(View anchor){
         Episode episode=currentEpisode();
-        CinemaActionMenu.Action addonStreams=new CinemaActionMenu.Action(
-                label(this,"مصادر الإضافات (Nuvio / Stremio)","Addon Streams (Nuvio / Stremio)"),
-                ()->CinemaAddonPicker.show(this,io,handler,episode!=null?episode:show,publicMetadata,
-                        episode!=null?episode.getSeasonNumber():selectedSeason,
-                        episode!=null?episode.getEpisodeNumber():1));
-        CinemaActionMenu.Action seriesDetails=new CinemaActionMenu.Action(
-                this.getString(com.archos.mediacenter.video.R.string.cinema_more_details_and_advanced_actions),()->{
-                    Intent intent=new Intent(this,com.archos.mediacenter.video.leanback.tvshow.TvshowActivity.class);
-                    intent.putExtra(TvshowFragment.EXTRA_TVSHOW,show);
-                    intent.putExtra("cinema_legacy_series",true);
-                    startActivity(intent);
+        int targetSeason=episode!=null?episode.getSeasonNumber():Math.max(1,selectedSeason);
+        int targetEpNum=episode!=null?episode.getEpisodeNumber():1;
+        var builder=CinemaMediaMoreDialog.with(this)
+                .video(episode)
+                .show(show)
+                .publicMetadata(publicMetadata)
+                .seasonEpisode(targetSeason,targetEpNum)
+                .displayTitle(episode!=null
+                        ? show.getName()+" · "+String.format(Locale.US,"S%02d E%02d",episode.getSeasonNumber(),episode.getEpisodeNumber())
+                        : show.getName())
+                .onOpenAudioTracks(this::openSeriesAudioTracks)
+                .onOpenSubtitles(()->subtitleMenu(anchor))
+                .onOpenAddonStreams(()->CinemaAddonPicker.show(this,io,handler,episode!=null?episode:show,publicMetadata,targetSeason,targetEpNum))
+                .onStateChanged(()->{
+                    if(!isDestroyed())LoaderManager.getInstance(this).restartLoader(1,null,this);
                 });
-        if(episode==null){
-            CinemaActionMenu.show(anchor,addonStreams,seriesDetails);
-            return;
+        if(episode!=null){
+            builder.onPlayResume(()->playEpisode(episode,false,showMode))
+                   .onPlayFromBeginning(()->playEpisode(episode,true,showMode))
+                   .addExtraAction(
+                           com.archos.mediacenter.video.R.drawable.cinema_play_movie,
+                           this.getString(com.archos.mediacenter.video.R.string.cinema_episode_details_tracks),
+                           label(this,"فتح شاشة تفاصيل الحلقة الكاملة","Open dedicated episode details screen"),
+                           ()->openEpisodeDetails(episode.getSeasonNumber(),episode));
         }
-        CinemaActionMenu.show(anchor,addonStreams,seriesDetails,new CinemaActionMenu.Action(
-                this.getString(com.archos.mediacenter.video.R.string.cinema_episode_details_tracks),()->{
-                    Intent intent=new Intent(this,CinemaDetailsActivity.class);
-                    intent.putExtra(VideoDetailsFragment.EXTRA_VIDEO,episode);
-                    startActivity(intent);
-                }));
+        builder.show();
     }
 
     private static final class FolderSeriesEpisodesLoader extends com.archos.mediacenter.video.browser.loader.VideoLoader {
@@ -527,7 +594,7 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
             entry.getValue().sort(Comparator.comparingInt(Episode::getEpisodeNumber).thenComparingLong(Episode::getId));
             all.addAll(entry.getValue());
         }
-        for(Episode episode:all)if(episodeResume(episode)>0){next=episode;break;}if(next==null)for(Episode episode:all)if(episodeResume(episode)!=PlayerActivity.LAST_POSITION_END){next=episode;break;}if(next==null&&!all.isEmpty())next=all.get(0);
+        for(Episode episode:all)if(episodeResume(episode)>0){next=episode;break;}if(next==null)for(Episode episode:all)if(!CinemaPlaybackRouter.isCompletedBookmark(episodeResume(episode))){next=episode;break;}if(next==null&&!all.isEmpty())next=all.get(0);
         Episode returned = null;
         if (returningEpisode != null) {
             for (Episode episode : all) {
@@ -562,7 +629,8 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
             if (returned != null) {
                 initial = false;
                 returningEpisode = null;
-                focusCurrentEpisodeCard();
+                pendingScrollRestore = false;
+                restoreScrollAndFocusState();
             }
             else if(initial){initial=false;if(showMode)focusActiveTopTab();else if(next!=null)watch.requestFocus();}
             else if(actionFocus&&old.isShown()){old.requestFocus();}
@@ -882,14 +950,15 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
                 if(epPic!=null)Picasso.get().load(epPic).resize(epDecodeW,epDecodeH).centerCrop().into(image);
                 else if(seriesBackdropUrl!=null)Picasso.get().load(Uri.parse(seriesBackdropUrl)).resize(epDecodeW,epDecodeH).centerCrop().into(image);
                 String displayName=resolveEpisodeDisplayTitle(season,episode);
-                TextView badge=text(this,12,true);badge.setText("E"+episode.getEpisodeNumber());badge.setSingleLine(true);badge.setGravity(Gravity.CENTER);badge.setPadding(dp(this,8),dp(this,3),dp(this,8),dp(this,3));badge.setBackground(rounded(0xCC121212,dp(this,6),0));FrameLayout.LayoutParams badgeParams=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.END);badgeParams.setMargins(0,dp(this,8),dp(this,8),0);card.addView(badge,badgeParams);
+                TextView badge=text(this,12,true);badge.setText("E"+episode.getEpisodeNumber());badge.setSingleLine(true);badge.setGravity(Gravity.CENTER);badge.setPadding(dp(this,8),dp(this,3),dp(this,8),dp(this,3));badge.setBackground(rounded(0xCC121212,dp(this,6),0));FrameLayout.LayoutParams badgeParams=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.END);badgeParams.topMargin=dp(this,10);badgeParams.leftMargin=dp(this,12);badgeParams.rightMargin=dp(this,12);badgeParams.setMarginStart(dp(this,12));badgeParams.setMarginEnd(dp(this,12));card.addView(badge,badgeParams);
                 long epRes=episodeResume(episode),epDur=episodeDuration(episode);
-                boolean epWatched=episode.isWatched()||epRes==PlayerActivity.LAST_POSITION_END;
-                if(epRes>0&&!epWatched&&inProgressCard==null){inProgressCard=card;inProgressEp=episode;}
+                boolean epWatched=episode.isWatched()||CinemaPlaybackRouter.isCompletedBookmark(epRes);
+                if(epRes>0&&!CinemaPlaybackRouter.isCompletedBookmark(epRes)&&inProgressCard==null){inProgressCard=card;inProgressEp=episode;}
                 if(epWatched){
                     TextView check=text(this,12,true);check.setText("✓");check.setTextColor(0xff101113);check.setGravity(Gravity.CENTER);check.setBackground(rounded(CinemaTokens.GOLD,dp(this,11),0));
-                    FrameLayout.LayoutParams cp=new FrameLayout.LayoutParams(dp(this,22),dp(this,22),Gravity.TOP|Gravity.START);cp.setMargins(dp(this,8),dp(this,8),0,0);card.addView(check,cp);
-                }else if(epRes>0&&epDur>0){
+                    FrameLayout.LayoutParams cp=new FrameLayout.LayoutParams(dp(this,22),dp(this,22),Gravity.TOP|Gravity.START);cp.topMargin=dp(this,10);cp.leftMargin=dp(this,14);cp.rightMargin=dp(this,14);cp.setMarginStart(dp(this,14));cp.setMarginEnd(dp(this,14));card.addView(check,cp);
+                }
+                if(epRes>0&&!CinemaPlaybackRouter.isCompletedBookmark(epRes)&&epDur>0){
                     int w=(int)Math.min(dp(this,EPISODE_CARD_WIDTH),(long)dp(this,EPISODE_CARD_WIDTH)*epRes/epDur);
                     View prog=new View(this);prog.setBackgroundColor(CinemaTokens.GOLD);card.addView(prog,new FrameLayout.LayoutParams(w,dp(this,3),Gravity.BOTTOM));
                 }
@@ -1085,7 +1154,7 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
             try{
                 com.archos.mediacenter.video.utils.VideoMetadata md=ep.getMetadata();
                 if(md==null||md.getVideoTrack()==null){
-                    md=com.archos.mediacenter.video.info.VideoInfoCommonClass.retrieveMetadata(ep,getApplicationContext());
+                    md=CinemaEngineBoundary.probeMediaMetadata(this,ep);
                 }
                 List<String> specs=extractEpisodeTechSpecs(ep,md);
                 long probedDur=md!=null&&md.getDuration()>0?md.getDuration():0L;
@@ -1309,35 +1378,24 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
     }
 
     private boolean allWatched(List<Episode> episodes){
-        return !episodes.isEmpty()&&episodes.stream().allMatch(e->e.isWatched()||episodeResume(e)==PlayerActivity.LAST_POSITION_END);
+        return !episodes.isEmpty()&&episodes.stream().allMatch(e->e.isWatched()||CinemaPlaybackRouter.isCompletedBookmark(episodeResume(e)));
     }
 
     private void episodeContextMenu(Episode episode){
         if(episode==null)return;
-        boolean epWatched=episode.isWatched()||episodeResume(episode)==PlayerActivity.LAST_POSITION_END;
-        java.util.List<String> labels=new java.util.ArrayList<>();
-        labels.add(getString(epWatched?com.archos.mediacenter.video.R.string.cinema_mark_as_unwatched:com.archos.mediacenter.video.R.string.cinema_mark_as_watched_cinemaseriesactivity));
-        if(episodeResume(episode)>0)labels.add(getString(com.archos.mediacenter.video.R.string.cinema_remove_from_continue_watching));
-        CinemaUi.dialog(this).setTitle(episodeLabel(episode)).setItems(labels.toArray(new String[0]),(d,w)->io.execute(()->{
-            try{
-                if(w==0){
-                    if(epWatched)DbUtils.markAsNotRead(getApplicationContext(),episode);
-                    else DbUtils.markAsRead(getApplicationContext(),episode);
-                }else{
-                    DbUtils.markAsNotRead(getApplicationContext(),episode);
-                    CinemaWatchStore.removePlaybackProgressFromTraktAsync(
-                            getApplicationContext(), episode.getId(), episode.getFilePath(),
-                            show.getName(), enrichedImdbId, 0L,
-                            episode.getSeasonNumber(), episode.getEpisodeNumber());
-                }
-                boolean markedWatched=w==0&&!epWatched;
-                CinemaLinkServer.broadcastWatchSync(CinemaWatchStore.buildSyncRecordForVideo(
-                        getApplicationContext(),episode,0L,markedWatched,!markedWatched));
-                CinemaWatchStore.pushVideoWatchedToTraktAsync(getApplicationContext(),episode,markedWatched);
-                CinemaWatchStore.syncWithTraktAsync(getApplicationContext());
-            }catch(Exception ignored){}
-            handler.post(()->{if(!isDestroyed())LoaderManager.getInstance(this).restartLoader(1,null,this);});
-        })).setNegativeButton(android.R.string.cancel,null).show();
+        CinemaMediaMoreDialog.with(this)
+                .video(episode)
+                .show(show)
+                .publicMetadata(publicMetadata)
+                .seasonEpisode(episode.getSeasonNumber(),episode.getEpisodeNumber())
+                .displayTitle(episodeLabel(episode))
+                .onOpenDetails(()->openEpisodeDetails(episode.getSeasonNumber(),episode))
+                .onPlayResume(()->playEpisode(episode,false,false))
+                .onPlayFromBeginning(()->playEpisode(episode,true,false))
+                .onOpenAddonStreams(()->CinemaAddonPicker.show(this,io,handler,episode,publicMetadata,
+                        episode.getSeasonNumber(),episode.getEpisodeNumber()))
+                .onStateChanged(()->{if(!isDestroyed())LoaderManager.getInstance(this).restartLoader(1,null,this);})
+                .show();
     }
 
     private void toggleWatched(){
@@ -1364,7 +1422,7 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
                         else DbUtils.markAsNotRead(getApplicationContext(),episode);
                     }
                     CinemaMediaTime.rememberState(episode.getId(),episode.getFileUri(),episodeDuration(episode),
-                            watched?PlayerActivity.LAST_POSITION_END:PlayerActivity.LAST_POSITION_UNKNOWN);
+                            watched?CinemaPlaybackRouter.BOOKMARK_COMPLETED:CinemaPlaybackRouter.BOOKMARK_UNKNOWN);
                     CinemaLinkServer.broadcastWatchSync(CinemaWatchStore.buildSyncRecordForVideo(
                             getApplicationContext(),episode,0L,watched,!watched));
                     CinemaWatchStore.pushVideoWatchedToTraktAsync(getApplicationContext(),episode,watched);
@@ -1394,7 +1452,7 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
             Episode target=e;
             io.execute(()->{
                 try{
-                    var meta=com.archos.mediacenter.video.info.VideoInfoCommonClass.retrieveMetadata(target,getApplicationContext());
+                    var meta=CinemaEngineBoundary.probeMediaMetadata(this,target);
                     if(meta!=null&&meta.getDuration()>0){
                         CinemaMediaTime.rememberState(target.getId(),target.getFileUri(),meta.getDuration(),episodeResume(target));
                         handler.post(()->{if(!isDestroyed()){refreshActions();if(showMode)refreshShowMetadata();}});
@@ -2026,8 +2084,9 @@ public final class CinemaSeriesActivity extends LeanbackActivity implements Load
         super.onBackPressed();
     }
 
-    @Override public void onSaveInstanceState(Bundle state){state.putInt("season",selectedSeason);state.putString("episode",selectedEpisode);state.putString("launchedEpisode",launchedEpisode);state.putString("returningEpisode",returningEpisode);state.putBoolean("showMode",showMode);if(selectedShowSeason!=null)state.putInt("show_season",selectedShowSeason);super.onSaveInstanceState(state);}
-    @Override public void onResume(){super.onResume();if(!initial)refreshActions();}
+    @Override public void onSaveInstanceState(Bundle state){captureScrollState();state.putInt("season",selectedSeason);state.putString("episode",selectedEpisode);state.putString("launchedEpisode",launchedEpisode);state.putString("returningEpisode",returningEpisode);state.putBoolean("showMode",showMode);if(selectedShowSeason!=null)state.putInt("show_season",selectedShowSeason);state.putInt("saved_main_y",savedMainScrollY);state.putInt("saved_ep_x",savedEpisodeScrollX);state.putInt("saved_season_x",savedSeasonScrollX);super.onSaveInstanceState(state);}
+    @Override public void onPause(){captureScrollState();super.onPause();}
+    @Override public void onResume(){super.onResume();if(!initial){refreshActions();if(pendingScrollRestore){pendingScrollRestore=false;restoreScrollAndFocusState();}}}
     /** Host-agnostic, decoded, lower-case path key so IP/hostname duplicates collapse. */
     static String episodePathKey(String path){
         if(path==null)return "";

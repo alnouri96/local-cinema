@@ -28,9 +28,21 @@ import java.util.Locale;
 /** Persistent SQLite store for Zero-Config global IDs, HLS/torrent stream progress, Up Next, and LAN WATCH_SYNC. */
 public final class CinemaWatchStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "cinema_watch_store.db";
-    private static final int DB_VERSION = 7;
+    private static final int DB_VERSION = 8;
     private static final String PREF_TRAKT_WATCHLIST_PATHS = "cinema_trakt_watchlist_paths";
     private static volatile CinemaWatchStore instance;
+    private static final java.util.concurrent.atomic.AtomicLong STATE_EPOCH =
+            new java.util.concurrent.atomic.AtomicLong(1L);
+
+    public static long stateEpoch() {
+        return STATE_EPOCH.get();
+    }
+
+    @Override
+    public SQLiteDatabase getWritableDatabase() {
+        STATE_EPOCH.incrementAndGet();
+        return super.getWritableDatabase();
+    }
 
     public record Identity(
             String mediaKey,
@@ -186,6 +198,15 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
                 + "duration_ms INTEGER DEFAULT 0, "
                 + "updated_at INTEGER DEFAULT 0, "
                 + "PRIMARY KEY(list_type, item_key))");
+
+        db.execSQL("CREATE TABLE IF NOT EXISTS continue_tombstones ("
+                + "tombstone_key TEXT PRIMARY KEY, "
+                + "imdb_id TEXT, "
+                + "tmdb_id INTEGER DEFAULT 0, "
+                + "season INTEGER DEFAULT 0, "
+                + "episode INTEGER DEFAULT 0, "
+                + "norm_title TEXT, "
+                + "deleted_at INTEGER DEFAULT 0)");
     }
 
     @Override
@@ -478,6 +499,113 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
         } catch (RuntimeException ignored) {}
     }
 
+    private static List<String> buildTombstoneKeys(String canonicalKey, String streamKey, String fileUri,
+                                                   String title, String imdbId, long tmdbId, int season, int episode) {
+        var keys = new java.util.LinkedHashSet<String>();
+        String mt = (season > 0 || episode > 0) ? "episode" : "movie";
+        if (!isEmpty(canonicalKey)) keys.add("canon:" + canonicalKey.trim().toLowerCase(Locale.ROOT));
+        String computed = canonicalKey(mt, imdbId, tmdbId, season, episode, streamKey, title);
+        if (!isEmpty(computed)) keys.add("canon:" + computed.toLowerCase(Locale.ROOT));
+        if (!isEmpty(streamKey)) keys.add("stream:" + streamKey.trim().toLowerCase(Locale.ROOT));
+        if (!isEmpty(fileUri)) keys.add("uri:" + fileUri.trim().toLowerCase(Locale.ROOT));
+        String norm = normalizeTitle(title);
+        if (!norm.isEmpty()) {
+            keys.add(episode > 0 ? ("title:" + norm + ":s" + Math.max(0, season) + "e" + episode) : ("title:" + norm));
+        }
+        return new ArrayList<>(keys);
+    }
+
+    public static void recordContinueTombstone(Context context, String canonicalKey, String streamKey, String fileUri,
+                                               String title, String imdbId, long tmdbId, int season, int episode) {
+        if (context == null) return;
+        List<String> keys = buildTombstoneKeys(canonicalKey, streamKey, fileUri, title, imdbId, tmdbId, season, episode);
+        if (keys.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        String cleanImdb = imdbId == null ? "" : imdbId.trim().toLowerCase(Locale.ROOT);
+        String norm = normalizeTitle(title);
+        try {
+            SQLiteDatabase db = get(context).getWritableDatabase();
+            db.beginTransaction();
+            try {
+                for (String k : keys) {
+                    ContentValues cv = new ContentValues();
+                    cv.put("tombstone_key", k);
+                    cv.put("imdb_id", cleanImdb);
+                    cv.put("tmdb_id", Math.max(0L, tmdbId));
+                    cv.put("season", Math.max(0, season));
+                    cv.put("episode", Math.max(0, episode));
+                    cv.put("norm_title", norm);
+                    cv.put("deleted_at", now);
+                    db.insertWithOnConflict("continue_tombstones", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+                }
+                db.setTransactionSuccessful();
+            } finally {
+                db.endTransaction();
+            }
+        } catch (Exception ignored) {}
+    }
+
+    public static void clearContinueTombstone(Context context, String canonicalKey, String streamKey, String fileUri,
+                                              String title, String imdbId, long tmdbId, int season, int episode) {
+        if (context == null) return;
+        List<String> keys = buildTombstoneKeys(canonicalKey, streamKey, fileUri, title, imdbId, tmdbId, season, episode);
+        String cleanImdb = imdbId == null ? "" : imdbId.trim().toLowerCase(Locale.ROOT);
+        try {
+            SQLiteDatabase db = get(context).getWritableDatabase();
+            for (String k : keys) {
+                db.delete("continue_tombstones", "tombstone_key=?", new String[]{k});
+            }
+            if (!cleanImdb.isEmpty()) {
+                db.delete("continue_tombstones", "imdb_id=? AND season=? AND episode=?",
+                        new String[]{cleanImdb, Integer.toString(Math.max(0, season)), Integer.toString(Math.max(0, episode))});
+            }
+            if (tmdbId > 0) {
+                db.delete("continue_tombstones", "tmdb_id=? AND season=? AND episode=?",
+                        new String[]{Long.toString(tmdbId), Integer.toString(Math.max(0, season)), Integer.toString(Math.max(0, episode))});
+            }
+        } catch (Exception ignored) {}
+    }
+
+    public static long getContinueTombstoneDeletedAt(Context context, String canonicalKey, String streamKey, String fileUri,
+                                                     String title, String imdbId, long tmdbId, int season, int episode) {
+        if (context == null) return 0L;
+        long maxDeletedAt = 0L;
+        List<String> keys = buildTombstoneKeys(canonicalKey, streamKey, fileUri, title, imdbId, tmdbId, season, episode);
+        String cleanImdb = imdbId == null ? "" : imdbId.trim().toLowerCase(Locale.ROOT);
+        try {
+            SQLiteDatabase db = get(context).getReadableDatabase();
+            for (String k : keys) {
+                try (Cursor c = db.rawQuery("SELECT deleted_at FROM continue_tombstones WHERE tombstone_key=? LIMIT 1",
+                        new String[]{k})) {
+                    if (c.moveToFirst()) maxDeletedAt = Math.max(maxDeletedAt, c.getLong(0));
+                }
+            }
+            if (!cleanImdb.isEmpty()) {
+                try (Cursor c = db.rawQuery(
+                        "SELECT MAX(deleted_at) FROM continue_tombstones WHERE imdb_id=? AND season=? AND episode=?",
+                        new String[]{cleanImdb, Integer.toString(Math.max(0, season)), Integer.toString(Math.max(0, episode))})) {
+                    if (c.moveToFirst()) maxDeletedAt = Math.max(maxDeletedAt, c.getLong(0));
+                }
+            }
+            if (tmdbId > 0) {
+                try (Cursor c = db.rawQuery(
+                        "SELECT MAX(deleted_at) FROM continue_tombstones WHERE tmdb_id=? AND season=? AND episode=?",
+                        new String[]{Long.toString(tmdbId), Integer.toString(Math.max(0, season)), Integer.toString(Math.max(0, episode))})) {
+                    if (c.moveToFirst()) maxDeletedAt = Math.max(maxDeletedAt, c.getLong(0));
+                }
+            }
+        } catch (Exception ignored) {}
+        return maxDeletedAt;
+    }
+
+    public static boolean isContinueTombstoned(Context context, String canonicalKey, String streamKey, String fileUri,
+                                               String title, String imdbId, long tmdbId, int season, int episode,
+                                               long candidateUpdatedAt) {
+        long deletedAt = getContinueTombstoneDeletedAt(
+                context, canonicalKey, streamKey, fileUri, title, imdbId, tmdbId, season, episode);
+        return deletedAt > 0L && (candidateUpdatedAt <= 0L || candidateUpdatedAt <= deletedAt);
+    }
+
     public static void saveStreamProgress(Context context, String streamKey, String streamUri, String format,
                                           String title, String mediaType, String imdbId, long tmdbId,
                                           int season, int episode, long positionMs, long durationMs) {
@@ -485,11 +613,14 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
         if (durationMs <= 0 || positionMs <= 1) return;
         if (isNonLibraryOrPhoneCast(streamKey, streamUri, format, title, mediaType, imdbId, tmdbId)
                 || isEphemeralLiveCast(streamUri, title, mediaType, imdbId, tmdbId)) return;
-        boolean watched = positionMs * 100L >= durationMs * 85L;
-        long savedPos = watched ? 0L : positionMs;
+        StreamEntry prev = getStream(context, streamKey);
+        boolean newlyCompleted = positionMs * 100L >= durationMs * 85L;
+        boolean watched = newlyCompleted || (prev != null && prev.watched());
+        long savedPos = newlyCompleted ? 0L : positionMs;
         String resolvedType = mediaType == null || mediaType.isBlank() ? (season > 0 || episode > 0 ? "episode" : "movie") : mediaType;
         String canonical = canonicalKey(resolvedType, imdbId, tmdbId, season, episode, streamKey, title);
         try {
+            clearContinueTombstone(context, canonical, streamKey, streamUri, title, imdbId, tmdbId, season, episode);
             SQLiteDatabase db = get(context).getWritableDatabase();
             ContentValues cv = new ContentValues();
             cv.put("stream_key", streamKey);
@@ -510,7 +641,7 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
             cv.put("updated_at", System.currentTimeMillis());
             db.insertWithOnConflict("stream_progress", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
             CinemaMediaTime.rememberState(-1L, streamUri == null ? null : Uri.parse(streamUri),
-                    durationMs, watched ? -2L : savedPos);
+                    durationMs, newlyCompleted ? -2L : savedPos);
         } catch (Exception ignored) {}
     }
 
@@ -518,7 +649,7 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
                                               String imdbId, long tmdbId, int season, int episode, String title) {
         if (context == null) return 0L;
         StreamEntry exact = getStream(context, streamKey);
-        if (exact != null && !exact.watched() && !exact.removedFromContinue() && exact.positionMs() > 0) {
+        if (exact != null && !exact.removedFromContinue() && exact.positionMs() > 0) {
             return exact.positionMs();
         }
         String canonical = canonicalKey(mediaType, imdbId, tmdbId, season, episode, streamKey, title);
@@ -526,7 +657,7 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
             try (Cursor c = get(context).getReadableDatabase().rawQuery(
                     "SELECT position_ms,watched,removed_from_continue FROM stream_progress "
                             + "WHERE canonical_key=? ORDER BY updated_at DESC LIMIT 1", new String[]{canonical})) {
-                if (c.moveToFirst() && c.getInt(1) == 0 && c.getInt(2) == 0 && c.getLong(0) > 0) {
+                if (c.moveToFirst() && c.getInt(2) == 0 && c.getLong(0) > 0) {
                     return c.getLong(0);
                 }
             } catch (Exception ignored) {}
@@ -535,7 +666,7 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
         if (!norm.isEmpty()) {
             try (Cursor c = get(context).getReadableDatabase().rawQuery(
                     "SELECT title,position_ms,watched,removed_from_continue FROM stream_progress "
-                            + "WHERE watched=0 AND removed_from_continue=0 AND position_ms>0 ORDER BY updated_at DESC LIMIT 50", null)) {
+                            + "WHERE removed_from_continue=0 AND position_ms>0 ORDER BY updated_at DESC LIMIT 50", null)) {
                 while (c.moveToNext()) {
                     if (norm.equals(normalizeTitle(c.getString(0)))) return c.getLong(1);
                 }
@@ -547,6 +678,11 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
     public static void markStreamWatched(Context context, String streamKey, boolean watched) {
         if (context == null || streamKey == null || streamKey.isBlank()) return;
         try {
+            StreamEntry prev = getStream(context, streamKey);
+            if (prev != null) {
+                recordContinueTombstone(context, "", streamKey, prev.streamUri(), prev.title(),
+                        prev.imdbId(), prev.tmdbId(), prev.season(), prev.episode());
+            }
             ContentValues cv = new ContentValues();
             cv.put("watched", watched ? 1 : 0);
             cv.put("position_ms", 0L);
@@ -560,6 +696,13 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
     public static void removeStreamFromContinue(Context context, String streamKey) {
         if (context == null || streamKey == null || streamKey.isBlank()) return;
         try {
+            StreamEntry prev = getStream(context, streamKey);
+            if (prev != null) {
+                recordContinueTombstone(context, "", streamKey, prev.streamUri(), prev.title(),
+                        prev.imdbId(), prev.tmdbId(), prev.season(), prev.episode());
+            } else {
+                recordContinueTombstone(context, "", streamKey, "", "", "", 0L, 0, 0);
+            }
             ContentValues cv = new ContentValues();
             cv.put("removed_from_continue", 1);
             cv.put("position_ms", 0L);
@@ -599,11 +742,11 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
             SQLiteDatabase db = get(context).getWritableDatabase();
             db.execSQL("UPDATE stream_progress SET watched=1,position_ms=0,pending_trakt_sync=1,updated_at="
                     + System.currentTimeMillis()
-                    + " WHERE watched=0 AND duration_ms>0 AND (position_ms*100 >= duration_ms*85)");
+                    + " WHERE duration_ms>0 AND position_ms>0 AND (position_ms*100 >= duration_ms*85)");
         } catch (Exception ignored) {}
         try (Cursor c = get(context).getReadableDatabase().rawQuery(
                 "SELECT stream_key,stream_uri,format,title,media_type,imdb_id,tmdb_id,season,episode,position_ms,duration_ms,watched,removed_from_continue,pending_trakt_sync,updated_at "
-                        + "FROM stream_progress WHERE watched=0 AND removed_from_continue=0 AND duration_ms>0 "
+                        + "FROM stream_progress WHERE removed_from_continue=0 AND duration_ms>0 "
                         + "AND position_ms>1 AND (position_ms*100 < duration_ms*85) "
                         + (includeAddonContinue(context)
                            ? "AND (stream_key NOT LIKE 'addon:%' OR position_ms >= 1500) "
@@ -613,7 +756,9 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
                 StreamEntry e = readStream(c);
                 if (!isEmpty(e.streamUri())
                         && !isNonLibraryOrPhoneCast(e.streamKey(), e.streamUri(), e.format(), e.title(), e.mediaType(), e.imdbId(), e.tmdbId())
-                        && !isEphemeralLiveCast(e.streamUri(), e.title(), e.mediaType(), e.imdbId(), e.tmdbId())) {
+                        && !isEphemeralLiveCast(e.streamUri(), e.title(), e.mediaType(), e.imdbId(), e.tmdbId())
+                        && !isContinueTombstoned(context, "", e.streamKey(), e.streamUri(), e.title(),
+                                e.imdbId(), e.tmdbId(), e.season(), e.episode(), e.updatedAt())) {
                     out.add(e);
                 }
             }
@@ -855,9 +1000,10 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
                     boolean watched = bm == PlayerActivity.LAST_POSITION_END || c.getInt(6) == 1;
                     long lastPlayedMs = Math.max(0L, c.getLong(7)) * 1000L;
                     PlaybackDescriptor desc = resolvePlaybackDescriptor(context, vid, data, title);
+                    long exportPos = (bm > 1 && (dur <= 0 || bm * 100L < dur * 85L)) ? bm : 0L;
                     JSONObject obj = buildSyncRecordJson(desc.canonicalKey(), desc.streamKey(), "tv", title,
                             desc.mediaType(), desc.imdbId(), desc.tmdbId(), desc.season(), desc.episode(),
-                            watched ? 0L : Math.max(0L, bm), dur, watched, false,
+                            exportPos, dur, watched, false,
                             lastPlayedMs > 0 ? lastPlayedMs : System.currentTimeMillis());
                     String k = obj.optString("canonical_key", desc.streamKey());
                     if (!k.isEmpty()) byKey.putIfAbsent(k, obj);
@@ -892,18 +1038,25 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
         if (canonical.isBlank()) canonical = canonicalKey(mediaType, imdbId, tmdbId, season, episode, streamKey, title);
         long posMs = Math.max(0L, rec.optLong("position_ms", 0L));
         long durMs = Math.max(0L, rec.optLong("duration_ms", 0L));
-        boolean watched = rec.optBoolean("watched", false) || (durMs > 0 && posMs * 100L >= durMs * 85L);
+        boolean completedByPos = durMs > 0 && posMs * 100L >= durMs * 85L;
+        boolean watched = rec.optBoolean("watched", false) || completedByPos;
         boolean removed = rec.optBoolean("removed_from_continue", false);
         if (!watched && !removed && "episode".equalsIgnoreCase(mediaType)
                 && !isEpisodePlayback(season, episode, posMs, durMs)) return false;
         long remoteUpdatedAt = rec.optLong("updated_at", 0L);
         if (remoteUpdatedAt <= 0) remoteUpdatedAt = System.currentTimeMillis();
-        if (watched) posMs = 0L;
+        if (completedByPos || (watched && posMs <= 1)) posMs = 0L;
 
         boolean changed = false;
         String sourceUri = rec.optString("source_uri", "");
         if ("phone_local_media".equalsIgnoreCase(kind) || "local_media".equalsIgnoreCase(kind)
                 || isNonLibraryOrPhoneCast(streamKey, sourceUri, kind, title, mediaType, imdbId, tmdbId)) {
+            return false;
+        }
+        // Reject any incoming Continue Watching / partial progress sync older than or equal to a TV tombstone
+        if (!removed && posMs > 0
+                && isContinueTombstoned(context, canonical, streamKey, sourceUri, title,
+                        imdbId, tmdbId, season, episode, remoteUpdatedAt)) {
             return false;
         }
         boolean phoneNonStream = "library".equalsIgnoreCase(kind) || "tv".equalsIgnoreCase(kind)
@@ -926,7 +1079,7 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
                     long streamDurMs = durMs > 0 ? durMs : (prev != null ? prev.durationMs() : 0L);
                     long streamPosMs = posMs;
                     boolean allowOverwrite = true;
-                    if (isTraktSource && !watched && !removed && prev != null && !prev.watched() && prev.positionMs() > 0) {
+                    if (isTraktSource && !watched && !removed && prev != null && prev.positionMs() > 0) {
                         double localPct = prev.durationMs() > 0 ? (prev.positionMs() * 100.0 / prev.durationMs()) : -1.0;
                         boolean significantlyNewer = remoteUpdatedAt > localStreamTs + 120_000L
                                 && (localPct < 0 || progressPct <= 0 || Math.abs(progressPct - localPct) > 3.0);
@@ -938,6 +1091,7 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
                         }
                     }
                     if (allowOverwrite) {
+                        boolean effectiveWatched = watched || (prev != null && prev.watched() && (removed || streamPosMs > 0));
                         ContentValues cv = new ContentValues();
                         cv.put("stream_key", targetKey);
                         cv.put("canonical_key", canonical);
@@ -951,7 +1105,7 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
                         cv.put("episode", episode);
                         cv.put("position_ms", streamPosMs);
                         cv.put("duration_ms", streamDurMs);
-                        cv.put("watched", watched ? 1 : 0);
+                        cv.put("watched", effectiveWatched ? 1 : 0);
                         cv.put("removed_from_continue", removed ? 1 : 0);
                         cv.put("pending_trakt_sync", markPendingTrakt ? 1 : 0);
                         cv.put("updated_at", remoteUpdatedAt);
@@ -1164,29 +1318,49 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
     private static boolean applyWatchStateToIndexedVideo(Context context, long videoId, long posMs,
                                                          boolean watched, boolean removed, long updatedAtMs) {
         try {
+            boolean alreadyWatched = false;
+            try (Cursor c = context.getContentResolver().query(VideoStore.Video.Media.EXTERNAL_CONTENT_URI,
+                    new String[]{VideoStore.Video.VideoColumns.BOOKMARK, VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN},
+                    VideoStore.Video.VideoColumns._ID + "=?", new String[]{Long.toString(videoId)}, null)) {
+                if (c != null && c.moveToFirst()) {
+                    alreadyWatched = c.getInt(0) == PlayerActivity.LAST_POSITION_END || c.getInt(1) == Trakt.TRAKT_DB_MARKED;
+                }
+            } catch (Exception ignored) {}
             ContentValues cv = new ContentValues();
-            if (watched) {
+            if (watched && posMs <= 0) {
                 cv.put(VideoStore.Video.VideoColumns.BOOKMARK, PlayerActivity.LAST_POSITION_END);
                 cv.put(VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN, Trakt.TRAKT_DB_MARKED);
                 cv.put(VideoStore.Video.VideoColumns.ARCHOS_LAST_TIME_PLAYED, updatedAtMs / 1000L);
-            } else if (removed || posMs <= 0) {
+            } else if (removed) {
+                cv.put(VideoStore.Video.VideoColumns.BOOKMARK, alreadyWatched
+                        ? PlayerActivity.LAST_POSITION_END : PlayerActivity.LAST_POSITION_UNKNOWN);
+                cv.put(VideoStore.Video.VideoColumns.ARCHOS_BOOKMARK, 0);
+                if (alreadyWatched) {
+                    cv.put(VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN, Trakt.TRAKT_DB_MARKED);
+                }
+            } else if (posMs <= 0) {
                 cv.put(VideoStore.Video.VideoColumns.BOOKMARK, PlayerActivity.LAST_POSITION_UNKNOWN);
                 cv.put(VideoStore.Video.VideoColumns.ARCHOS_BOOKMARK, 0);
                 cv.put(VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN, Trakt.TRAKT_DB_UNMARK);
                 cv.put(VideoStore.Video.VideoColumns.ARCHOS_LAST_TIME_PLAYED, 0);
             } else {
                 cv.put(VideoStore.Video.VideoColumns.BOOKMARK, (int) Math.min(Integer.MAX_VALUE, posMs));
-                cv.put(VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN, 0);
+                if (alreadyWatched || watched) {
+                    cv.put(VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN, Trakt.TRAKT_DB_MARKED);
+                }
                 cv.put(VideoStore.Video.VideoColumns.ARCHOS_LAST_TIME_PLAYED, updatedAtMs / 1000L);
             }
             int updated = context.getContentResolver().update(VideoStore.Video.Media.EXTERNAL_CONTENT_URI, cv,
                     VideoStore.Video.VideoColumns._ID + "=?", new String[]{Long.toString(videoId)});
             if (updated > 0) {
-                if (watched) {
+                if (watched && posMs <= 0) {
                     CinemaMediaTime.rememberState(videoId, null, 0L, PlayerActivity.LAST_POSITION_END);
+                } else if (removed) {
+                    CinemaMediaTime.clearResume(videoId, null, null);
+                    if (alreadyWatched) CinemaMediaTime.rememberState(videoId, null, 0L, PlayerActivity.LAST_POSITION_END);
                 } else {
                     CinemaMediaTime.clearResume(videoId, null, null);
-                    if (!removed && posMs > 0) CinemaMediaTime.rememberState(videoId, null, 0L, posMs);
+                    if (posMs > 0) CinemaMediaTime.rememberState(videoId, null, 0L, posMs);
                 }
                 return true;
             }
@@ -1270,6 +1444,17 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
                 if ("continue".equals(lt) && (rec.optLong("position_ms") <= 1
                         || ep > 0 || "episode".equalsIgnoreCase(mt) || "show".equalsIgnoreCase(mt))) continue;
                 String key = canonicalKey(mt, imdb, tmdb, season, ep, "", title);
+                long recTs = rec.optLong("updated_at", System.currentTimeMillis());
+                if ("continue".equals(lt) && isContinueTombstoned(app, key, "", "", title, imdb, tmdb, season, ep, recTs)) {
+                    final String fImdb = imdb;
+                    final long fTmdb = tmdb;
+                    final int fS = season;
+                    final int fE = ep;
+                    final String fTitle = title;
+                    TRAKT_PUSH_IO.execute(() -> com.meedx.providers.TraktSyncClient.removePlaybackProgress(
+                            app, fImdb, fTmdb, fS, fE, fTitle));
+                    continue;
+                }
                 if (!key.isBlank()) {
                     ContentValues cv = new ContentValues();
                     cv.put("list_type", lt);
@@ -1284,7 +1469,7 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
                     cv.put("progress_pct", rec.optDouble("progress_pct", 0.0));
                     cv.put("position_ms", rec.optLong("position_ms", 0L));
                     cv.put("duration_ms", rec.optLong("duration_ms", 0L));
-                    cv.put("updated_at", rec.optLong("updated_at", System.currentTimeMillis()));
+                    cv.put("updated_at", recTs);
                     db.insertWithOnConflict("trakt_items", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
                 }
             }
@@ -1333,6 +1518,10 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
                     String lt = watched ? "watched" : "continue";
                     long posMs = rec.optLong("position_ms", 0L);
                     long durMs = rec.optLong("duration_ms", 0L);
+                    long recTs = rec.optLong("updated_at", System.currentTimeMillis());
+                    if ("continue".equals(lt) && isContinueTombstoned(context, key, "", "", title, imdb, tmdb, season, ep, recTs)) {
+                        continue;
+                    }
                     if (!watched && (durMs <= 0 || posMs <= 1
                             || ("show".equalsIgnoreCase(mt))
                             || ((ep > 0 || "episode".equalsIgnoreCase(mt))
@@ -1593,14 +1782,19 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
     }
 
     static void removeTraktContinue(Context context, TraktItem item) {
+        recordContinueTombstone(context, item.itemKey(), "", "", item.title(),
+                item.imdbId(), item.tmdbId(), item.season(), item.episode());
         get(context).getWritableDatabase().delete("trakt_items",
                 "list_type='continue' AND item_key=?", new String[]{item.itemKey()});
         clearMatchingContinue(context, item.imdbId(), item.tmdbId(), item.season(), item.episode());
         TRAKT_PUSH_IO.execute(() -> com.meedx.providers.TraktSyncClient.removePlaybackProgress(
-                context, item.imdbId(), item.tmdbId(), item.season(), item.episode()));
+                context, item.imdbId(), item.tmdbId(), item.season(), item.episode(), item.title()));
     }
 
     static void clearMatchingContinue(Context context, String imdb, long tmdb, int season, int episode) {
+        if (!isEmpty(imdb) || tmdb > 0) {
+            recordContinueTombstone(context, "", "", "", "", imdb, tmdb, season, episode);
+        }
         var db = get(context).getWritableDatabase();
         String match = "season=? AND episode=? AND ((imdb_id != '' AND imdb_id=?) OR (tmdb_id > 0 AND tmdb_id=?))";
         imdb = imdb == null ? "" : imdb;
@@ -1615,14 +1809,20 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
     public static List<TraktItem> listTraktItems(Context context, String listType) {
         List<TraktItem> out = new ArrayList<>();
         if (context == null || listType == null) return out;
+        boolean filterTombstones = "continue".equals(listType);
         try (Cursor c = get(context).getReadableDatabase().rawQuery(
                 "SELECT list_type,item_key,media_type,title,imdb_id,tmdb_id,season,episode,year,progress_pct,position_ms,duration_ms,updated_at "
                         + "FROM trakt_items WHERE list_type=? ORDER BY updated_at DESC LIMIT 80",
                 new String[]{listType})) {
             while (c.moveToNext()) {
-                out.add(new TraktItem(c.getString(0), c.getString(1), c.getString(2), c.getString(3),
+                TraktItem ti = new TraktItem(c.getString(0), c.getString(1), c.getString(2), c.getString(3),
                         c.getString(4), c.getLong(5), c.getInt(6), c.getInt(7), c.getInt(8),
-                        c.getDouble(9), c.getLong(10), c.getLong(11), c.getLong(12)));
+                        c.getDouble(9), c.getLong(10), c.getLong(11), c.getLong(12));
+                if (filterTombstones && isContinueTombstoned(context, ti.itemKey(), "", "", ti.title(),
+                        ti.imdbId(), ti.tmdbId(), ti.season(), ti.episode(), ti.updatedAt())) {
+                    continue;
+                }
+                out.add(ti);
             }
         } catch (Exception ignored) {}
         return out;
@@ -1672,15 +1872,17 @@ public final class CinemaWatchStore extends SQLiteOpenHelper {
                     efMt = desc.mediaType();
                 }
             }
-            String key = canonicalKey(efMt, efImdb, efTmdb, efS, efE, "", title);
+            String key = canonicalKey(efMt, efImdb, efTmdb, efS, efE, videoId > 0 ? "v:" + videoId : uri, title);
+            recordContinueTombstone(app, key, videoId > 0 ? "v:" + videoId : "", uri, title, efImdb, efTmdb, efS, efE);
             if (!key.isBlank()) {
                 try {
                     get(app).getWritableDatabase().delete("trakt_items",
                             "list_type='continue' AND item_key=?", new String[]{key});
                 } catch (Exception ignored) {}
             }
-            if (com.meedx.providers.TraktSyncClient.isConnected(app) && (!isEmpty(efImdb) || efTmdb > 0)) {
-                com.meedx.providers.TraktSyncClient.removePlaybackProgress(app, efImdb, efTmdb, efS, efE);
+            if (com.meedx.providers.TraktSyncClient.isConnected(app)
+                    && (!isEmpty(efImdb) || efTmdb > 0 || !isEmpty(title))) {
+                com.meedx.providers.TraktSyncClient.removePlaybackProgress(app, efImdb, efTmdb, efS, efE, title);
             }
         });
     }

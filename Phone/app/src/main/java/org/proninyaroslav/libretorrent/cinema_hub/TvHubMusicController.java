@@ -282,10 +282,7 @@ final class TvHubMusicController {
             if (musicPlaybackScreen != null) musicPlaybackScreen.setVisibility(View.GONE);
             if (audioMode) setMusicShortcutVisible(true);
             else host.updateTabBottomPadding();
-            host.startActivity(new Intent(host, org.proninyaroslav.libretorrent.MainActivity.class)
-                    .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_NO_ANIMATION)
-                    .putExtra(org.proninyaroslav.libretorrent.MainActivity.EXTRA_SELECT_TAB, backTab));
-            host.overridePendingTransition(0, 0);
+            PhoneModuleBridges.hostShell().openHostTabById(host, backTab);
             return;
         }
         if (host.hub != null) host.hub.setVisibility(open ? View.INVISIBLE : View.VISIBLE);
@@ -377,10 +374,7 @@ final class TvHubMusicController {
         stopMusicForVideo(false);
         host.clearCastNotification();
         if (navReturn != 0 && !host.playbackOpened) {
-            host.startActivity(new Intent(host, org.proninyaroslav.libretorrent.MainActivity.class)
-                    .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_NO_ANIMATION)
-                    .putExtra(org.proninyaroslav.libretorrent.MainActivity.EXTRA_SELECT_TAB, navReturn));
-            host.overridePendingTransition(0, 0);
+            PhoneModuleBridges.hostShell().openHostTabById(host, navReturn);
         }
     }
 

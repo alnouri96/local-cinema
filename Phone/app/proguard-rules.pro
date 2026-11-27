@@ -32,3 +32,8 @@
 
 # GeckoRuntime loads SnakeYAML, which uses reflective type metadata and package names.
 -keep class org.yaml.snakeyaml.** { *; }
+
+# Keep WorkManager periodic/debounced cloud backup worker constructor for reflective instantiation.
+-keep class org.proninyaroslav.libretorrent.cinema_hub.CinemaCloudSyncWorker {
+    public <init>(android.content.Context, androidx.work.WorkerParameters);
+}

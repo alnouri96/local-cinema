@@ -11,6 +11,16 @@ public final class CinemaMediaTime {
     private static final Map<Long, Long> DURATION_BY_ID = new ConcurrentHashMap<>();
     private static final Map<String, Long> RESUME_BY_PATH = new ConcurrentHashMap<>();
     private static final Map<Long, Long> RESUME_BY_ID = new ConcurrentHashMap<>();
+    private static final java.util.concurrent.atomic.AtomicLong STATE_EPOCH =
+            new java.util.concurrent.atomic.AtomicLong(1L);
+
+    public static long stateEpoch() {
+        return STATE_EPOCH.get();
+    }
+
+    public static void bumpStateEpoch() {
+        STATE_EPOCH.incrementAndGet();
+    }
 
     private static String normalize(String path) {
         if (path == null || path.isEmpty()) return null;
@@ -47,6 +57,7 @@ public final class CinemaMediaTime {
             if (RESUME_BY_ID.size() >= 256) RESUME_BY_ID.clear();
             RESUME_BY_ID.put(id, resumeMs);
         }
+        STATE_EPOCH.incrementAndGet();
     }
 
     public static void clearResume(long id, String path, Uri uri) {
@@ -59,6 +70,7 @@ public final class CinemaMediaTime {
             String k2 = normalize(uri.getPath() != null ? uri.getPath() : uri.toString());
             if (k2 != null) RESUME_BY_PATH.put(k2, -1L);
         }
+        STATE_EPOCH.incrementAndGet();
     }
 
     public static long known(String path, long fallback) {

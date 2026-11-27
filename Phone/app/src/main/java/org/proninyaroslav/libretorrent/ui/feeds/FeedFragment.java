@@ -266,6 +266,13 @@ public class FeedFragment extends AbstractListDetailFragment {
         binding.addChannel.setOnClickListener((v) -> showAddFeedDialog(null));
 
         binding.appBar.setOnMenuItemClickListener(this::onMenuItemClickListener);
+        var navBar = activity.findNavBarFragment(this);
+        if (navBar != null && navBar.canNavigateBackFromFeeds()) {
+            binding.appBar.setNavigationIcon(R.drawable.abc_ic_ab_back_material);
+            binding.appBar.setNavigationOnClickListener(v -> activity.getOnBackPressedDispatcher().onBackPressed());
+        } else {
+            binding.appBar.setNavigationIcon(null);
+        }
 
         var args = FeedFragmentArgs.fromBundle(getArguments());
         if (args.getUri() != null) {

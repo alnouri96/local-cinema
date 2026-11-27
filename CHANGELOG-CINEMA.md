@@ -1,5 +1,31 @@
 # Local Cinema release notes
 
+## Local Cinema v1.0.0 (`versionCode = 20`, 2026-11-27)
+
+### English
+
+- Faster return to TV Home, better poster focus and scroll restoration, and a clearer watched badge. Continue Watching updates immediately and keeps watched status when a title is replayed.
+- Improved the TV player, preferred audio, and direct Live TV playback. Family Viewing and Skip Ads are available for supported titles and sources.
+- Expanded curated add-ons and improved playback compatibility for Stremio catalogs, streams, and live channels. The phone can show which curated add-ons are installed on the TV.
+- Improved subtitle search and synchronization, with live timing, size, outline, and opacity controls and clearer dual-subtitle rendering.
+- Improved the phone browser and media detection. Download supported MP4, MKV, WebM, HLS, and DASH streams, and send supported videos or magnets to the TV.
+- Improved network browsing and indexed folders on TV. On the phone, Libraries opens local folders and storage directly, and the floating remote stays within the app.
+- Redesigned Backup & Restore Options with clearer controls for local and Google Drive backups. Backups can include the last saved TV settings when a live snapshot is unavailable. Deleting cloud backups requires confirmation.
+
+<div dir="rtl" align="right">
+
+### العربية
+
+- عودة أسرع إلى شاشة التلفاز الرئيسية، واستعادة أفضل لموضع التركيز والتمرير، وعلامة مشاهدة أوضح. يتحدّث صف «متابعة المشاهدة» فوراً ويحافظ على حالة المشاهدة عند إعادة التشغيل.
+- تحسين مشغّل التلفاز وأولوية الصوت والتشغيل المباشر للقنوات. تتوفّر المشاهدة العائلية وتخطّي الإعلانات للعناوين والمصادر المدعومة.
+- توسيع قائمة الإضافات المختارة وتحسين توافق قوائم Stremio ومصادرها وقنواتها المباشرة. يعرض الهاتف الإضافات المختارة المثبّتة على التلفاز.
+- تحسين بحث الترجمة ومزامنتها مع تحكّم مباشر بالتوقيت والحجم والحدود والشفافية، وعرض أوضح للترجمتين معاً.
+- تحسين متصفح الهاتف واكتشاف الوسائط. يمكن تنزيل المصادر المدعومة بصيغ MP4 وMKV وWebM وHLS وDASH، وإرسال الفيديو وروابط المغناطيس المدعومة إلى التلفاز.
+- تحسين تصفّح الشبكة والمجلدات المفهرسة على التلفاز. تفتح «المكتبات» على الهاتف المجلدات ووحدات التخزين مباشرةً، ويبقى الريموت العائم داخل التطبيق.
+- إعادة تصميم خيارات النسخ الاحتياطي والاستعادة لتسهيل الحفظ محلياً وفي Google Drive. يمكن تضمين آخر إعدادات محفوظة للتلفاز إذا تعذّرت قراءتها مباشرةً. يتطلّب حذف النسخ السحابية تأكيداً.
+
+</div>
+
 ## Local Cinema v1.0.0-beta.17 (`versionCode = 17`, 2026-11-23)
 
 ### English
@@ -102,7 +128,7 @@ Both apps are open source and free. [Source for these APKs](https://github.com/a
 - Movie posters and music covers are larger. Use music settings to show or hide track information on the TV and set how long it stays visible.
 - Open RSS from the browser toolbar and Download Center from the Downloader tab. Use Sync Now in TV Hub to send supported settings and channel favorites.
 - Fixed a GeckoView startup crash in the optimized release build.
-- About shows the Local Cinema Manager logo and credits MEEDX. It describes LibreTorrent as part of Download Center. It also links to the source code and third-party licenses.
+- About shows the Local Cinema Manager logo and credits MEEDX. It also links to the source code and third-party licenses.
 
 Both apps are open source and free. [Source for these APKs](https://github.com/alnouri96/local-cinema/tree/v1.0.0-beta.15) · [Third-party licenses](https://github.com/alnouri96/local-cinema/blob/v1.0.0-beta.15/docs/THIRD_PARTY.md).
 
@@ -128,7 +154,7 @@ Both apps are open source and free. [Source for these APKs](https://github.com/a
 - تظهر بوسترات الأفلام وأغلفة الموسيقى بحجم أكبر. تحكّم من إعدادات الموسيقى في ظهور معلومات المقطوعة على التلفاز ومدة بقائها.
 - افتح خلاصات RSS من شريط المتصفح ومركز التحميل من تبويب «داونلودر». استخدم «المزامنة الآن» في TV Hub لإرسال الإعدادات المدعومة والقنوات المفضلة.
 - أُصلح انهيار GeckoView عند بدء تشغيل نسخة الإصدار المحسّنة.
-- تعرض نافذة «حول التطبيق» شعار Local Cinema Manager وتنسب التطوير إلى MEEDX. وتوضح دور LibreTorrent في مركز التحميل وتربط بالكود المصدري وتراخيص الجهات الخارجية.
+- تعرض نافذة «حول التطبيق» شعار Local Cinema Manager وتنسب التطوير إلى MEEDX. وتربط بالكود المصدري وتراخيص الجهات الخارجية.
 
 التطبيقان مفتوحا المصدر ومجانيان بالكامل. [الكود المطابق للحزمتين](https://github.com/alnouri96/local-cinema/tree/v1.0.0-beta.15) · [تراخيص الجهات الخارجية](https://github.com/alnouri96/local-cinema/blob/v1.0.0-beta.15/docs/THIRD_PARTY.md).
 
@@ -253,7 +279,7 @@ Both apps are open source and free. [Source for these APKs](https://github.com/a
 - Merge the details subtitle capsule into the Subtitles action, with embedded
   tracks first, file-folder/Subsource actions, and Left/Right/Back dismissal.
 - Make measured audio interactive and place it left of video dimensions; persist
-  explicit per-file choices into NOVA's existing track-selection lifecycle.
+  explicit per-file choices into track selection during playback.
 - Use circular film action states and a thicker, larger gold portrait focus ring.
 - Add a cinematic native series/seasons browser with real episode stills, episode
   detail links, Watch/Resume and restored focus; refresh playback state on return.
@@ -266,7 +292,7 @@ Both apps are open source and free. [Source for these APKs](https://github.com/a
 - Add poster-size manual file-selection cards under `other videos`, with DPAD flow.
 - Search Subsource on entry and directly load subtitles for unique verified identities;
   keep ambiguous title selection and explicit download confirmation.
-- Consolidate original NOVA settings beneath System.
+- Consolidate advanced settings beneath System.
 
 ## User revision v4
 
@@ -297,7 +323,7 @@ Both apps are open source and free. [Source for these APKs](https://github.com/a
   clock/date digits, palette shading and a focus-expanding left navigation rail.
 - Added persistent home row order/visibility, poster size/density and appearance controls.
 - Added cinematic film details, English logos, cast portraits, watchlist and
-  original NOVA playback/watched actions; reliable available trailers open YouTube.
+  playback and watched actions. Available trailers open YouTube.
 - Added explicit Subsource Arabic search/download, evidence-based release ranking,
   encrypted key management, TXT import, pagination, limits and retry handling.
 - Added safe subtitle ZIP/text processing, adjacent-storage/local fallback,
@@ -320,7 +346,7 @@ Both apps are open source and free. [Source for these APKs](https://github.com/a
   row navigation and retained focus after home updates and appearance changes.
 - Added source-labelled TMDB ratings, English film/director enrichment and actual
   file-probed video/audio/subtitle-availability capsules with a session cache.
-- Applied neutral dark theme aliases to retained NOVA network/advanced screens.
+- Applied neutral dark theme aliases to network and advanced screens.
 
 ## UI v8 final — 2026-11-08
 User approved final delivery: matched subtitle panels, lighter player menu focus transitions, and audio/resolution capsule height parity. See docs/UI-V8-FINAL.md and HANDOFF.md for checks and continuation instructions.

@@ -213,10 +213,17 @@ public final class CinemaLanguagePreferences {
 
         ListView list = new ListView(context);
         list.setDivider(null);
-        list.setDividerHeight(CinemaUi.dp(context, 4));
-        list.setPadding(CinemaUi.dp(context, 14), CinemaUi.dp(context, 8),
-                CinemaUi.dp(context, 14), CinemaUi.dp(context, 8));
-        list.setSelector(CinemaUi.rounded(0xff35281b, CinemaUi.dp(context, 12), CinemaTokens.GOLD));
+        list.setDividerHeight(CinemaUi.dp(context, 6));
+        list.setClipToPadding(false);
+        list.setClipChildren(false);
+        int hPad = CinemaUi.dp(context, 20);
+        int topPad = CinemaUi.dp(context, 14);
+        int botPad = CinemaUi.dp(context, 12);
+        list.setPadding(hPad, topPad, hPad, botPad);
+        var focusBg = CinemaUi.rounded(0xff35281b, CinemaUi.dp(context, 12), CinemaTokens.GOLD);
+        int inset = CinemaUi.dp(context, 2);
+        list.setSelector(new android.graphics.drawable.InsetDrawable(focusBg, inset, inset, inset, inset));
+        list.setDrawSelectorOnTop(false);
 
         var adapter = new android.widget.BaseAdapter() {
             @Override public int getCount() { return names.length; }

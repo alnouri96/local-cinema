@@ -1208,8 +1208,18 @@ public class CustomApplication extends Application implements DefaultLifecycleOb
         }
         // Preserve the chosen language while consistently using western digits.
         locale = new Locale.Builder().setLocale(locale).setUnicodeLocaleKeyword("nu", "latn").build();
-        Locale.setDefault(locale);
-        Configuration config = new Configuration(resources.getConfiguration());
+        if (!locale.equals(Locale.getDefault())) {
+            Locale.setDefault(locale);
+        }
+        Configuration currentConfig = resources.getConfiguration();
+        Locale currentLocale = currentConfig.getLocales().isEmpty()
+                ? currentConfig.locale
+                : currentConfig.getLocales().get(0);
+        int wantedDir = android.text.TextUtils.getLayoutDirectionFromLocale(locale);
+        if (locale.equals(currentLocale) && currentConfig.getLayoutDirection() == wantedDir) {
+            return;
+        }
+        Configuration config = new Configuration(currentConfig);
         config.setLocale(locale);
         config.setLayoutDirection(locale);
         resources.updateConfiguration(config, resources.getDisplayMetrics());

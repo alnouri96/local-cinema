@@ -48,3 +48,4 @@ gh release create $tag $tvApk $phoneApk $checksums --repo alnouri96/local-cinema
 ~~~
 
 4. In sibling `G:/MEEDX WEB`, update `src/data/catalog.json` patch notes, run `npm run sync:release`, `npm run verify -- --published`, `npm run build`, push `main`, deploy to Cloudflare Pages (`npx wrangler pages deploy dist --project-name=meedx --branch=main`), and verify live with `npm run verify -- --live`.
+5. Migrate the active patch summary from `HANDOFF.md` into `CHANGELOG-CINEMA.md`, update the published release version in `AGENTS.md` and `HANDOFF.md`, and reset the `Active Unreleased Patch` section in `HANDOFF.md` to empty.

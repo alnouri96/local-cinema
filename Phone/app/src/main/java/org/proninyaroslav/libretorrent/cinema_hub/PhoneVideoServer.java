@@ -9,10 +9,8 @@ final class PhoneVideoServer extends NanoHTTPD {
     final String path = "/video/" + java.util.UUID.randomUUID().toString().replace("-", "");
     private final ContentResolver resolver;
     private final Uri file;
-    private org.proninyaroslav.libretorrent.core.model.TorrentEngine torrentEngine;
-    private org.proninyaroslav.libretorrent.core.model.stream.TorrentStream torrentStream;
+    private PhoneModuleBridges.ByteRangeStreamSource rangeStreamSource;
     private String torrentMime;
-    private boolean temporaryTorrent;
     private boolean photo;
     private final java.util.LinkedHashMap<String, Uri> audioFiles = new java.util.LinkedHashMap<>();
 
@@ -94,8 +92,36 @@ final class PhoneVideoServer extends NanoHTTPD {
 
     private record InMemorySub(byte[] body, String mime, long createdAtMs) {}
 
+    private static final java.util.regex.Pattern XYWH_SUB_RE =
+            java.util.regex.Pattern.compile("(?i)#xywh=\\s*\\d+");
+    private static final java.util.regex.Pattern IMAGE_CUE_ONLY_RE =
+            java.util.regex.Pattern.compile("(?i)^(?:https?://\\S+|/?[^\\s<>\"'{}|^`\\\\]+)\\.(?:jpe?g|png|webp|gif|bmp|avif|svg)(?:[?#]\\S*)?$");
+
+    static boolean isStoryboardVttText(String rawText) {
+        if (rawText == null || rawText.isBlank()) return false;
+        boolean sawStoryboard = false;
+        boolean sawDialogue = false;
+        for (String raw : rawText.replace("\uFEFF", "").replace("\r\n", "\n").replace('\r', '\n').split("\n")) {
+            String t = raw.trim();
+            if (t.isEmpty()) continue;
+            String up = t.toUpperCase(java.util.Locale.ROOT);
+            if (up.startsWith("WEBVTT") || up.startsWith("NOTE") || up.startsWith("STYLE")
+                    || up.startsWith("REGION") || t.matches("^\\d+$") || t.contains("-->")) {
+                continue;
+            }
+            String clean = t.replaceAll("<[^>]+>", "").trim();
+            if (XYWH_SUB_RE.matcher(clean).find() || IMAGE_CUE_ONLY_RE.matcher(clean).matches()) {
+                sawStoryboard = true;
+            } else if (!clean.isEmpty()) {
+                sawDialogue = true;
+                break;
+            }
+        }
+        return sawStoryboard && !sawDialogue;
+    }
+
     static String registerInMemorySubtitle(String text, String mime) {
-        if (text == null || text.isBlank()) return null;
+        if (text == null || text.isBlank() || isStoryboardVttText(text)) return null;
         long now = System.currentTimeMillis();
         var it = IN_MEMORY_SUBS.entrySet().iterator();
         while (it.hasNext()) {
@@ -146,16 +172,35 @@ final class PhoneVideoServer extends NanoHTTPD {
         String id = java.util.UUID.randomUUID().toString().replace("-", "");
         byte[] secret = new byte[32];
         PROXY_RNG.nextBytes(secret);
+        String cleanRef = referer == null ? "" : referer.trim();
+        String cleanOrigin = origin == null ? "" : origin.trim();
+        if (cleanOrigin.isEmpty() && !cleanRef.isEmpty()) {
+            cleanOrigin = deriveOriginFromUrl(cleanRef);
+        }
         ProxyTarget root = new ProxyTarget(
                 url.trim(),
-                referer == null ? "" : referer.trim(),
-                origin == null ? "" : origin.trim(),
+                cleanRef,
+                cleanOrigin,
                 userAgent == null ? "" : userAgent.trim(),
                 cookie == null ? "" : cookie.trim(),
                 authorization == null ? "" : authorization.trim());
         ProxySession session = new ProxySession(id, root, isLive, secret);
         PROXY_SESSIONS.put(id, session);
         return session.rootPath();
+    }
+
+    private static String deriveOriginFromUrl(String rawUrl) {
+        if (rawUrl == null || rawUrl.isBlank()) return "";
+        try {
+            Uri u = Uri.parse(rawUrl.trim());
+            String scheme = u.getScheme();
+            String auth = u.getEncodedAuthority();
+            if (("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
+                    && auth != null && !auth.isBlank() && u.getUserInfo() == null) {
+                return scheme.toLowerCase(java.util.Locale.ROOT) + "://" + auth;
+            }
+        } catch (Exception ignored) {}
+        return "";
     }
 
     private static void pruneProxySessions() {
@@ -219,14 +264,13 @@ final class PhoneVideoServer extends NanoHTTPD {
         this.photo = photo;
     }
 
-    PhoneVideoServer(String host, org.proninyaroslav.libretorrent.core.model.TorrentEngine engine,
-                     org.proninyaroslav.libretorrent.core.model.stream.TorrentStream stream, String name, boolean temporary) {
-        this(host, null, null);
-        torrentEngine = engine;
-        torrentStream = stream;
-        temporaryTorrent = temporary;
-        String extension = name.substring(name.lastIndexOf('.') + 1).toLowerCase(java.util.Locale.ROOT);
-        torrentMime = switch (extension) {
+    static PhoneVideoServer forRangeStream(String host, PhoneModuleBridges.ByteRangeStreamSource streamSource, String name) {
+        PhoneVideoServer server = new PhoneVideoServer(host, null, null);
+        server.rangeStreamSource = streamSource;
+        String safeName = name == null ? "" : name;
+        int dot = safeName.lastIndexOf('.');
+        String extension = dot >= 0 ? safeName.substring(dot + 1).toLowerCase(java.util.Locale.ROOT) : "";
+        server.torrentMime = switch (extension) {
             case "mkv" -> "video/x-matroska";
             case "avi" -> "video/x-msvideo";
             case "webm" -> "video/webm";
@@ -234,6 +278,7 @@ final class PhoneVideoServer extends NanoHTTPD {
             case "ts" -> "video/mp2t";
             default -> "video/mp4";
         };
+        return server;
     }
 
     static byte[] jpeg(ContentResolver resolver, Uri file) throws IOException {
@@ -270,7 +315,7 @@ final class PhoneVideoServer extends NanoHTTPD {
             return newFixedLengthResponse(Response.Status.METHOD_NOT_ALLOWED, "text/plain", "");
         }
         try {
-            if (torrentStream != null) return serveTorrent(session);
+            if (rangeStreamSource != null) return serveTorrent(session);
             var response = serveFile(session, resolver, audio == null ? file : audio);
             if (audio != null) android.util.Log.d("CinemaAudio", "HTTP " + response.getStatus().getRequestStatus()
                     + " range=" + response.getHeader("Content-Range"));
@@ -280,20 +325,19 @@ final class PhoneVideoServer extends NanoHTTPD {
         }
     }
 
-    boolean isTorrentStream() { return torrentStream != null; }
+    boolean isTorrentStream() { return rangeStreamSource != null; }
 
     @Override public synchronized void stop() {
         super.stop();
         audioFiles.clear();
         pruneProxySessions();
-        if (temporaryTorrent && torrentEngine != null && torrentStream != null) {
-            temporaryTorrent = false;
-            torrentEngine.deleteTemporaryCast(torrentStream.torrentId);
+        if (rangeStreamSource != null) {
+            rangeStreamSource.releaseIfTemporary();
         }
     }
 
     private Response serveTorrent(IHTTPSession request) {
-        long size = torrentStream.fileSize;
+        long size = rangeStreamSource.fileSize();
         String range = request.getHeaders().get("range");
         long start = 0, end = size - 1;
         if (range != null) {
@@ -319,7 +363,7 @@ final class PhoneVideoServer extends NanoHTTPD {
         if (request.getMethod() != Method.HEAD) {
             try {
                 input = new java.io.BufferedInputStream(
-                        torrentEngine.openCastStream(torrentStream, start, end - start + 1), 512 * 1024);
+                        rangeStreamSource.openRange(start, end - start + 1), 512 * 1024);
             } catch (IOException error) {
                 return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Torrent stream unavailable");
             }
@@ -603,7 +647,11 @@ final class PhoneVideoServer extends NanoHTTPD {
             conn.setConnectTimeout(15000);
             conn.setReadTimeout(25000);
             if (!ps.root.referer().isEmpty()) conn.setRequestProperty("Referer", ps.root.referer());
-            if (!ps.root.origin().isEmpty()) conn.setRequestProperty("Origin", ps.root.origin());
+            String effectiveOrigin = ps.root.origin();
+            if (effectiveOrigin.isEmpty() && !ps.root.referer().isEmpty()) {
+                effectiveOrigin = deriveOriginFromUrl(ps.root.referer());
+            }
+            if (!effectiveOrigin.isEmpty()) conn.setRequestProperty("Origin", effectiveOrigin);
             if (!ps.root.userAgent().isEmpty()) conn.setRequestProperty("User-Agent", ps.root.userAgent());
 
             String curHost = safeHostOf(currentUrl);

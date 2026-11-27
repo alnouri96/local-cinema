@@ -48,6 +48,17 @@
             android:layout_marginTop="16dp"
             android:text="@string/cinema_open_source_free" />
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/donate_link"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="4dp"
+            android:backgroundTint="#E5A93B"
+            android:minHeight="48dp"
+            android:textColor="#171717"
+            android:textStyle="bold"
+            tools:text="Support &amp; Donate" />
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/source_link"
             style="?attr/materialButtonOutlinedStyle"
             android:layout_width="match_parent"

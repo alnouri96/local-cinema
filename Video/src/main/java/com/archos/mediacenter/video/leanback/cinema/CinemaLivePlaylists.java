@@ -44,7 +44,12 @@ final class CinemaLivePlaylists {
     }
 
     record Channel(String title, String group, String country, String logo, String url, boolean hls,
-                   String userAgent, String referer, String favoriteKey) {}
+                   String userAgent, String referer, String favoriteKey, java.util.Map<String, String> headers) {
+        Channel(String title, String group, String country, String logo, String url, boolean hls,
+                String userAgent, String referer, String favoriteKey) {
+            this(title, group, country, logo, url, hls, userAgent, referer, favoriteKey, java.util.Map.of());
+        }
+    }
 
     static final long IRAQ_REFRESH_INTERVAL = java.util.concurrent.TimeUnit.MINUTES.toMillis(30);
     static final String IRAQ_SOURCE_URL = NEXONIC_BASE + "iq.m3u";
@@ -258,14 +263,31 @@ final class CinemaLivePlaylists {
                 .build().toString();
     }
 
+    private static HttpURLConnection openPlaylistConnection(String initialUrl) throws IOException {
+        String current = initialUrl;
+        for (int hop = 0; hop < 6; hop++) {
+            var conn = (HttpURLConnection) java.net.URL.class.cast(new java.net.URL(current)).openConnection();
+            conn.setConnectTimeout(6000);
+            conn.setReadTimeout(8000);
+            conn.setInstanceFollowRedirects(false);
+            conn.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            conn.setRequestProperty("Accept", "application/vnd.apple.mpegurl, audio/x-mpegurl, */*");
+            int code = conn.getResponseCode();
+            if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                String loc = conn.getHeaderField("Location");
+                conn.disconnect();
+                if (loc == null || loc.isBlank()) throw new IOException("Empty redirect location");
+                current = new java.net.URL(new java.net.URL(current), loc.trim()).toString();
+                continue;
+            }
+            return conn;
+        }
+        throw new IOException("Too many playlist redirects");
+    }
+
     static List<Channel> load(Source source) throws IOException {
-        var connection = (HttpURLConnection) URI.create(source.url()).toURL().openConnection();
-        connection.setConnectTimeout(5000);
-        connection.setReadTimeout(6500);
-        connection.setInstanceFollowRedirects(true);
-        connection.setRequestProperty("User-Agent",
-                "Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-        connection.setRequestProperty("Accept", "application/vnd.apple.mpegurl, audio/x-mpegurl, */*");
+        var connection = openPlaylistConnection(source.url());
         long deadline = android.os.SystemClock.elapsedRealtime() + 18_000;
         try (var reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
             String header = reader.readLine();
@@ -275,6 +297,7 @@ final class CinemaLivePlaylists {
             String metadata = "";
             String userAgent = "";
             String referer = "";
+            var extraHeaders = new LinkedHashMap<String, String>();
             int lines = 0;
             int chars = 0;
             URI base = URI.create(connection.getURL().toString());
@@ -293,19 +316,43 @@ final class CinemaLivePlaylists {
                     metadata = line;
                     userAgent = "";
                     referer = "";
-                } else if (line.startsWith("#EXTVLCOPT:http-user-agent=")) {
-                    userAgent = line.substring("#EXTVLCOPT:http-user-agent=".length());
-                } else if (line.startsWith("#EXTVLCOPT:http-referrer=")) {
-                    referer = line.substring("#EXTVLCOPT:http-referrer=".length());
+                    extraHeaders = new LinkedHashMap<>();
+                } else if (line.regionMatches(true, 0, "#EXTVLCOPT:http-user-agent=", 0, 27)) {
+                    userAgent = line.substring(27).trim();
+                } else if (line.regionMatches(true, 0, "#EXTVLCOPT:http-referrer=", 0, 25)) {
+                    referer = line.substring(25).trim();
+                } else if (line.regionMatches(true, 0, "#EXTVLCOPT:http-referer=", 0, 24)) {
+                    referer = line.substring(24).trim();
+                } else if (line.regionMatches(true, 0, "#EXTVLCOPT:http-origin=", 0, 23)) {
+                    String orig = headerValue(line.substring(23).trim());
+                    if (!orig.isEmpty()) extraHeaders.put("Origin", orig);
+                } else if (line.regionMatches(true, 0, "#EXTVLCOPT:http-cookie=", 0, 23)) {
+                    String ck = headerValue(line.substring(23).trim());
+                    if (!ck.isEmpty()) extraHeaders.put("Cookie", ck);
+                } else if (line.regionMatches(true, 0, "#KODIPROP:inputstream.adaptive.stream_headers=", 0, 46)) {
+                    parsePipeHeaderParams(line.substring(46).trim(), extraHeaders);
                 } else if (!line.startsWith("#") && !line.isBlank()) {
-                    String url = resolve(base, line);
+                    String rawUrlPart = line;
+                    if (rawUrlPart.contains("|")) {
+                        int pipe = rawUrlPart.indexOf('|');
+                        parsePipeHeaderParams(rawUrlPart.substring(pipe + 1).trim(), extraHeaders);
+                        rawUrlPart = rawUrlPart.substring(0, pipe).trim();
+                    }
+                    String url = resolve(base, rawUrlPart);
                     if (!url.isBlank()) {
-                        Channel channel = channel(source.name(), source.countryCode(), base, metadata, url, userAgent, referer);
+                        for (var e : extraHeaders.entrySet()) {
+                            if ("user-agent".equalsIgnoreCase(e.getKey()) && userAgent.isBlank()) userAgent = e.getValue();
+                            else if (("referer".equalsIgnoreCase(e.getKey()) || "referrer".equalsIgnoreCase(e.getKey()))
+                                    && referer.isBlank()) referer = e.getValue();
+                        }
+                        Channel channel = channel(source.name(), source.countryCode(), base, metadata, url,
+                                userAgent, referer, extraHeaders);
                         channels.putIfAbsent(channel.url(), channel);
                     }
                     metadata = "";
                     userAgent = "";
                     referer = "";
+                    extraHeaders = new LinkedHashMap<>();
                 }
             }
             return List.copyOf(channels.values());
@@ -314,8 +361,21 @@ final class CinemaLivePlaylists {
         }
     }
 
+    private static void parsePipeHeaderParams(String params, java.util.Map<String, String> out) {
+        if (params == null || params.isBlank()) return;
+        for (String pair : params.split("&")) {
+            int eq = pair.indexOf('=');
+            if (eq <= 0) continue;
+            String k = Uri.decode(pair.substring(0, eq).trim());
+            String v = headerValue(Uri.decode(pair.substring(eq + 1).trim()));
+            if (!k.isEmpty() && !v.isEmpty() && !k.contains("\r") && !k.contains("\n")) {
+                out.put(k, v);
+            }
+        }
+    }
+
     private static Channel channel(String fallbackTitle, String fallbackCountry, URI base, String metadata, String url,
-                                   String userAgent, String referer) {
+                                   String userAgent, String referer, java.util.Map<String, String> extraHeaders) {
         String title = fallbackTitle;
         String group = "";
         String country = "";
@@ -334,6 +394,10 @@ final class CinemaLivePlaylists {
                 case "tvg-logo" -> logo = resolve(base, value);
                 case "http-user-agent" -> userAgent = value;
                 case "http-referrer", "http-referer" -> referer = value;
+                case "http-origin" -> {
+                    String orig = headerValue(value);
+                    if (!orig.isEmpty()) extraHeaders.put("Origin", orig);
+                }
                 default -> {}
             }
         }
@@ -350,8 +414,11 @@ final class CinemaLivePlaylists {
         country = country.trim().toUpperCase(Locale.ROOT);
         boolean hls = Uri.parse(url).getPath() != null
                 && Uri.parse(url).getPath().toLowerCase(Locale.ROOT).endsWith(".m3u8");
-        return new Channel(title, group, country, logo, url, hls, headerValue(userAgent), playlistUrl(referer),
-                LiveChannelFavorites.key(id, url));
+        String cleanUa = headerValue(userAgent);
+        String cleanRef = headerValue(referer);
+        return new Channel(title, group, country, logo, url, hls, cleanUa, cleanRef,
+                LiveChannelFavorites.key(id, url),
+                extraHeaders.isEmpty() ? java.util.Map.of() : java.util.Map.copyOf(extraHeaders));
     }
 
     private static String headerValue(String value) {

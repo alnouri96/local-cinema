@@ -31,8 +31,29 @@ public final class CinemaLinkServer extends WebSocketServer {
     public static final String ACTION_REMOTE_STATUS_UPDATED = "com.archos.mediacenter.video.REMOTE_STATUS_UPDATED";
     public static final String ACTION_API_SYNC_UPDATED = "com.archos.mediacenter.video.API_SYNC_UPDATED";
     private static final String PREF_WEB_REMOTE_ENABLED = "web_remote_enabled";
+    public static final String PREF_TV_SETTINGS_UPDATED_AT = "tv_settings_updated_at";
+    public static final String PREF_TV_SETTINGS_HASH = "tv_settings_hash";
     private static final java.util.Set<String> BACKUP_LINK_OPTIONS = java.util.Set.of(
             "auto_connect", "select_single", "background_at_boot", PREF_WEB_REMOTE_ENABLED);
+    private static final java.util.Set<String> IGNORED_LINK_PREF_KEYS = java.util.Set.of(
+            PREF_TV_SETTINGS_UPDATED_AT, PREF_TV_SETTINGS_HASH,
+            "last_phone_sync_at", "last_phone_sync_name", "active", "token", "port");
+    private final java.util.concurrent.atomic.AtomicBoolean applyingIncomingTvRestore =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.List<android.content.SharedPreferences> watchedPrefStores =
+            new java.util.ArrayList<>();
+    private final android.content.SharedPreferences.OnSharedPreferenceChangeListener tvPrefsChangeListener =
+            (sp, key) -> {
+                if (applyingIncomingTvRestore.get()) return;
+                if (key != null && (IGNORED_LINK_PREF_KEYS.contains(key)
+                        || key.startsWith("phone:")
+                        || key.startsWith("mobile:")
+                        || key.startsWith("cinema_settings_last_"))) {
+                    return;
+                }
+                scheduleTvSettingsMutationCheck();
+            };
+    private final Runnable tvMutationCheckTask = this::evaluateAndBroadcastTvSettingsMutation;
     private final java.util.concurrent.ExecutorService syncIo = java.util.concurrent.Executors.newSingleThreadExecutor();
     private final java.util.concurrent.ExecutorService remoteIo = java.util.concurrent.Executors.newSingleThreadExecutor();
     private volatile String cachedDescriptorKey = "";
@@ -90,6 +111,134 @@ public final class CinemaLinkServer extends WebSocketServer {
             public void onActivityDestroyed(Activity a) {}
         };
         app.registerActivityLifecycleCallbacks(activityCallbacks);
+        registerTvPrefsWatchers(app);
+        syncIo.execute(() -> bootstrapTvSettingsMetadata(app));
+    }
+
+    private void registerTvPrefsWatchers(Application app) {
+        String[] storeNames = {
+                "cinema_link", "meedx_stremio_addons", "cinema_addons_order", "cinema_addon_state",
+                "meedx_provider_keys", "trakt_sync_prefs", "subsource_secure", "omdb_secure",
+                "unified_subtitle_config", "live_tv_prefs", "live_channel_favorites"
+        };
+        var defSp = androidx.preference.PreferenceManager.getDefaultSharedPreferences(app);
+        defSp.registerOnSharedPreferenceChangeListener(tvPrefsChangeListener);
+        watchedPrefStores.add(defSp);
+        for (String name : storeNames) {
+            var sp = app.getSharedPreferences(name, 0);
+            sp.registerOnSharedPreferenceChangeListener(tvPrefsChangeListener);
+            watchedPrefStores.add(sp);
+        }
+    }
+
+    private void unregisterTvPrefsWatchers() {
+        for (var sp : watchedPrefStores) {
+            try { sp.unregisterOnSharedPreferenceChangeListener(tvPrefsChangeListener); } catch (Exception ignored) {}
+        }
+        watchedPrefStores.clear();
+    }
+
+    public static void notifyTvSettingsMutated(android.content.Context context) {
+        CinemaLinkServer s = instance;
+        if (s != null) {
+            if (!s.applyingIncomingTvRestore.get()) {
+                s.scheduleTvSettingsMutationCheck();
+            }
+            return;
+        }
+        if (context == null) return;
+        android.content.Context app = context.getApplicationContext();
+        java.util.concurrent.Executors.newSingleThreadExecutor().execute(() -> {
+            var linkSp = app.getSharedPreferences("cinema_link", 0);
+            String hash = computeTvSettingsHashStatic(app);
+            String prev = linkSp.getString(PREF_TV_SETTINGS_HASH, "");
+            if (!hash.isEmpty() && !hash.equals(prev)) {
+                linkSp.edit()
+                        .putLong(PREF_TV_SETTINGS_UPDATED_AT, System.currentTimeMillis())
+                        .putString(PREF_TV_SETTINGS_HASH, hash)
+                        .commit();
+            }
+        });
+    }
+
+    private void scheduleTvSettingsMutationCheck() {
+        main.removeCallbacks(tvMutationCheckTask);
+        main.postDelayed(tvMutationCheckTask, 350L);
+    }
+
+    private void evaluateAndBroadcastTvSettingsMutation() {
+        if (applyingIncomingTvRestore.get() || libraryContext == null) return;
+        syncIo.execute(() -> {
+            if (applyingIncomingTvRestore.get() || libraryContext == null) return;
+            try {
+                String newHash = computeTvSettingsHashStatic(libraryContext);
+                if (newHash.isEmpty()) return;
+                String prevHash = prefs.getString(PREF_TV_SETTINGS_HASH, "");
+                if (newHash.equals(prevHash)) return;
+                long now = System.currentTimeMillis();
+                prefs.edit()
+                        .putLong(PREF_TV_SETTINGS_UPDATED_AT, now)
+                        .putString(PREF_TV_SETTINGS_HASH, newHash)
+                        .commit();
+                String pkt = new JSONObject()
+                        .put("type", "TV_SETTINGS_CHANGED")
+                        .put("tv_settings_updated_at", now)
+                        .put("tv_settings_hash", newHash)
+                        .toString();
+                for (WebSocket ws : phones.values()) {
+                    if (ws != null && ws.isOpen()) {
+                        try { ws.send(pkt); } catch (Exception ignored) {}
+                    }
+                }
+            } catch (Exception ignored) {}
+        });
+    }
+
+    private void bootstrapTvSettingsMetadata(android.content.Context app) {
+        try {
+            String curHash = prefs.getString(PREF_TV_SETTINGS_HASH, "");
+            long curAt = prefs.getLong(PREF_TV_SETTINGS_UPDATED_AT, 0L);
+            String computed = computeTvSettingsHashStatic(app);
+            if (computed.isEmpty()) return;
+            if (curHash.isEmpty()) {
+                long initialAt = curAt;
+                if (initialAt == 0L && hasNonDefaultTvConfiguration(app)) {
+                    initialAt = System.currentTimeMillis();
+                }
+                prefs.edit()
+                        .putLong(PREF_TV_SETTINGS_UPDATED_AT, initialAt)
+                        .putString(PREF_TV_SETTINGS_HASH, computed)
+                        .commit();
+            } else if (!computed.equals(curHash)) {
+                prefs.edit()
+                        .putLong(PREF_TV_SETTINGS_UPDATED_AT, System.currentTimeMillis())
+                        .putString(PREF_TV_SETTINGS_HASH, computed)
+                        .commit();
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private static boolean hasNonDefaultTvConfiguration(android.content.Context app) {
+        if (app == null) return false;
+        try {
+            if (!com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.TMDB).isBlank()
+                    || !com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.OPEN_SUBTITLES).isBlank()
+                    || !com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.SUBDL).isBlank()
+                    || !com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.SUBSOURCE).isBlank()
+                    || !com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.TRAKT_ACCESS_TOKEN).isBlank()
+                    || !readFirstApiKey(app, "omdb").isBlank()
+                    || !readFirstApiKey(app, "subsource").isBlank()) {
+                return true;
+            }
+            if (com.meedx.providers.StremioAddons.exportJson(app).length() > 0) return true;
+            var smb = exportTvSmbSharesJson(app);
+            if (smb.optJSONArray("indexed_shortcuts") != null && smb.optJSONArray("indexed_shortcuts").length() > 0) return true;
+            if (smb.optJSONArray("saved_servers") != null && smb.optJSONArray("saved_servers").length() > 0) return true;
+            var defSp = androidx.preference.PreferenceManager.getDefaultSharedPreferences(app);
+            return defSp.contains("cinema_home_section_order") || defSp.contains(MetadataLanguage.PREF);
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     public static synchronized void startFor(Activity activity) {
@@ -121,6 +270,7 @@ public final class CinemaLinkServer extends WebSocketServer {
     private void disposeServer() {
         ready = false;
         main.removeCallbacksAndMessages(null);
+        unregisterTvPrefsWatchers();
         application.unregisterActivityLifecycleCallbacks(activityCallbacks);
         new Thread(() -> {
             try {
@@ -342,7 +492,12 @@ public final class CinemaLinkServer extends WebSocketServer {
             }
             backupPeers.put(socket, id);
             socket.setAttachment(id);
-            socket.send(new JSONObject().put("type", "CONNECTED").put("backup_only", true).toString());
+            socket.send(new JSONObject()
+                    .put("type", "CONNECTED")
+                    .put("backup_only", true)
+                    .put("tv_settings_updated_at", prefs.getLong(PREF_TV_SETTINGS_UPDATED_AT, 0L))
+                    .put("tv_settings_hash", prefs.getString(PREF_TV_SETTINGS_HASH, ""))
+                    .toString());
             return;
         }
         if ((!known && !sameToken(token, supplied))
@@ -400,14 +555,31 @@ public final class CinemaLinkServer extends WebSocketServer {
                 .put("accessibility_enabled", TvRemoteAccessibilityService.available())
                 .put("adb_enabled", TvLocalAdbBridge.isReady())
                 .put("web_remote_active", isWebRemoteEnabled(libraryContext))
-                .put("remote_tier", TvRemotePermissionKeeper.tierName(libraryContext)).toString());
+                .put("remote_tier", TvRemotePermissionKeeper.tierName(libraryContext))
+                .put("tv_settings_updated_at", prefs.getLong(PREF_TV_SETTINGS_UPDATED_AT, 0L))
+                .put("tv_settings_hash", prefs.getString(PREF_TV_SETTINGS_HASH, ""))
+                .toString());
         broadcastRemoteStatus(libraryContext);
         main.post(() -> sendPlayback(socket));
-        syncIo.execute(() -> sendFavoriteChannels(socket, LiveChannelFavorites.snapshot(libraryContext)));
+        syncIo.execute(() -> {
+            sendFavoriteChannels(socket, LiveChannelFavorites.snapshot(libraryContext));
+            sendTvInstalledAddons(socket);
+        });
         if (!lightweightReconnect) {
             sendWatchSyncSnapshot(socket);
             sendApiKeysSyncSnapshot(socket);
         }
+    }
+
+    private static String readFirstApiKey(android.content.Context context, String provider) {
+        if (context == null) return "";
+        try {
+            java.util.List<String> keys = new ApiKeyStore(context, provider).read();
+            if (keys != null && !keys.isEmpty() && keys.get(0) != null && !keys.get(0).isBlank()) {
+                return keys.get(0).trim();
+            }
+        } catch (Exception ignored) {}
+        return "";
     }
 
     private org.json.JSONObject buildApiKeysSyncPayload(android.content.Context context) {
@@ -422,14 +594,8 @@ public final class CinemaLinkServer extends WebSocketServer {
             String tuser = com.meedx.providers.ProviderKeys.get(context, com.meedx.providers.ProviderKeys.TRAKT_USERNAME);
             String tslug = com.meedx.providers.ProviderKeys.get(context, com.meedx.providers.ProviderKeys.TRAKT_SLUG);
             String sub = com.meedx.providers.ProviderKeys.get(context, com.meedx.providers.ProviderKeys.SUBSOURCE);
-            if (sub.isBlank()) {
-                try {
-                    java.util.List<String> keys = new ApiKeyStore(context, "subsource").read();
-                    if (keys != null && !keys.isEmpty() && keys.get(0) != null && !keys.get(0).isBlank()) {
-                        sub = keys.get(0).trim();
-                    }
-                } catch (Exception ignored) {}
-            }
+            if (sub.isBlank()) sub = readFirstApiKey(context, "subsource");
+            String omdb = readFirstApiKey(context, "omdb");
             String os = com.meedx.providers.ProviderKeys.get(context, com.meedx.providers.ProviderKeys.OPEN_SUBTITLES);
             String subdl = com.meedx.providers.ProviderKeys.get(context, com.meedx.providers.ProviderKeys.SUBDL);
             String tmdb = com.meedx.providers.ProviderKeys.get(context, com.meedx.providers.ProviderKeys.TMDB);
@@ -442,6 +608,7 @@ public final class CinemaLinkServer extends WebSocketServer {
             if (!tuser.isBlank()) obj.put("trakt_username", tuser);
             if (!tslug.isBlank()) obj.put("trakt_slug", tslug);
             if (!sub.isBlank()) obj.put("subsource_key", sub);
+            if (!omdb.isBlank()) obj.put("omdb_key", omdb);
             if (!os.isBlank()) obj.put("opensubtitles_key", os);
             if (!subdl.isBlank()) obj.put("subdl_key", subdl);
             if (!tmdb.isBlank()) obj.put("tmdb_key", tmdb);
@@ -540,13 +707,53 @@ public final class CinemaLinkServer extends WebSocketServer {
             phone.send(new JSONObject().put("type", "ADDON_ENABLED")
                     .put("manifest_url", manifestUrl).put("enabled", enabled).toString());
         } catch (Exception ignored) {}
+        CinemaLinkServer s = instance;
+        if (s != null) {
+            s.syncIo.execute(() -> s.sendTvInstalledAddons(phone));
+            if (s.libraryContext != null) broadcastSubtitleConfig(s.libraryContext);
+        }
     }
 
     static void sendAddonRemoved(String manifestUrl) {
         WebSocket phone = addonPhone();
-        if (phone == null) return;
+        if (phone != null) {
+            try {
+                phone.send(new JSONObject().put("type", "ADDON_REMOVED").put("manifest_url", manifestUrl).toString());
+            } catch (Exception ignored) {}
+        }
+        CinemaLinkServer s = instance;
+        if (s != null) {
+            if (phone != null) s.syncIo.execute(() -> s.sendTvInstalledAddons(phone));
+            if (s.libraryContext != null) broadcastSubtitleConfig(s.libraryContext);
+        }
+    }
+
+    private org.json.JSONArray buildTvInstalledAddonsJson(android.content.Context context) {
+        var arr = new org.json.JSONArray();
+        if (context == null) return arr;
+        for (var a : com.meedx.providers.StremioAddons.list(context)) {
+            if (a == null || !a.enabled) continue;
+            try {
+                arr.put(new JSONObject()
+                        .put("id", a.id == null ? "" : a.id)
+                        .put("manifestUrl", a.manifestUrl == null ? "" : a.manifestUrl)
+                        .put("baseUrl", a.baseUrl == null ? "" : a.baseUrl)
+                        .put("name", a.name == null ? "" : a.name)
+                        .put("resources_mask", a.resources)
+                        .put("provides_subtitles", com.meedx.providers.StremioAddons.isDedicatedSubtitleAddon(a))
+                        .put("enabled", true));
+            } catch (Exception ignored) {}
+        }
+        return arr;
+    }
+
+    private void sendTvInstalledAddons(WebSocket socket) {
+        if (socket == null || !socket.isOpen() || libraryContext == null) return;
         try {
-            phone.send(new JSONObject().put("type", "ADDON_REMOVED").put("manifest_url", manifestUrl).toString());
+            socket.send(new JSONObject()
+                    .put("type", "TV_ADDONS_LIST")
+                    .put("addons", buildTvInstalledAddonsJson(libraryContext))
+                    .toString());
         } catch (Exception ignored) {}
     }
 
@@ -567,10 +774,12 @@ public final class CinemaLinkServer extends WebSocketServer {
                 for (WebSocket phone : server.phones.values()) {
                     if (phone != null && phone.isOpen()) {
                         try { phone.send(payload); } catch (Exception ignored) {}
+                        server.sendTvInstalledAddons(phone);
                     }
                 }
             } catch (Exception ignored) {}
         });
+        broadcastSubtitleConfig(app);
     }
 
     public static void broadcastFavoriteChannels(android.content.Context context) {
@@ -618,12 +827,12 @@ public final class CinemaLinkServer extends WebSocketServer {
         int clamped = (speedPercent >= 50 && speedPercent <= 200) ? speedPercent : 100;
         var sp = androidx.preference.PreferenceManager.getDefaultSharedPreferences(context.getApplicationContext());
         String legacyKey = context.getString(com.archos.mediacenter.video.R.string.save_audio_speed_setting_pref_key);
-        sp.edit()
+        var ed = sp.edit()
                 .putBoolean("pref_remember_video_speed", remember)
                 .putInt("pref_video_speed", remember ? clamped : 100)
-                .putBoolean(com.archos.mediacenter.video.utils.VideoPreferencesCommon.KEY_PLAYBACK_SPEED, true)
-                .putFloat(legacyKey, remember ? (clamped / 100f) : 1.0f)
-                .apply();
+                .putFloat(legacyKey, remember ? (clamped / 100f) : 1.0f);
+        CinemaNovaLegacyPrefs.enableLegacyPlaybackSpeedPref(ed);
+        ed.apply();
     }
 
     public static void saveDualSubtitlePosition(android.content.Context context, int mode) {
@@ -718,8 +927,11 @@ public final class CinemaLinkServer extends WebSocketServer {
             else com.meedx.providers.StremioAddons.mergeRemoteJson(libraryContext, addons);
             notifyAddonsChanged(true);
             try {
-                if (socket.isOpen()) socket.send(new JSONObject().put("type", "ADDONS_ACK")
-                        .put("count", com.meedx.providers.StremioAddons.list(libraryContext).size()).toString());
+                if (socket.isOpen()) {
+                    socket.send(new JSONObject().put("type", "ADDONS_ACK")
+                            .put("count", com.meedx.providers.StremioAddons.list(libraryContext).size()).toString());
+                    sendTvInstalledAddons(socket);
+                }
             } catch (Exception ignored) {}
         });
     }
@@ -754,10 +966,12 @@ public final class CinemaLinkServer extends WebSocketServer {
                     socket.send(new JSONObject()
                             .put("type", "ADDON_TV_INSTALLED")
                             .put("ok", true)
+                            .put("id", added.id == null ? "" : added.id)
                             .put("name", name)
                             .put("manifest_url", added.manifestUrl)
                             .put("count", total)
                             .toString());
+                    sendTvInstalledAddons(socket);
                 }
             } catch (Exception e) {
                 android.util.Log.w("CinemaLink", "INSTALL_ADDON_ON_TV failed", e);
@@ -790,46 +1004,38 @@ public final class CinemaLinkServer extends WebSocketServer {
                 com.meedx.providers.StremioAddons.replaceAuthoritativeJson(libraryContext, addons);
                 notifyAddonsChanged(true);
             }
-            org.json.JSONArray watchRecords = command.optJSONArray("watch_records");
+            // TV is authoritative for Continue Watching and syncs history/watchlist directly with Trakt when linked.
+            // Phone FULL_SYNC_STATE pushes only settings, API keys, Stremio add-ons, Live TV prefs, and subtitle config.
             boolean watchChanged = false;
-            if (watchRecords != null) {
-                CinemaWatchStore.applyTraktItemsFromSyncRecords(libraryContext, watchRecords);
-                for (int i = 0; i < watchRecords.length(); i++) {
-                    JSONObject rec = watchRecords.optJSONObject(i);
-                    if (rec != null && CinemaWatchStore.applyRemoteSyncRecord(libraryContext, rec)) {
-                        watchChanged = true;
-                    }
-                }
-                if (watchRecords.length() > 0) watchChanged = true;
-            }
-            org.json.JSONArray watchlist = command.optJSONArray("watchlist");
-            if (watchlist != null) {
-                CinemaWatchStore.applySyncedWatchlistFromPhone(libraryContext, watchlist);
-                watchChanged = true;
-            }
             if (command.has("remember_playback_speed") || command.has("preferred_playback_speed_percent")) {
                 savePreferredPlaybackSpeed(
                         libraryContext,
                         command.optInt("preferred_playback_speed_percent", 100),
                         command.optBoolean("remember_playback_speed", false));
             }
-            if (command.has("dual_sub_position")) {
+            JSONObject incomingSubCfg = command.optJSONObject("subtitle_config");
+            boolean subCfgApplied = false;
+            if (incomingSubCfg != null) {
+                subCfgApplied = com.meedx.providers.UnifiedSubtitleConfig.importSyncJson(libraryContext, incomingSubCfg, true);
+                if (subCfgApplied) {
+                    CinemaSubtitleSyncBridge.applyUnifiedToTvPrefs(libraryContext);
+                    saveDualSubtitlePosition(libraryContext,
+                            com.meedx.providers.UnifiedSubtitleConfig.dualSubPosition(libraryContext));
+                }
+            } else if (command.has("dual_sub_position")) {
                 int dualPos = Math.max(0, Math.min(2, command.optInt("dual_sub_position", 1)));
                 saveDualSubtitlePosition(libraryContext, dualPos);
                 com.meedx.providers.UnifiedSubtitleConfig.setDualSubPosition(libraryContext, dualPos);
+                subCfgApplied = true;
+            }
+            if (subCfgApplied) {
                 main.post(() -> {
                     if (foreground instanceof com.archos.mediacenter.video.player.PlayerActivity activity) {
-                        activity.applyPhoneSubtitleStyle("dual_position", dualPos);
+                        activity.reloadUnifiedSubtitleAppearance();
                     } else if (foreground instanceof CinemaHlsActivity hls) {
-                        hls.applyPhoneSubtitleStyle("dual_position", dualPos);
+                        hls.reloadUnifiedSubtitleAppearance();
                     }
                 });
-            }
-            JSONObject incomingSubCfg = command.optJSONObject("subtitle_config");
-            if (incomingSubCfg != null) {
-                if (com.meedx.providers.UnifiedSubtitleConfig.importSyncJson(libraryContext, incomingSubCfg, false)) {
-                    CinemaSubtitleSyncBridge.applyUnifiedToTvPrefs(libraryContext);
-                }
             }
             long now = System.currentTimeMillis();
             String phoneName = command.optString("phone_name", "");
@@ -874,9 +1080,9 @@ public final class CinemaLinkServer extends WebSocketServer {
                     .setPackage(libraryContext.getPackageName()));
             main.post(() -> {
                 if (foreground instanceof com.archos.mediacenter.video.player.PlayerActivity activity) {
-                    activity.applyPhoneSubtitleStyle("dual_position", dualPos);
+                    activity.reloadUnifiedSubtitleAppearance();
                 } else if (foreground instanceof CinemaHlsActivity hls) {
-                    hls.applyPhoneSubtitleStyle("dual_position", dualPos);
+                    hls.reloadUnifiedSubtitleAppearance();
                 }
             });
         });
@@ -945,6 +1151,14 @@ public final class CinemaLinkServer extends WebSocketServer {
             String tmdbKey = command.optString("tmdb_key", "").trim();
             com.meedx.providers.ProviderKeys.save(libraryContext, com.meedx.providers.ProviderKeys.TMDB, tmdbKey);
         }
+        if (command.has("omdb_key")) {
+            String omdbKey = command.optString("omdb_key", "").trim();
+            try {
+                ApiKeyStore omdbStore = new ApiKeyStore(libraryContext, "omdb");
+                if (omdbKey.isEmpty()) omdbStore.save(java.util.Collections.emptyList());
+                else omdbStore.save(java.util.List.of(omdbKey));
+            } catch (Exception ignored) {}
+        }
         if (command.has("subsource_key")) {
             String subsourceKey = command.optString("subsource_key", "").trim();
             com.meedx.providers.ProviderKeys.save(libraryContext, com.meedx.providers.ProviderKeys.SUBSOURCE, subsourceKey);
@@ -969,38 +1183,266 @@ public final class CinemaLinkServer extends WebSocketServer {
         }
     }
 
-    private void handleExportTvBackup(WebSocket socket) {
+    private static JSONObject exportTvSmbSharesJson(android.content.Context app) {
+        JSONObject smb = new JSONObject();
+        if (app == null) return smb;
+        var indexedArr = new org.json.JSONArray();
+        try {
+            com.archos.mediacenter.utils.ShortcutDbAdapter.VIDEO.cleanupDuplicateShortcuts(app);
+            try (android.database.Cursor c = com.archos.mediacenter.utils.ShortcutDbAdapter.VIDEO.queryAllShortcuts(app)) {
+                if (c != null && c.moveToFirst()) {
+                    var mapper = new com.archos.mediacenter.video.leanback.adapter.NetworkShortcutMapper();
+                    mapper.bind(c);
+                    while (!c.isAfterLast()) {
+                        var ns = (com.archos.mediacenter.video.leanback.adapter.object.NetworkShortcut) mapper.convert(c);
+                        if (ns != null && ns.getUri() != null) {
+                            String uriStr = ns.getUri().toString();
+                            if (!uriStr.startsWith("webdav://") || ns.getUri().getPort() != 8080 || !uriStr.contains("/webdav/")) {
+                                indexedArr.put(new JSONObject()
+                                        .put("name", ns.getName() == null ? "" : ns.getName())
+                                        .put("uri", uriStr)
+                                        .put("friendly_uri", CinemaNetworkController.stripCredentials(uriStr)));
+                            }
+                        }
+                        c.moveToNext();
+                    }
+                }
+            } finally {
+                if (com.archos.mediacenter.utils.ShortcutDbAdapter.VIDEO.isDbOpen()) {
+                    com.archos.mediacenter.utils.ShortcutDbAdapter.VIDEO.close();
+                }
+            }
+        } catch (Exception ignored) {}
+
+        var savedArr = new org.json.JSONArray();
+        try (android.database.Cursor c = com.archos.mediacenter.video.browser.ShortcutDb.STATIC.getCursorAllShortcuts(app)) {
+            if (c != null && c.moveToFirst()) {
+                var mapper = new com.archos.mediacenter.video.leanback.adapter.GenericNetworkShortcutMapper();
+                mapper.bindColumns(c);
+                do {
+                    Object bound = mapper.bind(c);
+                    if (bound instanceof com.archos.mediacenter.video.leanback.adapter.object.GenericNetworkShortcut gs
+                            && gs.getUri() != null) {
+                        String uriStr = gs.getUri().toString();
+                        savedArr.put(new JSONObject()
+                                .put("name", gs.getName() == null ? "" : gs.getName())
+                                .put("uri", uriStr)
+                                .put("friendly_uri", CinemaNetworkController.stripCredentials(uriStr)));
+                    }
+                } while (c.moveToNext());
+            }
+        } catch (Exception ignored) {}
+
+        var credsArr = new org.json.JSONArray();
+        try {
+            com.archos.filecorelibrary.samba.NetworkCredentialsDatabase.getInstance().loadCredentials(app);
+            var creds = com.archos.filecorelibrary.samba.NetworkCredentialsDatabase.getInstance().getAllPersistentCredentials();
+            if (creds != null) {
+                for (var cred : creds) {
+                    if (cred == null || cred.getUriString() == null || cred.getUriString().isBlank()) continue;
+                    credsArr.put(new JSONObject()
+                            .put("uri", cred.getUriString())
+                            .put("username", cred.getUsername() == null ? "" : cred.getUsername())
+                            .put("password", cred.getPassword() == null ? "" : cred.getPassword())
+                            .put("domain", cred.getDomain() == null ? "" : cred.getDomain()));
+                }
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            smb.put("indexed_shortcuts", indexedArr);
+            smb.put("saved_servers", savedArr);
+            smb.put("smb_credentials", credsArr);
+        } catch (Exception ignored) {}
+        return smb;
+    }
+
+    private static void restoreTvSmbSharesJson(android.content.Context app, JSONObject smb) {
+        if (app == null || smb == null) return;
+        try {
+            com.archos.filecorelibrary.samba.NetworkCredentialsDatabase.getInstance().loadCredentials(app);
+            var credsArr = smb.optJSONArray("smb_credentials");
+            if (credsArr != null) {
+                for (int i = 0; i < credsArr.length(); i++) {
+                    JSONObject c = credsArr.optJSONObject(i);
+                    if (c == null) continue;
+                    String uri = c.optString("uri", "").trim();
+                    if (uri.isEmpty()) continue;
+                    var cred = new com.archos.filecorelibrary.samba.NetworkCredentialsDatabase.Credential(
+                            c.optString("username", ""),
+                            c.optString("password", ""),
+                            uri,
+                            c.optString("domain", ""),
+                            false);
+                    com.archos.filecorelibrary.samba.NetworkCredentialsDatabase.getInstance().saveCredential(cred);
+                }
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            var savedArr = smb.optJSONArray("saved_servers");
+            if (savedArr != null) {
+                for (int i = 0; i < savedArr.length(); i++) {
+                    JSONObject s = savedArr.optJSONObject(i);
+                    if (s == null) continue;
+                    String uriStr = s.optString("uri", "").trim();
+                    if (uriStr.isEmpty()) continue;
+                    android.net.Uri u = android.net.Uri.parse(uriStr);
+                    String name = s.optString("name", u.getHost() != null ? u.getHost() : "Server");
+                    String friendly = s.optString("friendly_uri", CinemaNetworkController.stripCredentials(uriStr));
+                    try {
+                        com.archos.mediacenter.video.browser.ShortcutDb.STATIC.insertShortcut(app, u, name, friendly);
+                    } catch (Exception ignored) {}
+                }
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            var indexedArr = smb.optJSONArray("indexed_shortcuts");
+            if (indexedArr != null) {
+                for (int i = 0; i < indexedArr.length(); i++) {
+                    JSONObject item = indexedArr.optJSONObject(i);
+                    if (item == null) continue;
+                    String uriStr = item.optString("uri", "").trim();
+                    if (uriStr.isEmpty()) continue;
+                    if (com.archos.mediacenter.utils.ShortcutDbAdapter.VIDEO.isShortcut(app, uriStr) <= 0) {
+                        String name = item.optString("name", "Share");
+                        String friendly = item.optString("friendly_uri", CinemaNetworkController.stripCredentials(uriStr));
+                        com.archos.mediacenter.utils.ShortcutDbAdapter.VIDEO.addShortcut(
+                                app, new com.archos.mediacenter.utils.ShortcutDbAdapter.Shortcut(name, uriStr, friendly));
+                        try {
+                            com.archos.mediaprovider.NetworkScanner.scanVideos(app, android.net.Uri.parse(uriStr));
+                        } catch (Exception ignored) {}
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private static String computeTvSettingsHashStatic(android.content.Context app) {
+        if (app == null) return "";
+        try {
+            var md = java.security.MessageDigest.getInstance("SHA-256");
+            var sp = androidx.preference.PreferenceManager.getDefaultSharedPreferences(app);
+            var sortedPrefs = new java.util.TreeMap<String, String>();
+            for (var e : sp.getAll().entrySet()) {
+                String k = e.getKey();
+                if (k == null || e.getValue() == null) continue;
+                if (k.startsWith("cinema_settings_last_") || k.equals(CinemaMetadataPrefetcher.PREF_LAST_AUTO_REFRESH_MS)) continue;
+                sortedPrefs.put(k, String.valueOf(e.getValue()));
+            }
+            for (CinemaPlaybackOption opt : CinemaPlaybackOption.values()) {
+                sortedPrefs.put("opt:" + opt.key, String.valueOf(opt.enabled(app)));
+            }
+            var linkSp = app.getSharedPreferences("cinema_link", 0);
+            for (String k : new java.util.TreeSet<>(BACKUP_LINK_OPTIONS)) {
+                sortedPrefs.put("link:" + k, String.valueOf(linkSp.getBoolean(k, true)));
+            }
+            sortedPrefs.put("link:audio_hud_timeout", String.valueOf(linkSp.getInt("audio_hud_timeout", 5000)));
+            sortedPrefs.put("link:local_adb_enabled", String.valueOf(TvLocalAdbBridge.isEnabled(app)));
+            sortedPrefs.put("key:tmdb", com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.TMDB));
+            sortedPrefs.put("key:os", com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.OPEN_SUBTITLES));
+            sortedPrefs.put("key:subdl", com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.SUBDL));
+            String subKey = com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.SUBSOURCE);
+            if (subKey.isBlank()) subKey = readFirstApiKey(app, "subsource");
+            sortedPrefs.put("key:subsource", subKey);
+            sortedPrefs.put("key:omdb", readFirstApiKey(app, "omdb"));
+            sortedPrefs.put("key:trakt_user", com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.TRAKT_USERNAME));
+            sortedPrefs.put("key:trakt_acc", com.meedx.providers.ProviderKeys.get(app, com.meedx.providers.ProviderKeys.TRAKT_ACCESS_TOKEN));
+            sortedPrefs.put("addons", com.meedx.providers.StremioAddons.exportFullSnapshotJson(app).toString());
+            sortedPrefs.put("addons_order", String.join("|", CinemaAddonsOrderStore.load(app)));
+            sortedPrefs.put("addon_continue", String.valueOf(CinemaWatchStore.includeAddonContinue(app)));
+            var subCfg = com.meedx.providers.UnifiedSubtitleConfig.exportSyncJson(app);
+            subCfg.remove("updated_at");
+            sortedPrefs.put("sub_cfg", subCfg.toString());
+            sortedPrefs.put("live_country", com.meedx.providers.LiveTvPreferences.country(app));
+            sortedPrefs.put("live_fav_countries", com.meedx.providers.LiveTvPreferences.exportFavoriteCountriesJson(app).toString());
+            sortedPrefs.put("smb", exportTvSmbSharesJson(app).toString());
+
+            StringBuilder sb = new StringBuilder(4096);
+            for (var e : sortedPrefs.entrySet()) {
+                sb.append(e.getKey()).append('=').append(e.getValue()).append('\n');
+            }
+            byte[] dig = md.digest(sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(dig.length * 2);
+            for (byte b : dig) hex.append(String.format(java.util.Locale.US, "%02x", b));
+            return hex.toString();
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private void handleExportTvBackup(WebSocket socket, JSONObject command) {
         if (libraryContext == null || socket == null || !socket.isOpen()) return;
+        android.util.Log.i("CinemaLink", "TV backup export requested");
         syncIo.execute(() -> {
             try {
                 var sp = androidx.preference.PreferenceManager.getDefaultSharedPreferences(libraryContext);
                 JSONObject tvPrefs = serializeSharedPrefs(sp);
+                JSONObject familySkip = new JSONObject();
                 for (CinemaPlaybackOption option : CinemaPlaybackOption.values()) {
-                    tvPrefs.put(option.key, new JSONObject().put("t", "b").put("v", option.enabled(libraryContext)));
+                    boolean en = option.enabled(libraryContext);
+                    tvPrefs.put(option.key, new JSONObject().put("t", "b").put("v", en));
+                    familySkip.put(option.key, en);
                 }
                 JSONObject linkOptions = new JSONObject();
                 for (String key : BACKUP_LINK_OPTIONS) linkOptions.put(key, prefs.getBoolean(key, true));
                 linkOptions.put("audio_hud_timeout", prefs.getInt("audio_hud_timeout", 5000));
                 linkOptions.put("local_adb_enabled", TvLocalAdbBridge.isEnabled(libraryContext));
+
+                String currentHash = computeTvSettingsHashStatic(libraryContext);
+                String storedHash = prefs.getString(PREF_TV_SETTINGS_HASH, "");
+                long updatedAt = prefs.getLong(PREF_TV_SETTINGS_UPDATED_AT, 0L);
+                if (!currentHash.isEmpty() && !currentHash.equals(storedHash)) {
+                    if (updatedAt == 0L && hasNonDefaultTvConfiguration(libraryContext)) {
+                        updatedAt = System.currentTimeMillis();
+                    } else if (!storedHash.isEmpty()) {
+                        updatedAt = System.currentTimeMillis();
+                    }
+                    prefs.edit()
+                            .putLong(PREF_TV_SETTINGS_UPDATED_AT, updatedAt)
+                            .putString(PREF_TV_SETTINGS_HASH, currentHash)
+                            .commit();
+                }
+
+                org.json.JSONArray fullAddons = com.meedx.providers.StremioAddons.exportFullSnapshotJson(libraryContext);
+                org.json.JSONArray addonsOrder = new org.json.JSONArray();
+                for (String k : CinemaAddonsOrderStore.load(libraryContext)) addonsOrder.put(k);
+                boolean addonContinue = CinemaWatchStore.includeAddonContinue(libraryContext);
+                JSONObject smbShares = exportTvSmbSharesJson(libraryContext);
+                JSONObject subCfg = com.meedx.providers.UnifiedSubtitleConfig.exportSyncJson(libraryContext);
+                JSONObject favChannels = LiveChannelFavorites.snapshot(libraryContext);
+
                 JSONObject out = new JSONObject()
                         .put("type", "TV_BACKUP_DATA")
+                        .put("request_id", command.optString("request_id", null))
                         .put("tv_model", android.os.Build.MODEL)
                         .put("exported_at", System.currentTimeMillis())
+                        .put("tv_settings_updated_at", updatedAt)
+                        .put("tv_settings_hash", currentHash)
                         .put("tv_prefs", tvPrefs)
+                        .put("family_skip_settings", familySkip)
                         .put("tv_link_options", linkOptions)
                         .put(com.meedx.providers.LiveTvPreferences.COUNTRY_FIELD,
                                 com.meedx.providers.LiveTvPreferences.country(libraryContext))
                         .put(com.meedx.providers.LiveTvPreferences.FAVORITE_COUNTRIES_FIELD,
                                 com.meedx.providers.LiveTvPreferences.exportFavoriteCountriesJson(libraryContext))
-                        .put("addons", com.meedx.providers.StremioAddons.exportJson(libraryContext))
-                        .put("subtitle_config", com.meedx.providers.UnifiedSubtitleConfig.exportSyncJson(libraryContext))
+                        .put(LiveChannelFavorites.FIELD, favChannels)
+                        .put("addons", fullAddons)
+                        .put("addons_order", addonsOrder)
+                        .put("addon_continue_watching", addonContinue)
+                        .put("smb_shares", smbShares)
+                        .put("subtitle_config", subCfg)
                         .put("watch_records", CinemaWatchStore.exportRecentSyncRecords(libraryContext, 500));
                 JSONObject apiKeys = buildApiKeysSyncPayload(libraryContext);
                 if (apiKeys != null) {
                     apiKeys.remove("type");
                     out.put("api_keys", apiKeys);
                 }
-                if (socket.isOpen()) socket.send(out.toString());
+                if (socket.isOpen()) {
+                    socket.send(out.toString());
+                    android.util.Log.i("CinemaLink", "TV backup snapshot sent");
+                }
             } catch (Exception e) {
                 android.util.Log.w("CinemaLink", "EXPORT_TV_BACKUP failed", e);
             }
@@ -1010,15 +1452,26 @@ public final class CinemaLinkServer extends WebSocketServer {
     private void handleRestoreTvBackup(WebSocket socket, JSONObject command) {
         if (libraryContext == null || command == null) return;
         syncIo.execute(() -> {
+            applyingIncomingTvRestore.set(true);
             try {
                 JSONObject tvPrefs = command.optJSONObject("tv_prefs");
                 boolean langChanged = false;
+                var sp = androidx.preference.PreferenceManager.getDefaultSharedPreferences(libraryContext);
                 if (tvPrefs != null) {
-                    var sp = androidx.preference.PreferenceManager.getDefaultSharedPreferences(libraryContext);
-                    String oldLang = sp.getString(com.archos.mediacenter.video.utils.VideoPreferencesCommon.KEY_UI_LANG, "");
+                    String oldLang = CinemaNovaLegacyPrefs.getUiLanguageRaw(sp);
                     applySharedPrefs(sp, tvPrefs);
-                    String newLang = sp.getString(com.archos.mediacenter.video.utils.VideoPreferencesCommon.KEY_UI_LANG, "");
+                    String newLang = CinemaNovaLegacyPrefs.getUiLanguageRaw(sp);
                     langChanged = !java.util.Objects.equals(oldLang, newLang);
+                }
+                JSONObject familySkip = command.optJSONObject("family_skip_settings");
+                if (familySkip != null) {
+                    var ed = sp.edit();
+                    for (CinemaPlaybackOption opt : CinemaPlaybackOption.values()) {
+                        if (familySkip.has(opt.key)) {
+                            ed.putBoolean(opt.key, familySkip.optBoolean(opt.key, false));
+                        }
+                    }
+                    ed.apply();
                 }
                 JSONObject linkOptions = command.optJSONObject("tv_link_options");
                 if (linkOptions != null) {
@@ -1043,14 +1496,39 @@ public final class CinemaLinkServer extends WebSocketServer {
                 if (!restoredCountry.isBlank()) com.meedx.providers.LiveTvPreferences.saveCountry(libraryContext, restoredCountry);
                 com.meedx.providers.LiveTvPreferences.importFavoriteCountriesJson(
                         libraryContext, command.optJSONArray(com.meedx.providers.LiveTvPreferences.FAVORITE_COUNTRIES_FIELD));
+                JSONObject favChannels = command.optJSONObject(LiveChannelFavorites.FIELD);
+                if (favChannels != null) LiveChannelFavorites.merge(libraryContext, favChannels);
 
                 org.json.JSONArray addons = command.optJSONArray("addons");
-                if (addons != null) com.meedx.providers.StremioAddons.mergeRemoteJson(libraryContext, addons);
+                if (addons != null && addons.length() > 0) {
+                    com.meedx.providers.StremioAddons.restoreFullSnapshotJson(libraryContext, addons);
+                }
+                org.json.JSONArray addonsOrder = command.optJSONArray("addons_order");
+                if (addonsOrder != null) {
+                    var orderList = new java.util.ArrayList<String>();
+                    for (int i = 0; i < addonsOrder.length(); i++) {
+                        String k = addonsOrder.optString(i, "");
+                        if (!k.isBlank()) orderList.add(k);
+                    }
+                    CinemaAddonsOrderStore.save(libraryContext, orderList);
+                }
+                if (command.has("addon_continue_watching")) {
+                    CinemaWatchStore.setIncludeAddonContinue(
+                            libraryContext, command.optBoolean("addon_continue_watching", true));
+                }
+                notifyAddonsChanged(true);
+
+                JSONObject smbShares = command.optJSONObject("smb_shares");
+                if (smbShares != null) {
+                    restoreTvSmbSharesJson(libraryContext, smbShares);
+                }
 
                 JSONObject restoredSubCfg = command.optJSONObject("subtitle_config");
                 if (restoredSubCfg != null) {
                     com.meedx.providers.UnifiedSubtitleConfig.importSyncJson(libraryContext, restoredSubCfg, true);
                     CinemaSubtitleSyncBridge.applyUnifiedToTvPrefs(libraryContext);
+                    saveDualSubtitlePosition(libraryContext,
+                            com.meedx.providers.UnifiedSubtitleConfig.dualSubPosition(libraryContext));
                 }
 
                 org.json.JSONArray watchRecords = command.optJSONArray("watch_records");
@@ -1060,8 +1538,22 @@ public final class CinemaLinkServer extends WebSocketServer {
                         if (rec != null) CinemaWatchStore.applyRemoteSyncRecord(libraryContext, rec, false);
                     }
                 }
+
+                long restoredAt = command.optLong("tv_settings_updated_at", 0L);
+                if (restoredAt <= 0L) restoredAt = System.currentTimeMillis();
+                String newHash = computeTvSettingsHashStatic(libraryContext);
+                prefs.edit()
+                        .putLong(PREF_TV_SETTINGS_UPDATED_AT, restoredAt)
+                        .putString(PREF_TV_SETTINGS_HASH, newHash)
+                        .commit();
+
+                CinemaLibraryScan.bumpStateEpoch();
                 CinemaMetadataPrefetcher.clearAllMetadataCaches(libraryContext);
                 libraryContext.sendBroadcast(new android.content.Intent(ACTION_WATCH_SYNC_UPDATED)
+                        .setPackage(libraryContext.getPackageName()));
+                libraryContext.sendBroadcast(new android.content.Intent(ACTION_API_SYNC_UPDATED)
+                        .setPackage(libraryContext.getPackageName()));
+                libraryContext.sendBroadcast(new android.content.Intent(CinemaLibraryScan.ACTION_CHANGED)
                         .setPackage(libraryContext.getPackageName()));
 
                 boolean refreshLocale = langChanged;
@@ -1081,7 +1573,12 @@ public final class CinemaLinkServer extends WebSocketServer {
                 });
                 broadcastRemoteStatus(libraryContext);
                 if (socket != null && socket.isOpen()) {
-                    socket.send(new JSONObject().put("type", "TV_BACKUP_RESTORED").put("ok", true).toString());
+                    socket.send(new JSONObject()
+                            .put("type", "TV_BACKUP_RESTORED")
+                            .put("ok", true)
+                            .put("tv_settings_updated_at", restoredAt)
+                            .put("tv_settings_hash", newHash)
+                            .toString());
                 }
             } catch (Exception e) {
                 android.util.Log.w("CinemaLink", "RESTORE_TV_BACKUP failed", e);
@@ -1091,6 +1588,8 @@ public final class CinemaLinkServer extends WebSocketServer {
                                 .put("ok", false).put("error", String.valueOf(e.getMessage())).toString());
                     } catch (Exception ignored) {}
                 }
+            } finally {
+                applyingIncomingTvRestore.set(false);
             }
         });
     }
@@ -1131,7 +1630,7 @@ public final class CinemaLinkServer extends WebSocketServer {
         java.util.Iterator<String> keys = src.keys();
         while (keys.hasNext()) {
             String key = keys.next();
-            if (com.archos.mediacenter.video.utils.VideoPreferencesCommon.KEY_SMBJ.equals(key)) continue;
+            if (CinemaNovaLegacyPrefs.isLegacySmbjKey(key)) continue;
             JSONObject wrapper = src.optJSONObject(key);
             if (wrapper == null) continue;
             String t = wrapper.optString("t", "");
@@ -1154,7 +1653,8 @@ public final class CinemaLinkServer extends WebSocketServer {
                 }
             }
         }
-        ed.putBoolean(com.archos.mediacenter.video.utils.VideoPreferencesCommon.KEY_SMBJ, false).apply();
+        CinemaNovaLegacyPrefs.enforceStableSmbTransport(ed);
+        ed.apply();
     }
 
     @Override public void onStart() {
@@ -1211,7 +1711,7 @@ public final class CinemaLinkServer extends WebSocketServer {
                     socket.close(1008, "Pairing rejected");
                     return;
                 }
-                if ("EXPORT_TV_BACKUP".equals(type)) handleExportTvBackup(socket);
+                if ("EXPORT_TV_BACKUP".equals(type)) handleExportTvBackup(socket, command);
                 else if ("RESTORE_TV_BACKUP".equals(type)) handleRestoreTvBackup(socket, command);
                 else socket.close(1008, "Backup session");
                 return;
@@ -1233,6 +1733,10 @@ public final class CinemaLinkServer extends WebSocketServer {
                 handleInstallAddonOnTv(socket, command);
                 return;
             }
+            if ("GET_TV_ADDONS".equals(type)) {
+                syncIo.execute(() -> sendTvInstalledAddons(socket));
+                return;
+            }
             if ("API_KEYS_SYNC".equals(type)) {
                 handleApiKeysSync(command);
                 return;
@@ -1242,7 +1746,7 @@ public final class CinemaLinkServer extends WebSocketServer {
                 return;
             }
             if ("EXPORT_TV_BACKUP".equals(type)) {
-                handleExportTvBackup(socket);
+                handleExportTvBackup(socket, command);
                 return;
             }
             if ("RESTORE_TV_BACKUP".equals(type)) {
@@ -1674,8 +2178,14 @@ public final class CinemaLinkServer extends WebSocketServer {
                         && ("http".equals(url.getScheme()) || "https".equals(url.getScheme()))
                         && url.getHost() != null && url.getUserInfo() == null);
                 if (!urlOk || (!audio.isEmpty() && !validWebUrl(android.net.Uri.parse(audio)))) return;
-                if (!subtitleUrl.isEmpty() && !validWebUrl(android.net.Uri.parse(subtitleUrl))) subtitleUrl = "";
-                if (!secondarySubtitleUrl.isEmpty() && !validWebUrl(android.net.Uri.parse(secondarySubtitleUrl))) secondarySubtitleUrl = "";
+                if (!subtitleUrl.isEmpty() && (!validWebUrl(android.net.Uri.parse(subtitleUrl))
+                        || com.archos.mediacenter.video.player.CinemaSubtitleText.isStoryboardTrackHint(subtitleUrl))) {
+                    subtitleUrl = "";
+                }
+                if (!secondarySubtitleUrl.isEmpty() && (!validWebUrl(android.net.Uri.parse(secondarySubtitleUrl))
+                        || com.archos.mediacenter.video.player.CinemaSubtitleText.isStoryboardTrackHint(secondarySubtitleUrl))) {
+                    secondarySubtitleUrl = "";
+                }
                 final String validSubtitleUrl = subtitleUrl;
                 final String validSecondarySubtitleUrl = secondarySubtitleUrl;
                 main.post(() -> {
@@ -1735,6 +2245,7 @@ public final class CinemaLinkServer extends WebSocketServer {
                             .putExtra("subtitle_url", validSubtitleUrl)
                             .putExtra("subtitle_mime", subtitleMime)
                             .putExtra("subtitle_language", subtitleLanguage)
+                            .putExtra("suppress_auto_subtitles", command.optBoolean("suppress_auto_subtitles", false))
                             .putExtra("addon_subtitles", command.optBoolean("addon_subtitles"))
                             .putExtra("secondary_subtitle_url", validSecondarySubtitleUrl)
                             .putExtra("secondary_subtitle_mime", secondarySubtitleMime)

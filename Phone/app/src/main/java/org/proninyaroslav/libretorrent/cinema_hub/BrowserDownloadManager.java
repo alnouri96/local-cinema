@@ -4,6 +4,7 @@ import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -20,7 +21,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.net.HttpURLConnection;
-import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -32,9 +34,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Persistent direct-video HTTP downloader for CinemaBrowser supporting pause/resume via Range,
- * Android 11+ MediaStore.Downloads output (zero EPERM on Samsung One UI), session header forwarding
- * (User-Agent, Referer, Cookie), X record removal, and permanent disk/MediaStore deletion.
+ * Persistent universal video & HLS downloader for CinemaBrowser saving directly into
+ * {@code Local Cinema/Download} with clean {@code <Title> - <Quality>.mp4} filenames,
+ * full session header & 302 redirect forwarding, HLS (.m3u8) -> .mp4 muxing,
+ * live system progress notifications, and instant Library folder refresh.
  */
 public final class BrowserDownloadManager {
     public static final String STATUS_RUNNING = "RUNNING";
@@ -50,12 +53,17 @@ public final class BrowserDownloadManager {
     public static final class DownloadItem {
         public final String id;
         public final String url;
+        public String audioUrl;
+        public String kind;
+        public int targetHeight;
         public String filename;
         public String filePath;
         public String stagingPath;
         public String referer;
+        public String origin;
         public String userAgent;
         public String cookie;
+        public String authorization;
         public long downloadedBytes;
         public long totalBytes;
         public long speedBytesPerSec;
@@ -63,18 +71,24 @@ public final class BrowserDownloadManager {
         public String error;
         public long createdAt;
 
-        public DownloadItem(String id, String url, String filename, String filePath,
-                            String stagingPath, String referer, String userAgent, String cookie,
+        public DownloadItem(String id, String url, String audioUrl, String kind, int targetHeight,
+                            String filename, String filePath, String stagingPath,
+                            String referer, String origin, String userAgent, String cookie, String authorization,
                             long downloadedBytes, long totalBytes, long speedBytesPerSec,
                             String status, String error, long createdAt) {
             this.id = id;
             this.url = url;
+            this.audioUrl = audioUrl == null ? "" : audioUrl;
+            this.kind = kind == null ? "progressive" : kind;
+            this.targetHeight = targetHeight;
             this.filename = filename;
             this.filePath = filePath;
             this.stagingPath = stagingPath;
             this.referer = referer == null ? "" : referer;
+            this.origin = origin == null ? "" : origin;
             this.userAgent = userAgent == null ? "" : userAgent;
             this.cookie = cookie == null ? "" : cookie;
+            this.authorization = authorization == null ? "" : authorization;
             this.downloadedBytes = downloadedBytes;
             this.totalBytes = totalBytes;
             this.speedBytesPerSec = speedBytesPerSec;
@@ -94,12 +108,17 @@ public final class BrowserDownloadManager {
             try {
                 obj.put("id", id);
                 obj.put("url", url);
+                obj.put("audioUrl", audioUrl);
+                obj.put("kind", kind);
+                obj.put("targetHeight", targetHeight);
                 obj.put("filename", filename);
                 obj.put("filePath", filePath);
                 obj.put("stagingPath", stagingPath == null ? "" : stagingPath);
                 obj.put("referer", referer);
+                obj.put("origin", origin);
                 obj.put("userAgent", userAgent);
                 obj.put("cookie", cookie);
+                obj.put("authorization", authorization);
                 obj.put("downloadedBytes", downloadedBytes);
                 obj.put("totalBytes", totalBytes);
                 obj.put("status", status);
@@ -116,23 +135,35 @@ public final class BrowserDownloadManager {
             if (id.isEmpty() || url.isEmpty()) return null;
             String status = obj.optString("status", STATUS_PAUSED);
             if (STATUS_RUNNING.equals(status)) status = STATUS_PAUSED;
-            String fp = obj.optString("filePath", "");
-            String sp = obj.optString("stagingPath", fp);
+            String fp = migratePathString(obj.optString("filePath", ""));
+            String sp = migratePathString(obj.optString("stagingPath", fp));
             return new DownloadItem(
                     id,
                     url,
+                    obj.optString("audioUrl", ""),
+                    obj.optString("kind", "progressive"),
+                    obj.optInt("targetHeight", 0),
                     obj.optString("filename", "video.mp4"),
                     fp,
                     sp,
                     obj.optString("referer", ""),
+                    obj.optString("origin", ""),
                     obj.optString("userAgent", ""),
                     obj.optString("cookie", ""),
+                    obj.optString("authorization", ""),
                     obj.optLong("downloadedBytes", 0L),
                     obj.optLong("totalBytes", -1L),
                     0L,
                     status,
                     obj.optString("error", ""),
                     obj.optLong("createdAt", System.currentTimeMillis()));
+        }
+
+        private static String migratePathString(String p) {
+            if (p == null || p.isEmpty()) return "";
+            return p.replace("/Local Cinema/Downloading/", "/Local Cinema/Download/")
+                    .replace("\\Local Cinema\\Downloading\\", "\\Local Cinema\\Download\\")
+                    .replace("/Downloads/Downloading/", "/Downloads/Download/");
         }
     }
 
@@ -151,6 +182,7 @@ public final class BrowserDownloadManager {
     private BrowserDownloadManager(Context context) {
         this.app = context.getApplicationContext();
         this.prefs = app.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+        CinemaStorage.migrateLegacyDownloadingFolder(this.app);
         loadFromPrefs();
     }
 
@@ -178,27 +210,68 @@ public final class BrowserDownloadManager {
         return lower.matches(".*\\.(mp4|mkv|webm|avi|mov|m4v|flv|wmv)(\\?.*)?$");
     }
 
+    public static String buildStreamFilename(String cleanTitle, int height, boolean adaptive, String kind, String url) {
+        String title = (cleanTitle == null ? "" : cleanTitle)
+                .replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]+", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (title.isEmpty() || "صائد الفيديوهات".equals(title) || "Browser video".equalsIgnoreCase(title)) {
+            title = "Video";
+        }
+        if (title.length() > 110) title = title.substring(0, 110).trim();
+
+        String qualityTag = "";
+        if ("audio".equalsIgnoreCase(kind)) {
+            qualityTag = "Audio";
+        } else if (height > 0) {
+            qualityTag = height + "p";
+        } else if (adaptive || "hls".equalsIgnoreCase(kind)) {
+            qualityTag = "AUTO";
+        }
+
+        String ext = ".mp4";
+        if (!"hls".equalsIgnoreCase(kind) && !"split".equalsIgnoreCase(kind)) {
+            String path = "";
+            try {
+                String p = Uri.parse(url == null ? "" : url).getPath();
+                if (p != null) path = p.toLowerCase(Locale.ROOT);
+            } catch (Exception ignored) {}
+            if (path.endsWith(".mkv")) ext = ".mkv";
+            else if (path.endsWith(".webm")) ext = ".webm";
+            else if (path.endsWith(".mov")) ext = ".mov";
+            else if ("audio".equalsIgnoreCase(kind)) ext = ".m4a";
+        }
+
+        boolean alreadyHasQuality = !qualityTag.isEmpty()
+                && title.toLowerCase(Locale.ROOT).contains(qualityTag.toLowerCase(Locale.ROOT));
+        String stem = (!qualityTag.isEmpty() && !alreadyHasQuality)
+                ? (title + " - " + qualityTag)
+                : title;
+        return stem + ext;
+    }
+
     public static String inferFilename(String url, String contentDisposition, String fallbackTitle) {
+        String cleanHint = fallbackTitle != null ? CinemaBrowserMediaBridge.cleanVideoTitle(fallbackTitle) : "";
+        if (!cleanHint.isBlank()) {
+            return buildStreamFilename(cleanHint, 0, false, "progressive", url);
+        }
         if (contentDisposition != null) {
             var m = java.util.regex.Pattern.compile("filename\\*?=(?:UTF-8''|\"?)([^\";\r\n]+)",
                     java.util.regex.Pattern.CASE_INSENSITIVE).matcher(contentDisposition);
             if (m.find()) {
                 String candidate = Uri.decode(m.group(1)).replaceAll("[\\\\/:*?\"<>|]+", "_").trim();
-                if (!candidate.isEmpty()) return candidate;
+                if (!candidate.isEmpty() && !candidate.toLowerCase(Locale.ROOT).endsWith(".m3u8")) return candidate;
             }
         }
         try {
             String last = Uri.parse(url).getLastPathSegment();
-            if (last != null && last.contains(".") && last.length() <= 120) {
+            if (last != null && last.contains(".") && last.length() <= 120
+                    && !last.toLowerCase(Locale.ROOT).endsWith(".m3u8")) {
                 String clean = last.replaceAll("[\\\\/:*?\"<>|]+", "_").trim();
                 if (!clean.isEmpty()) return clean;
             }
         } catch (Exception ignored) {}
-        String base = (fallbackTitle != null && !fallbackTitle.isBlank())
-                ? fallbackTitle.replaceAll("[\\\\/:*?\"<>|]+", "_").trim()
-                : "LocalCinema-Video";
-        if (base.length() > 64) base = base.substring(0, 64);
-        return base + ".mp4";
+        return buildStreamFilename(fallbackTitle, 0, false, "progressive", url);
     }
 
     public synchronized void addListener(Runnable r) {
@@ -227,19 +300,39 @@ public final class BrowserDownloadManager {
 
     public void enqueue(String url, String filename, long knownSize,
                         String referer, String userAgent, String cookie) {
-        if (url == null || url.isBlank()) return;
-        File dir = writableStageDir();
+        enqueueStream(url, "", "progressive", 0, filename, knownSize, referer, "", userAgent, cookie, "");
+    }
+
+    public DownloadItem enqueueStream(String url,
+                                      String audioUrl,
+                                      String kind,
+                                      int targetHeight,
+                                      String filename,
+                                      long knownSize,
+                                      String referer,
+                                      String origin,
+                                      String userAgent,
+                                      String cookie,
+                                      String authorization) {
+        if (url == null || url.isBlank()) return null;
+        File dir = writableOutputDir();
         String safeName = sanitizeFilename(filename, dir);
-        File target = new File(dir, safeName);
+        File finalFile = new File(dir, safeName);
+        File partFile = new File(dir, "." + safeName + ".part");
         DownloadItem item = new DownloadItem(
                 UUID.randomUUID().toString(),
                 url,
+                audioUrl,
+                kind,
+                targetHeight,
                 safeName,
-                target.getAbsolutePath(),
-                target.getAbsolutePath(),
+                finalFile.getAbsolutePath(),
+                partFile.getAbsolutePath(),
                 referer,
+                origin,
                 userAgent == null || userAgent.isBlank() ? DEFAULT_UA : userAgent,
                 cookie,
+                authorization,
                 0L,
                 knownSize,
                 0L,
@@ -251,12 +344,21 @@ public final class BrowserDownloadManager {
             saveToPrefs();
         }
         notifyListeners();
+        CinemaMediaDownloader.updateProgressNotification(app, item);
         startWorker(item);
+        return item;
     }
 
     public synchronized void pause(String id) {
         AtomicBoolean flag = pauseFlags.get(id);
         if (flag != null) flag.set(true);
+        HttpURLConnection active = activeConns.remove(id);
+        if (active != null) {
+            pool.execute(() -> {
+                try { active.disconnect(); } catch (Exception ignored) {}
+            });
+        }
+        CinemaMediaDownloader.cancelNotification(app, id);
         for (DownloadItem it : items) {
             if (it.id.equals(id) && STATUS_RUNNING.equals(it.status)) {
                 it.status = STATUS_PAUSED;
@@ -283,6 +385,7 @@ public final class BrowserDownloadManager {
         }
         if (found != null) {
             notifyListeners();
+            CinemaMediaDownloader.updateProgressNotification(app, found);
             startWorker(found);
         }
     }
@@ -291,6 +394,7 @@ public final class BrowserDownloadManager {
     public synchronized void removeRecordOnly(String id) {
         AtomicBoolean flag = pauseFlags.remove(id);
         if (flag != null) flag.set(true);
+        CinemaMediaDownloader.cancelNotification(app, id);
         items.removeIf(it -> it.id.equals(id));
         saveToPrefs();
         notifyListeners();
@@ -301,6 +405,7 @@ public final class BrowserDownloadManager {
         deletedIds.add(id);
         AtomicBoolean flag = pauseFlags.remove(id);
         if (flag != null) flag.set(true);
+        CinemaMediaDownloader.cancelNotification(app, id);
         HttpURLConnection active = activeConns.remove(id);
         if (active != null) {
             pool.execute(() -> {
@@ -343,41 +448,43 @@ public final class BrowserDownloadManager {
                     String baseName = f.getName();
                     for (String ext : new String[]{".part", ".tmp", ".download", ".crdownload"}) {
                         File rem = new File(parent, baseName + ext);
-                        if (rem.exists()) {
-                            //noinspection ResultOfMethodCallIgnored
+                        if (rem.exists()) //noinspection ResultOfMethodCallIgnored
                             rem.delete();
-                        }
+                        File hiddenRem = new File(parent, "." + baseName + ext);
+                        if (hiddenRem.exists()) //noinspection ResultOfMethodCallIgnored
+                            hiddenRem.delete();
                     }
                 }
-                android.media.MediaScannerConnection.scanFile(
-                        app, new String[]{candidatePath}, null, null);
+                MediaScannerConnection.scanFile(app, new String[]{candidatePath}, null, null);
             }
         } catch (Exception ignored) {}
         return deleted;
     }
 
-    private File ensureWritableFile(DownloadItem item) {
+    private File ensurePartFile(DownloadItem item) {
         String path = (item.stagingPath != null && !item.stagingPath.isBlank() && !item.stagingPath.startsWith("content://"))
-                ? item.stagingPath : item.filePath;
-        File candidate = (path != null && !path.isBlank() && !path.startsWith("content://")) ? new File(path) : null;
+                ? item.stagingPath
+                : (item.filePath != null && !item.filePath.startsWith("content://")
+                        ? new File(new File(item.filePath).getParentFile(), "." + item.filename + ".part").getAbsolutePath()
+                        : null);
+        File candidate = (path != null && !path.isBlank()) ? new File(path) : null;
         if (candidate != null) {
             File parent = candidate.getParentFile();
             if (parent != null && !parent.isDirectory()) //noinspection ResultOfMethodCallIgnored
                 parent.mkdirs();
             if (canWriteFile(candidate)) {
                 item.stagingPath = candidate.getAbsolutePath();
-                if (item.filePath == null || item.filePath.isBlank()) item.filePath = item.stagingPath;
                 return candidate;
             }
         }
-        File fallbackDir = new File(app.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "Downloading");
-        if (!fallbackDir.isDirectory()) //noinspection ResultOfMethodCallIgnored
-            fallbackDir.mkdirs();
-        File fallback = new File(fallbackDir, sanitizeFilename(item.filename, fallbackDir));
-        item.stagingPath = fallback.getAbsolutePath();
-        item.filePath = item.stagingPath;
+        File fallbackDir = appScopedDownloadDir();
+        String safeName = sanitizeFilename(item.filename, fallbackDir);
+        File finalFallback = new File(fallbackDir, safeName);
+        File partFallback = new File(fallbackDir, "." + safeName + ".part");
+        item.stagingPath = partFallback.getAbsolutePath();
+        item.filePath = finalFallback.getAbsolutePath();
         synchronized (this) { saveToPrefs(); }
-        return fallback;
+        return partFallback;
     }
 
     private static boolean canWriteFile(File file) {
@@ -397,89 +504,62 @@ public final class BrowserDownloadManager {
         AtomicBoolean cancelFlag = new AtomicBoolean(false);
         pauseFlags.put(item.id, cancelFlag);
         pool.execute(() -> {
-            HttpURLConnection conn = null;
             try {
-                File file = ensureWritableFile(item);
-                long existing = file.isFile() ? file.length() : 0L;
-                conn = (HttpURLConnection) new URL(item.url).openConnection();
-                activeConns.put(item.id, conn);
-                conn.setConnectTimeout(15000);
-                conn.setReadTimeout(30000);
-                conn.setInstanceFollowRedirects(true);
-                conn.setRequestProperty("User-Agent", item.userAgent == null || item.userAgent.isBlank() ? DEFAULT_UA : item.userAgent);
-                conn.setRequestProperty("Accept", "*/*");
-                if (item.referer != null && !item.referer.isBlank()) {
-                    conn.setRequestProperty("Referer", item.referer);
-                }
-                String cookie = item.cookie;
-                if ((cookie == null || cookie.isBlank())) {
-                    try { cookie = android.webkit.CookieManager.getInstance().getCookie(item.url); } catch (Throwable ignored) {}
-                }
-                if (cookie != null && !cookie.isBlank()) {
-                    conn.setRequestProperty("Cookie", cookie);
-                }
-                if (existing > 0) {
-                    conn.setRequestProperty("Range", "bytes=" + existing + "-");
-                }
-                int code = conn.getResponseCode();
-                boolean append = (code == 206 && existing > 0);
-                if (!append) existing = 0L;
-                if (code < 200 || code >= 300) {
-                    throw new java.io.IOException("HTTP " + code);
-                }
-                long contentLen = conn.getContentLengthLong();
-                if (contentLen > 0) {
-                    item.totalBytes = append ? (existing + contentLen) : contentLen;
-                }
-                item.downloadedBytes = existing;
-                notifyListeners();
+                File partFile = ensurePartFile(item);
+                CinemaMediaDownloader.StreamRequest req = new CinemaMediaDownloader.StreamRequest(
+                        item.id,
+                        item.url,
+                        item.audioUrl,
+                        item.kind,
+                        item.targetHeight,
+                        item.referer,
+                        item.origin,
+                        item.userAgent,
+                        item.cookie,
+                        item.authorization);
 
-                try (InputStream in = conn.getInputStream();
-                     RandomAccessFile raf = new RandomAccessFile(file, "rw")) {
-                    if (append) {
-                        raf.seek(existing);
-                    } else {
-                        raf.setLength(0L);
-                    }
-                    byte[] buf = new byte[32768];
-                    int read;
-                    long lastUiTs = System.currentTimeMillis();
-                    long bytesSinceTick = 0L;
-                    while ((read = in.read(buf)) != -1) {
-                        if (cancelFlag.get() || deletedIds.contains(item.id)) {
-                            if (!deletedIds.contains(item.id)) {
-                                item.status = STATUS_PAUSED;
-                                item.speedBytesPerSec = 0L;
+                final long[] lastNotifyMs = {0L};
+                CinemaMediaDownloader.downloadToTarget(
+                        app,
+                        req,
+                        partFile,
+                        cancelFlag,
+                        activeConns,
+                        (dl, tot, spd) -> {
+                            if (deletedIds.contains(item.id) || cancelFlag.get()) return;
+                            item.downloadedBytes = dl;
+                            if (tot > 0) item.totalBytes = tot;
+                            item.speedBytesPerSec = spd;
+                            long now = System.currentTimeMillis();
+                            if (now - lastNotifyMs[0] >= 550) {
+                                lastNotifyMs[0] = now;
                                 synchronized (BrowserDownloadManager.this) { saveToPrefs(); }
                                 notifyListeners();
+                                CinemaMediaDownloader.updateProgressNotification(app, item);
                             }
-                            return;
-                        }
-                        raf.write(buf, 0, read);
-                        item.downloadedBytes += read;
-                        bytesSinceTick += read;
-                        long now = System.currentTimeMillis();
-                        if (now - lastUiTs >= 450) {
-                            long elapsed = Math.max(1L, now - lastUiTs);
-                            item.speedBytesPerSec = (bytesSinceTick * 1000L) / elapsed;
-                            lastUiTs = now;
-                            bytesSinceTick = 0L;
-                            if (!deletedIds.contains(item.id)) {
-                                synchronized (BrowserDownloadManager.this) { saveToPrefs(); }
-                                notifyListeners();
-                            }
-                        }
-                    }
-                }
+                        });
+
                 if (deletedIds.contains(item.id) || cancelFlag.get()) {
+                    if (!deletedIds.contains(item.id)) {
+                        item.status = STATUS_PAUSED;
+                        item.speedBytesPerSec = 0L;
+                        synchronized (BrowserDownloadManager.this) { saveToPrefs(); }
+                        notifyListeners();
+                        CinemaMediaDownloader.cancelNotification(app, item.id);
+                    }
                     return;
                 }
-                publishToDownloadsIfScoped(item, file);
+
+                finalizeCompletedFile(item, partFile);
                 item.status = STATUS_COMPLETED;
                 item.speedBytesPerSec = 0L;
-                if (item.totalBytes <= 0) item.totalBytes = item.downloadedBytes;
+                if (item.totalBytes <= 0 || item.downloadedBytes > item.totalBytes) {
+                    item.totalBytes = item.downloadedBytes;
+                }
                 synchronized (BrowserDownloadManager.this) { saveToPrefs(); }
                 notifyListeners();
+                CinemaMediaDownloader.showCompletedNotification(app, item);
+                PhoneModuleBridges.tvHub().notifyLibraryDownloadUpdated(app, item.filePath);
             } catch (Exception e) {
                 if (!cancelFlag.get() && !deletedIds.contains(item.id)) {
                     item.status = STATUS_FAILED;
@@ -487,10 +567,10 @@ public final class BrowserDownloadManager {
                     item.speedBytesPerSec = 0L;
                     synchronized (BrowserDownloadManager.this) { saveToPrefs(); }
                     notifyListeners();
+                    CinemaMediaDownloader.showFailedNotification(app, item);
                 }
             } finally {
                 activeConns.remove(item.id);
-                if (conn != null) conn.disconnect();
                 if (deletedIds.remove(item.id)) {
                     purgeFileAndRemnants(item);
                 }
@@ -498,38 +578,79 @@ public final class BrowserDownloadManager {
         });
     }
 
-    private void publishToDownloadsIfScoped(DownloadItem item, File sourceFile) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            android.media.MediaScannerConnection.scanFile(app, new String[]{sourceFile.getAbsolutePath()}, null, null);
+    private void finalizeCompletedFile(DownloadItem item, File partFile) throws Exception {
+        File directLibraryDownload = CinemaStorage.phoneDownloadFolder();
+        boolean canWriteLibraryDirectly = (Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager())
+                && ((directLibraryDownload.isDirectory() || directLibraryDownload.mkdirs()) && canDirCreate(directLibraryDownload));
+
+        if (canWriteLibraryDirectly) {
+            File target = new File(directLibraryDownload, sanitizeFilename(item.filename, directLibraryDownload));
+            if (!partFile.equals(target)) {
+                try {
+                    Files.move(partFile.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                } catch (Throwable moveErr) {
+                    try (FileInputStream in = new FileInputStream(partFile);
+                         OutputStream out = new java.io.FileOutputStream(target)) {
+                        byte[] buf = new byte[65536];
+                        int n;
+                        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                        out.flush();
+                    }
+                    //noinspection ResultOfMethodCallIgnored
+                    partFile.delete();
+                }
+            }
+            item.filename = target.getName();
+            item.filePath = target.getAbsolutePath();
+            item.stagingPath = target.getAbsolutePath();
+            item.downloadedBytes = target.length();
+            item.totalBytes = target.length();
+            MediaScannerConnection.scanFile(app, new String[]{target.getAbsolutePath()}, null, null);
             return;
         }
-        try {
-            ContentResolver cr = app.getContentResolver();
-            ContentValues cv = new ContentValues();
-            cv.put(MediaStore.Downloads.DISPLAY_NAME, item.filename);
-            cv.put(MediaStore.Downloads.MIME_TYPE, guessMimeType(item.filename));
-            cv.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Local Cinema");
-            cv.put(MediaStore.Downloads.IS_PENDING, 1);
-            Uri uri = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
-            if (uri == null) return;
-            try (InputStream in = new FileInputStream(sourceFile);
-                 OutputStream out = cr.openOutputStream(uri)) {
-                if (out == null) throw new java.io.IOException("Cannot open MediaStore output");
-                byte[] buf = new byte[32768];
-                int n;
-                while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
-                out.flush();
-            }
-            ContentValues done = new ContentValues();
-            done.put(MediaStore.Downloads.IS_PENDING, 0);
-            cr.update(uri, done, null, null);
-            item.filePath = uri.toString();
-            // Remove app-private temp staging file after publishing to public Downloads/Local Cinema
-            //noinspection ResultOfMethodCallIgnored
-            sourceFile.delete();
-        } catch (Exception ignored) {
-            item.filePath = sourceFile.getAbsolutePath();
+
+        // Scoped storage fallback when MANAGE_EXTERNAL_STORAGE has not yet been granted
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                ContentResolver cr = app.getContentResolver();
+                ContentValues cv = new ContentValues();
+                cv.put(MediaStore.Downloads.DISPLAY_NAME, item.filename);
+                cv.put(MediaStore.Downloads.MIME_TYPE, guessMimeType(item.filename));
+                cv.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Local Cinema/Download");
+                cv.put(MediaStore.Downloads.IS_PENDING, 1);
+                Uri uri = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                if (uri != null) {
+                    try (InputStream in = new FileInputStream(partFile);
+                         OutputStream out = cr.openOutputStream(uri)) {
+                        if (out == null) throw new java.io.IOException("Cannot open MediaStore output");
+                        byte[] buf = new byte[65536];
+                        int n;
+                        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                        out.flush();
+                    }
+                    ContentValues done = new ContentValues();
+                    done.put(MediaStore.Downloads.IS_PENDING, 0);
+                    cr.update(uri, done, null, null);
+                    item.downloadedBytes = partFile.length();
+                    item.totalBytes = partFile.length();
+                    item.filePath = uri.toString();
+                    //noinspection ResultOfMethodCallIgnored
+                    partFile.delete();
+                    return;
+                }
+            } catch (Exception ignored) {}
         }
+
+        File localFinal = new File(partFile.getParentFile(), sanitizeFilename(item.filename, partFile.getParentFile()));
+        if (!partFile.equals(localFinal)) {
+            //noinspection ResultOfMethodCallIgnored
+            partFile.renameTo(localFinal);
+        }
+        item.filePath = localFinal.getAbsolutePath();
+        item.stagingPath = localFinal.getAbsolutePath();
+        item.downloadedBytes = localFinal.length();
+        item.totalBytes = localFinal.length();
+        MediaScannerConnection.scanFile(app, new String[]{localFinal.getAbsolutePath()}, null, null);
     }
 
     private static String guessMimeType(String filename) {
@@ -541,12 +662,18 @@ public final class BrowserDownloadManager {
         return "video/mp4";
     }
 
-    private File writableStageDir() {
+    private File writableOutputDir() {
         if (Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()) {
-            File pub = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Local Cinema");
-            if ((pub.isDirectory() || pub.mkdirs()) && canDirCreate(pub)) return pub;
+            File libDl = CinemaStorage.phoneDownloadFolder();
+            if ((libDl.isDirectory() || libDl.mkdirs()) && canDirCreate(libDl)) return libDl;
         }
-        File appDir = new File(app.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "Downloading");
+        return appScopedDownloadDir();
+    }
+
+    private File appScopedDownloadDir() {
+        File base = app.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        CinemaStorage.migrateLegacyDownloadingFolderInRoot(base, null);
+        File appDir = new File(base, CinemaStorage.DOWNLOAD_FOLDER_NAME);
         if (!appDir.isDirectory()) //noinspection ResultOfMethodCallIgnored
             appDir.mkdirs();
         return appDir;
@@ -566,13 +693,14 @@ public final class BrowserDownloadManager {
 
     private static String sanitizeFilename(String raw, File dir) {
         String base = (raw == null || raw.isBlank()) ? "video.mp4"
-                : raw.replaceAll("[\\\\/:*?\"<>|]+", "_").trim();
+                : raw.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]+", " ").replaceAll("\\s+", " ").trim();
+        if (base.isEmpty()) base = "video.mp4";
         File candidate = new File(dir, base);
         if (!candidate.exists()) return base;
         int dot = base.lastIndexOf('.');
         String stem = dot > 0 ? base.substring(0, dot) : base;
         String ext = dot > 0 ? base.substring(dot) : "";
-        for (int n = 1; n < 99; n++) {
+        for (int n = 1; n < 999; n++) {
             File alt = new File(dir, stem + " (" + n + ")" + ext);
             if (!alt.exists()) return alt.getName();
         }
@@ -638,18 +766,27 @@ public final class BrowserDownloadManager {
     public long computeOrphanedStagingBytes() {
         long bytes = 0L;
         try {
-            File appStage = new File(app.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "Downloading");
-            if (!appStage.isDirectory()) return 0L;
-            File[] children = appStage.listFiles();
-            if (children == null) return 0L;
-            java.util.Set<String> tracked = trackedLocalFilePaths();
-            for (File f : children) {
-                if (!f.isFile()) continue;
-                String name = f.getName().toLowerCase(Locale.ROOT);
-                boolean tempExt = name.endsWith(".part") || name.endsWith(".tmp")
-                        || name.endsWith(".download") || name.endsWith(".crdownload");
-                if (tempExt || !tracked.contains(f.getAbsolutePath())) {
-                    bytes += Math.max(0L, f.length());
+            File appStage = appScopedDownloadDir();
+            if (appStage.isDirectory()) {
+                File[] children = appStage.listFiles();
+                if (children != null) {
+                    java.util.Set<String> tracked = trackedLocalFilePaths();
+                    for (File f : children) {
+                        if (!f.isFile()) continue;
+                        String name = f.getName().toLowerCase(Locale.ROOT);
+                        boolean tempExt = name.endsWith(".part") || name.endsWith(".tmp")
+                                || name.endsWith(".download") || name.endsWith(".crdownload");
+                        if (tempExt || !tracked.contains(f.getAbsolutePath())) {
+                            bytes += Math.max(0L, f.length());
+                        }
+                    }
+                }
+            }
+            for (String tmpName : new String[]{"hls_mux_stage", "stream_mux_stage"}) {
+                File d = new File(app.getCacheDir(), tmpName);
+                if (d.isDirectory()) {
+                    File[] c = d.listFiles();
+                    if (c != null) for (File f : c) if (f.isFile()) bytes += f.length();
                 }
             }
         } catch (Exception ignored) {}
@@ -658,19 +795,32 @@ public final class BrowserDownloadManager {
 
     public void purgeOrphanedStagingFiles() {
         try {
-            File appStage = new File(app.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "Downloading");
-            if (!appStage.isDirectory()) return;
-            File[] children = appStage.listFiles();
-            if (children == null) return;
-            java.util.Set<String> tracked = trackedLocalFilePaths();
-            for (File f : children) {
-                if (!f.isFile()) continue;
-                String name = f.getName().toLowerCase(Locale.ROOT);
-                boolean tempExt = name.endsWith(".part") || name.endsWith(".tmp")
-                        || name.endsWith(".download") || name.endsWith(".crdownload");
-                if (tempExt || !tracked.contains(f.getAbsolutePath())) {
-                    //noinspection ResultOfMethodCallIgnored
-                    f.delete();
+            boolean anyRunning = activeCount() > 0;
+            File appStage = appScopedDownloadDir();
+            if (appStage.isDirectory()) {
+                File[] children = appStage.listFiles();
+                if (children != null) {
+                    java.util.Set<String> tracked = trackedLocalFilePaths();
+                    for (File f : children) {
+                        if (!f.isFile()) continue;
+                        String name = f.getName().toLowerCase(Locale.ROOT);
+                        boolean tempExt = name.endsWith(".part") || name.endsWith(".tmp")
+                                || name.endsWith(".download") || name.endsWith(".crdownload");
+                        if (!anyRunning && (tempExt || !tracked.contains(f.getAbsolutePath()))) {
+                            //noinspection ResultOfMethodCallIgnored
+                            f.delete();
+                        }
+                    }
+                }
+            }
+            if (!anyRunning) {
+                for (String tmpName : new String[]{"hls_mux_stage", "stream_mux_stage"}) {
+                    File d = new File(app.getCacheDir(), tmpName);
+                    if (d.isDirectory()) {
+                        File[] c = d.listFiles();
+                        if (c != null) for (File f : c) //noinspection ResultOfMethodCallIgnored
+                            f.delete();
+                    }
                 }
             }
         } catch (Exception ignored) {}

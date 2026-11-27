@@ -55,6 +55,7 @@ public class MainActivity extends ThemeActivity {
     public static final String ACTION_OPEN_TORRENT_DETAILS = "com.meedx.localcinema.manager.ACTION_OPEN_TORRENT_DETAILS";
     public static final String KEY_TORRENT_ID = "torrent_id";
     public static final String EXTRA_SELECT_TAB = "cinema_select_tab";
+    public static final String EXTRA_OPEN_FEEDS = "cinema_open_feeds";
     private static boolean launchedInitialHub;
 
     private NavController navController;
@@ -93,6 +94,19 @@ public class MainActivity extends ThemeActivity {
             }
         }
         return null;
+    }
+
+    public boolean openFeedsScreen() {
+        var navHostFragment = (NavHostFragment) getSupportFragmentManager()
+                .findFragmentById(R.id.nav_host_fragment);
+        if (navHostFragment == null) return false;
+        for (var fragment : navHostFragment.getChildFragmentManager().getFragments()) {
+            if (fragment instanceof NavBarFragment navBarFragment) {
+                navBarFragment.openFeedsFromSettings();
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -203,7 +217,8 @@ public class MainActivity extends ThemeActivity {
                 || getIntent().hasExtra(Intent.EXTRA_TEXT)
                 || getIntent().hasExtra(Intent.EXTRA_STREAM)
                 || getIntent().hasExtra(KEY_TORRENT_ID)
-                || getIntent().hasExtra(EXTRA_SELECT_TAB);
+                || getIntent().hasExtra(EXTRA_SELECT_TAB)
+                || getIntent().hasExtra(EXTRA_OPEN_FEEDS);
         if (savedInstanceState == null && !launchedInitialHub && !hasExternalData) {
             launchedInitialHub = true;
             startActivity(new Intent(this, org.proninyaroslav.libretorrent.cinema_hub.TvHubActivity.class)
@@ -265,6 +280,10 @@ public class MainActivity extends ThemeActivity {
                         String openUrl = intent.getStringExtra("open_url");
                         intent.removeExtra("open_url");
                         navBarFragment.openBrowserUrl(openUrl);
+                    }
+                    if (intent.getBooleanExtra(EXTRA_OPEN_FEEDS, false)) {
+                        intent.removeExtra(EXTRA_OPEN_FEEDS);
+                        navBarFragment.openFeedsFromSettings();
                     }
                     navBarFragment.handleImplicitIntent();
                     break;

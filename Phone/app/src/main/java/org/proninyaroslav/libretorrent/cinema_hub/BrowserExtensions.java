@@ -176,6 +176,10 @@ final class BrowserExtensions {
         renderList();
     }
 
+    boolean isShowing() {
+        return activeDialog != null && activeDialog.isShowing();
+    }
+
     void refreshIfShowing() {
         if (activeDialog != null && activeDialog.isShowing()) {
             renderList();
@@ -361,7 +365,7 @@ final class BrowserExtensions {
     }
 
     private void confirmRemove(WebExtension addon) {
-        new AlertDialog.Builder(context)
+        CinemaBrowser.styleDarkDialog(new AlertDialog.Builder(context)
                 .setTitle(l("إزالة ", "Remove ") + name(addon) + "?")
                 .setMessage(bundledBlocker != null && bundledBlocker.equals(addon.id)
                         ? l("يمكنك إعادة تثبيت uBlock Origin لاحقاً من قائمة + إضافة.",
@@ -380,7 +384,7 @@ final class BrowserExtensions {
                         setBusy(null);
                         message(l("تعذّر إزالة الإضافة", "Could not remove extension"));
                     }));
-                }).show();
+                }).show());
     }
 
     private void showAddMenu() {
@@ -397,16 +401,18 @@ final class BrowserExtensions {
                 onReinstallBundledUbo.run();
             });
         }
-        new AlertDialog.Builder(context)
+        CinemaBrowser.styleDarkDialog(new AlertDialog.Builder(context)
                 .setTitle("+ " + l("إضافة للمتصفح", "Add Extension"))
                 .setItems(labels.toArray(new String[0]), (d, which) -> actions.get(which).run())
                 .setNegativeButton(android.R.string.cancel, null)
-                .show();
+                .show());
     }
 
     private void enterLink() {
         var input = new EditText(context);
         input.setSingleLine(true);
+        input.setTextColor(0xfff4f4f6);
+        input.setHintTextColor(0xff8e8e98);
         input.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
         input.setHint(org.proninyaroslav.libretorrent.R.string.cinema_extension_url_hint);
         var pad = new LinearLayout(context);
@@ -414,12 +420,12 @@ final class BrowserExtensions {
         pad.setPadding(dp(20), dp(8), dp(20), dp(4));
         pad.addView(input);
 
-        var dialog = new AlertDialog.Builder(context)
+        var dialog = CinemaBrowser.styleDarkDialog(new AlertDialog.Builder(context)
                 .setTitle(l("تثبيت إضافة من رابط", "Install Extension from Link"))
                 .setView(pad)
                 .setPositiveButton(l("تثبيت", "Install"), null)
                 .setNegativeButton(android.R.string.cancel, null)
-                .show();
+                .show());
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             String raw = input.getText().toString().trim();
             Uri url = Uri.parse(raw);
@@ -584,6 +590,7 @@ final class BrowserExtensions {
                 .create();
         dialog.setOnCancelListener(window -> result.complete(denied));
         dialog.show();
+        CinemaBrowser.styleDarkDialog(dialog);
         return result;
     }
 

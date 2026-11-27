@@ -24,6 +24,16 @@ import com.archos.mediacenter.video.leanback.SingleFragmentActivity;
 
 public class NetworkRootActivity extends SingleFragmentActivity {
     @Override
+    protected void onCreate(android.os.Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        if (!getIntent().getBooleanExtra("cinema_legacy_network", false)) {
+            startActivity(new android.content.Intent(this,
+                    com.archos.mediacenter.video.leanback.cinema.CinemaNetworkActivity.class));
+            finish();
+        }
+    }
+
+    @Override
     public Fragment getFragmentInstance() {
         return new NetworkRootFragment();
     }

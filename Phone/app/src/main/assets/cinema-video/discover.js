@@ -129,18 +129,97 @@
     const GENERIC_SITE_TITLES = new Set([
         "cinemana", "shabakaty", "shabakaty cinemana", "youtube", "home", "video", "video player",
         "egybest", "faselhd", "mycima", "wecima", "cimalight", "arabseed", "akoam", "watch", "online",
-        "سينمانا", "شبكتي", "شبكتي سينمانا", "سيما لايت", "مشاهدة", "الرئيسية"
+        "player", "embed", "jwplayer", "jw player", "plyr", "videojs", "stream", "advertisement", "sponsored",
+        "elif.news", "elif news", "untitled", "index", "loading", "just a moment",
+        "سينمانا", "شبكتي", "شبكتي سينمانا", "سيما لايت", "مشاهدة", "الرئيسية", "إعلان"
     ]);
+    const AD_TITLE_NOISE_RE = /\b(?:business\s+loans?|personal\s+loans?|student\s+loans?|auto\s+loans?|home\s+loans?|payday\s+loans?|small\s+business\s+funding|mortgages?|refinanc(?:e|ing)|insurance|credit\s+cards?|credit\s+scores?|tips\s+for\s+a\s+successful|\d+\s+tips\s+(?:for|to)\s+|investment|investing|wealth\s+management|retirement\s+planning|tax\s+deductions?|forex(?:\s+trading)?|make\s+money(?:\s+from\s+home|\s+online)?|work\s+from\s+home|passive\s+income|earn\s+money(?:\s+online)?|binary\s+options?|day\s+trading|stock\s+(?:market|trading)|crypto(?:currency)?|bitcoin|online\s+casino|casino|sports?\s+betting|betting|sportsbook|slot\s+machines?|sponsored(?:\s+ad|\s+content)?|advertisement|skip\s+ad(?:s)?|1xbet|melbet|mostbet|linebet|betwinner|olymp\s*trade|iq\s*option|binomo|attention\s+required|just\s+a\s+moment|cloudflare)\b/i;
+    const CLOAKED_WRAPPER_HOST_RE = /(^|\.)(elif\.news)$/i;
+    const GENERIC_STREAM_SEGMENTS = new Set([
+        "master", "index", "playlist", "chunklist", "manifest", "video", "stream", "hls", "dash",
+        "live", "media", "play", "embed", "player", "watch", "movie", "movies", "series", "tv",
+        "episode", "episodes", "files", "cdn", "storage", "uploads", "videos", "content", "v", "e",
+        "2160p", "1440p", "1080p", "720p", "480p", "360p", "240p", "hd", "fhd", "uhd", "4k", "sd", "auto"
+    ]);
+    const AD_STREAM_HOST_RE = /(^|\.)(doubleclick\.net|googlesyndication\.com|googleadservices\.com|imasdk\.googleapis\.com|2mdn\.net|adnxs\.com|rubiconproject\.com|pubmatic\.com|criteo\.com|taboola\.com|outbrain\.com|exoclick\.com|exosrv\.com|magsrv\.com|tsyndicate\.com|propellerads\.com|popads\.net|popcash\.net|juicyads\.com|a-ads\.com|adsterra\.com|hilltopads\.net|clickadu\.com|galaksion\.com|bidgear\.com|springserve\.com|spotxchange\.com|innovid\.com|flashtalking\.com|teads\.tv|smartadserver\.com|adform\.net|vidoomy\.com|aniview\.com|connatix\.com)$/i;
+    const AD_STREAM_PATH_RE = /(?:\/|^)(?:vast|preroll|midroll|postroll|adserver|adbreak|ad_break|advert|ads_video|ima3)(?:\/|\.|\?|$)/i;
+    const STORYBOARD_SUB_HINT_RE = /(?:#xywh=\s*\d+|\.(?:jpe?g|png|webp|gif|bmp|avif|svg)(?:$|[?#])|(?:^|[/_.-])(?:storyboard|sprites?|thumbnails?|thumbs|trickplay|preview[_-]?vtt|bif)(?:$|[/_.-]))/i;
+    const IMAGE_LINE_ONLY_RE = /^(?:https?:\/\/\S+|\/?[^\s<>"'{}|^`\\]+)\.(?:jpe?g|png|webp|gif|bmp|avif|svg)(?:[?#]\S*)?$/i;
+
+    function isAdStreamUrl(rawUrl) {
+        if (!rawUrl || typeof rawUrl !== "string") return false;
+        try {
+            const u = new URL(rawUrl, location.href);
+            if (AD_STREAM_HOST_RE.test(u.hostname || "")) return true;
+            if (AD_STREAM_PATH_RE.test(u.pathname || "")) return true;
+            if (/[?&](?:ad_tag|adtag|vast|preroll|ad_url|ad_type)=/i.test(u.search || "")) return true;
+        } catch (_) {}
+        return false;
+    }
+
+    function isPlayerShowingAd(videoEl) {
+        try {
+            if (document.querySelector(".jw-flag-ads, .vjs-ad-playing, .plyr--ads, .fp-ad-playing, .ad-showing, .ima-ad-container:not([style*='display: none'])")) {
+                if (videoEl) {
+                    const dur = Number(videoEl.duration);
+                    if (!Number.isFinite(dur) || (dur > 0 && dur < 120)) return true;
+                } else {
+                    return true;
+                }
+            }
+            if (videoEl) {
+                const adWrap = videoEl.closest(
+                    '.ima-ad-container, [id*="google_ads" i], [class*="preroll" i], [id*="preroll" i], [class*="vast-" i], .ad-container, .video-ads');
+                if (adWrap) return true;
+                const src = videoEl.currentSrc || videoEl.src || "";
+                if (src && isAdStreamUrl(src)) return true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function isStoryboardSubtitleHint(rawUrl, label = "") {
+        return STORYBOARD_SUB_HINT_RE.test(String(rawUrl || "")) || STORYBOARD_SUB_HINT_RE.test(String(label || ""));
+    }
+
+    function isStoryboardCueLine(line) {
+        if (!line) return false;
+        const s = String(line).trim();
+        if (!s) return false;
+        if (/#xywh=\s*\d+/i.test(s)) return true;
+        const stripped = s.replace(/<[^>]+>/g, "").trim();
+        if (!stripped) return false;
+        return /#xywh=\s*\d+/i.test(stripped) || IMAGE_LINE_ONLY_RE.test(stripped);
+    }
+
+    function isEntirelyStoryboardText(rawText) {
+        if (!rawText || typeof rawText !== "string") return false;
+        let sawStoryboard = false;
+        let sawDialogue = false;
+        for (const raw of rawText.replace(/^\uFEFF/, "").split(/\r?\n/)) {
+            const t = raw.trim();
+            if (!t || /^WEBVTT/i.test(t) || /^(NOTE|STYLE|REGION)\b/i.test(t) || /^\d+$/.test(t) || /-->/.test(t)) {
+                continue;
+            }
+            if (isStoryboardCueLine(t)) sawStoryboard = true;
+            else {
+                sawDialogue = true;
+                break;
+            }
+        }
+        return sawStoryboard && !sawDialogue;
+    }
 
     function cleanMediaTitle(raw) {
         if (!raw || typeof raw !== "string") return "";
+        if (AD_TITLE_NOISE_RE.test(raw)) return "";
         let t = raw.replace(/\s+/g, " ").trim();
         t = t.replace(/^(?:watch(?:\s+and\s+download)?|download(?:\s+and\s+watch)?|مشاهدة(?:\s+و\s*تحميل)?|تحميل(?:\s+و\s*مشاهدة)?|فيلم|مسلسل|انمي|أنمي)\s+/i, "");
         t = t.replace(/\s*(?:[|–—•·:\-]\s*)+(?:shabakaty\s*)?(?:cinemana|shabakaty|youtube|yts(?:\.[a-z]+)?|yify|egybest|faselhd|mycima|wecima|e?\.?cimalight(?:\.co)?|arabseed|akoam|شبكتي|سينمانا|سيما\s*لايت|ايجي\s*بست|فاصل\s*إعلاني|ماي\s*سيما|اون\s*لاين|أون\s*لاين).*$/i, "");
         t = t.replace(/^(?:shabakaty\s*)?(?:cinemana|shabakaty|youtube|yts(?:\.[a-z]+)?|yify|egybest|faselhd|mycima|wecima|شبكتي|سينمانا)\s*(?:[|–—•·:\-]\s*)+/i, "");
         t = t.replace(/\s*\b(?:torrent(?:\s*-\s*yts(?:\.[a-z]+)?)?|watch\s+online|full\s+movie|official\s+trailer|مترجم(?:\s+أون\s*لاين|\s+اون\s*لاين|\s+كامل)?|مدبلج|أون\s*لاين|اون\s*لاين|اونلاين|HD|FHD|UHD|4K)\b\s*$/gi, "");
         t = t.replace(/^[\s\-–—|:•·]+|[\s\-–—|:•·]+$/g, "").trim();
-        if (!t || GENERIC_SITE_TITLES.has(t.toLowerCase())) return "";
+        if (!t || GENERIC_SITE_TITLES.has(t.toLowerCase()) || AD_TITLE_NOISE_RE.test(t)) return "";
         return t.slice(0, 160);
     }
 
@@ -180,34 +259,210 @@
         return yr ? (title + " (" + yr + ")").slice(0, 160) : title;
     }
 
-    function extractCleanMediaTitle() {
-        // 1. Structured JSON-LD (Movie / TVSeries / TVEpisode / VideoObject)
+    function isLikelyRandomToken(seg) {
+        if (!seg || seg.length < 3) return true;
+        if (/[\u0600-\u06FF]{2,}/.test(seg)) return false;
+        if (/\bS\d{1,2}E\d{1,3}\b/i.test(seg)) return false;
+        if (/^[0-9a-f]{8,}$/i.test(seg) || /^\d+$/.test(seg)) return true;
+        if (!/[\s._\-]/.test(seg) && /[0-9]/.test(seg) && /[a-z]/i.test(seg) && seg.length >= 8) return true;
+        const letters = seg.replace(/[^a-z]/gi, "");
+        if (!/[\s._\-]/.test(seg) && letters.length >= 8) {
+            const vowels = (letters.match(/[aeiouy]/gi) || []).length;
+            if (vowels / letters.length < 0.18) return true;
+        }
+        return false;
+    }
+
+    function extractTitleFromMediaOrPageUrl(rawUrl, allowHostSlug = false) {
+        if (!rawUrl || typeof rawUrl !== "string") return "";
         try {
-            const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-            for (const s of scripts) {
-                if (!s.textContent) continue;
-                const parsed = JSON.parse(s.textContent);
-                const queue = Array.isArray(parsed) ? parsed : [parsed];
-                for (const obj of queue) {
-                    if (!obj || typeof obj !== "object") continue;
-                    const types = [].concat(obj["@type"] || []).join(" ");
-                    if (/Movie|TVSeries|TVEpisode|VideoObject/i.test(types) && typeof obj.name === "string") {
-                        const seriesName = obj.partOfSeries?.name ? cleanMediaTitle(String(obj.partOfSeries.name)) : "";
-                        const itemName = cleanMediaTitle(obj.name);
-                        const pubYear = String(obj.datePublished || obj.dateCreated || "").match(/\b(19\d{2}|20[0-3]\d)\b/)?.[1] || "";
-                        if (seriesName && itemName && !itemName.toLowerCase().includes(seriesName.toLowerCase())) {
-                            return (seriesName + " · " + itemName).slice(0, 160);
-                        }
-                        if (itemName) {
-                            if (pubYear && !itemName.includes(pubYear)) return (itemName + " (" + pubYear + ")").slice(0, 160);
-                            return withDetectedYear(itemName);
-                        }
-                    }
+            const u = new URL(rawUrl, location.href);
+            for (const key of ["title", "name", "video_title", "filename", "dn", "movie", "series"]) {
+                const val = u.searchParams.get(key);
+                if (val) {
+                    const cleaned = cleanMediaTitle(decodeURIComponent(val.replace(/\+/g, " "))
+                        .replace(/\.(?:m3u8|mp4|mkv|webm|mov|mpd|vtt|srt)$/i, "")
+                        .replace(/[._]+/g, " "));
+                    if (cleaned && cleaned.length >= 2 && !isLikelyRandomToken(cleaned)) return cleaned;
+                }
+            }
+            const parts = (u.pathname || "").split("/").filter(Boolean).reverse();
+            for (const rawSeg of parts) {
+                let dec = "";
+                try { dec = decodeURIComponent(rawSeg); } catch (_) { dec = rawSeg; }
+                dec = dec.replace(/\.(?:m3u8|mp4|mkv|webm|mov|mpd|vtt|srt|html?|php)$/i, "").trim();
+                if (!dec || GENERIC_STREAM_SEGMENTS.has(dec.toLowerCase()) || isLikelyRandomToken(dec)) continue;
+                let humanized = dec
+                    .replace(/[._\-]+/g, " ")
+                    .replace(/\b(?:2160p|1440p|1080p|720p|480p|360p|web[\s-]?dl|webrip|bluray|bdrip|brrip|hdrip|x264|x265|h264|h265|hevc|aac|ac3|10bit|hls)\b/gi, " ")
+                    .replace(/\s+/g, " ")
+                    .trim();
+                const cleaned = cleanMediaTitle(humanized);
+                if (cleaned && cleaned.length >= 3 && (allowHostSlug || /[\s\u0600-\u06FF]|S\d{1,2}E\d{1,3}/i.test(cleaned))) {
+                    return cleaned;
                 }
             }
         } catch (_) {}
+        return "";
+    }
 
-        // 2. Site-specific movie header + year (e.g. #movie-info h1 + sibling h2 year on YTS)
+    function isTopDocumentCloaked() {
+        try {
+            if (CLOAKED_WRAPPER_HOST_RE.test(location.hostname || "")) return true;
+            const docT = document.title || "";
+            const ogT = document.querySelector('meta[property="og:title"]')?.getAttribute("content") || "";
+            const h1T = document.querySelector("article h1, main h1, h1")?.textContent || "";
+            return AD_TITLE_NOISE_RE.test(docT) || AD_TITLE_NOISE_RE.test(ogT) || AD_TITLE_NOISE_RE.test(h1T);
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function extractInlinePlayerConfigTitle() {
+        try {
+            if (window.name && window.name.length >= 3 && window.name.length <= 160 && !/^[A-Za-z0-9_-]{12,}$/.test(window.name)) {
+                const wn = cleanMediaTitle(window.name);
+                if (wn && (/[\u0600-\u06FF]/.test(wn) || /\bS\d{1,2}E\d{1,3}\b/i.test(wn))) return wn;
+            }
+            const scripts = document.querySelectorAll("script:not([src])");
+            for (let i = 0; i < scripts.length && i < 40; i++) {
+                const txt = scripts[i]?.textContent || "";
+                if (txt.length < 12 || txt.length > 250000) continue;
+                if (!/(?:jwplayer|playerjs|videojs|plyr|m3u8|mp4|sources|file\s*:)/i.test(txt)) continue;
+                const m = /(?:["']?title["']?\s*:\s*["']([^"'\r\n]{2,150})["'])/i.exec(txt);
+                if (m && m[1]) {
+                    const candidate = cleanMediaTitle(m[1].replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16))));
+                    if (candidate && !isLikelyRandomToken(candidate)) return candidate;
+                }
+            }
+        } catch (_) {}
+        return "";
+    }
+
+    function extractIframeHintsFromTopDom() {
+        try {
+            const frames = document.querySelectorAll('iframe[allowfullscreen], .player iframe, #player iframe, [class*="player" i] iframe, iframe[src]');
+            for (const fr of frames) {
+                for (const attr of ["title", "aria-label", "data-title", "data-name", "name"]) {
+                    const v = cleanMediaTitle(fr.getAttribute(attr) || "");
+                    if (v && v.length >= 2 && !isLikelyRandomToken(v)) return v;
+                }
+                const src = fr.getAttribute("src") || fr.getAttribute("data-src") || "";
+                if (src && !isAdStreamUrl(src)) {
+                    const fromSrc = extractTitleFromMediaOrPageUrl(src, false);
+                    if (fromSrc) return fromSrc;
+                }
+            }
+        } catch (_) {}
+        return "";
+    }
+
+    function extractPlayerInternalTitle() {
+        const playerSelectors = [
+            ".jw-title-primary", ".vjs-title-bar-title", ".plyr__title", ".fp-title",
+            ".video-title", ".player-title", "[class*='video-title']", "[class*='episode-title']",
+            ".episodes .active", ".episode.active"
+        ];
+        for (const sel of playerSelectors) {
+            try {
+                for (const el of document.querySelectorAll(sel)) {
+                    const txt = cleanMediaTitle(el.textContent || el.getAttribute("title") || el.getAttribute("aria-label") || "");
+                    if (txt && txt.length >= 2 && !isLikelyRandomToken(txt)) return txt;
+                }
+            } catch (_) {}
+        }
+        return "";
+    }
+
+    function extractStreamOrSubFallbackTitle() {
+        for (const item of network.values()) {
+            const fromStream = extractTitleFromMediaOrPageUrl(item?.url || "", false);
+            if (fromStream) return fromStream;
+        }
+        for (const subInfo of subtitleNetwork.values()) {
+            const fromSub = extractTitleFromMediaOrPageUrl(subInfo?.url || "", false);
+            if (fromSub) return fromSub;
+        }
+        return "";
+    }
+
+    function extractCleanMediaTitle() {
+        // Child iframe (embedded video player): extract player/embed title as fallback when top page is cloaked
+        if (window !== window.top) {
+            const playerUi = extractPlayerInternalTitle();
+            if (playerUi) return playerUi;
+            const cfgTitle = extractInlinePlayerConfigTitle();
+            if (cfgTitle) return cfgTitle;
+            for (const sel of [".title", "#title", "h1", "h2"]) {
+                try {
+                    const txt = cleanMediaTitle(document.querySelector(sel)?.textContent || "");
+                    if (txt && txt.length >= 2 && !isLikelyRandomToken(txt)) return txt;
+                } catch (_) {}
+            }
+            for (const metaSel of ['meta[property="og:title"]', 'meta[name="twitter:title"]', 'meta[name="title"]']) {
+                try {
+                    const txt = cleanMediaTitle(document.querySelector(metaSel)?.getAttribute("content") || "");
+                    if (txt && !isLikelyRandomToken(txt)) return txt;
+                } catch (_) {}
+            }
+            const frameDoc = cleanMediaTitle(document.title || "");
+            if (frameDoc && !isLikelyRandomToken(frameDoc)) return frameDoc;
+            const fromStream = extractStreamOrSubFallbackTitle();
+            if (fromStream) return fromStream;
+            const fromSelfUrl = extractTitleFromMediaOrPageUrl(location.href, false);
+            if (fromSelfUrl) return fromSelfUrl;
+            return extractTitleFromMediaOrPageUrl(document.referrer || "", true);
+        }
+
+        const topCloaked = isTopDocumentCloaked();
+
+        // 1. Structured JSON-LD (Movie / TVSeries / TVEpisode / VideoObject)
+        if (!topCloaked) {
+            try {
+                const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+                for (const s of scripts) {
+                    if (!s.textContent) continue;
+                    const parsed = JSON.parse(s.textContent);
+                    const queue = Array.isArray(parsed) ? parsed : [parsed];
+                    for (const obj of queue) {
+                        if (!obj || typeof obj !== "object") continue;
+                        const types = [].concat(obj["@type"] || []).join(" ");
+                        if (/Movie|TVSeries|TVEpisode|VideoObject/i.test(types) && typeof obj.name === "string") {
+                            const seriesName = obj.partOfSeries?.name ? cleanMediaTitle(String(obj.partOfSeries.name)) : "";
+                            const itemName = cleanMediaTitle(obj.name);
+                            const pubYear = String(obj.datePublished || obj.dateCreated || "").match(/\b(19\d{2}|20[0-3]\d)\b/)?.[1] || "";
+                            if (seriesName && itemName && !itemName.toLowerCase().includes(seriesName.toLowerCase())) {
+                                return (seriesName + " · " + itemName).slice(0, 160);
+                            }
+                            if (itemName) {
+                                if (pubYear && !itemName.includes(pubYear)) return (itemName + " (" + pubYear + ")").slice(0, 160);
+                                return withDetectedYear(itemName);
+                            }
+                        }
+                    }
+                }
+            } catch (_) {}
+        }
+
+        // 2. Player-specific UI, inline player config & iframe hints
+        const playerInternal = extractPlayerInternalTitle();
+        if (playerInternal) return thisIsYouTube ? playerInternal : withDetectedYear(playerInternal);
+        const inlineCfg = extractInlinePlayerConfigTitle();
+        if (inlineCfg) return thisIsYouTube ? inlineCfg : withDetectedYear(inlineCfg);
+
+        if (topCloaked) {
+            const iframeHint = extractIframeHintsFromTopDom();
+            if (iframeHint) return iframeHint;
+            const streamHint = extractStreamOrSubFallbackTitle();
+            if (streamHint) return streamHint;
+            const refHint = extractTitleFromMediaOrPageUrl(document.referrer || "", true);
+            if (refHint) return refHint;
+            const slugHint = extractTitleFromMediaOrPageUrl(location.href, true);
+            if (slugHint) return slugHint;
+            return "";
+        }
+
+        // 3. Site-specific movie header + year (e.g. #movie-info h1 + sibling h2 year on YTS)
         try {
             const mTitle = cleanMediaTitle(document.querySelector("#movie-info h1, .movie-info h1")?.textContent || "");
             if (mTitle && mTitle.length >= 2) {
@@ -215,7 +470,7 @@
             }
         } catch (_) {}
 
-        // 3. Work title headings / OpenGraph
+        // 4. Work title headings / OpenGraph
         const selectors = [
             "ytd-watch-metadata h1 yt-formatted-string",
             "ytd-watch-metadata h1",
@@ -239,19 +494,16 @@
             } catch (_) {}
         }
 
-        // 4. Cleaned document.title
+        // 5. Cleaned document.title
         const docCleaned = cleanMediaTitle(document.title || "");
         if (docCleaned) return thisIsYouTube ? docCleaned : withDetectedYear(docCleaned);
 
-        // 4. Fallback from URL or subtitle filename
-        for (const subInfo of subtitleNetwork.values()) {
-            try {
-                const leaf = new URL(subInfo.url).pathname.split("/").pop() || "";
-                const base = cleanMediaTitle(decodeURIComponent(leaf).replace(/\.(vtt|srt|ass|ssa)$/i, "").replace(/[._]+/g, " "));
-                if (base && base.length >= 3) return base;
-            } catch (_) {}
-        }
-        return "";
+        // 6. Fallback from iframe hints, stream/subtitle filename, or URL path slug
+        const iframeFallback = extractIframeHintsFromTopDom();
+        if (iframeFallback) return iframeFallback;
+        const streamFallback = extractStreamOrSubFallbackTitle();
+        if (streamFallback) return streamFallback;
+        return extractTitleFromMediaOrPageUrl(location.href, true);
     }
 
     function sendHello() {
@@ -278,7 +530,9 @@
         dismissedUrls.clear();
         network.clear();
         subtitleNetwork.clear();
+        torrentNetwork.clear();
         inspected.clear();
+        inspectedScripts = new WeakSet();
         youtubeTracks.clear();
         blobSubtitleCache.clear();
         blobSubtitleLoading.clear();
@@ -290,6 +544,8 @@
         clearDiscoveredState(false);
         sendClearTab();
         scanDomMedia();
+        scanInlineScripts();
+        scanDomTorrents();
         scanPerformanceResources();
         scanDomSubtitles();
         for (const [u, item] of network) {
@@ -333,25 +589,143 @@
     let protectedVideo = false;
     const network = new Map();
     const subtitleNetwork = new Map();
+    const torrentNetwork = new Map();
     const inspected = new Set();
+    let inspectedScripts = new WeakSet();
     const youtubeTracks = new Map(); // itag -> { url, size, referer, origin, userAgent, cookie, authorization }
     const blobSubtitleCache = new Map(); // blob/data url -> { content, size, language }
     const blobSubtitleLoading = new Set();
     const thisIsYouTube = /(^|\.)(youtube\.com|youtu\.be)$/i.test(location.hostname);
+    function isHardcodedSubsSite() {
+        return /(^|\.)cinemana\.shabakaty\.com$/i.test(location.hostname)
+            || (/(^|\.)shabakaty\.com$/i.test(location.hostname) && /cinemana/i.test(location.href));
+    }
     let playerResponse = null;
     const directMediaPattern = /https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mp4|mpd|mkv|webm|mov)(?:[?#][^\s"'<>\\]*)?/gi;
+    const magnetTextPattern = /magnet:\?xt=urn:btih:[A-Za-z0-9]{32,40}[^\s"'<>\\]*/gi;
+
+    function extractInfoHash(raw) {
+        if (!raw || typeof raw !== "string") return "";
+        const m = /xt=urn:btih:([A-Fa-f0-9]{40}|[A-Za-z2-7]{32})\b/i.exec(raw);
+        if (m && m[1]) return m[1].toLowerCase();
+        const dlHash = /(?:\/torrent\/download\/|\/torrent\/|\/)([A-Fa-f0-9]{40})(?:\.torrent|\b|\/|\?|$)/i.exec(raw);
+        return dlHash && dlHash[1] ? dlHash[1].toLowerCase() : "";
+    }
+
+    function extractMagnetDisplayName(uri) {
+        if (!uri || !uri.startsWith("magnet:?")) return "";
+        try {
+            const q = uri.slice(uri.indexOf("?") + 1);
+            const params = new URLSearchParams(q);
+            const dn = params.get("dn");
+            if (dn) return decodeURIComponent(dn.replace(/\+/g, " ")).trim();
+        } catch (_) {}
+        return "";
+    }
+
+    function inferTorrentQuality(text) {
+        const s = String(text || "");
+        const tags = [];
+        if (/\b(2160p|4k|uhd)\b/i.test(s)) tags.push("2160p 4K");
+        else if (/\b(1440p|2k)\b/i.test(s)) tags.push("1440p");
+        else if (/\b(1080p|fhd)\b/i.test(s)) tags.push("1080p");
+        else if (/\b(720p|hd)\b/i.test(s)) tags.push("720p");
+        else if (/\b480p\b/i.test(s)) tags.push("480p");
+        if (/\b(blu[- .]?ray|bdrip|brrip)\b/i.test(s)) tags.push("BluRay");
+        else if (/\b(web[- .]?dl|webrip)\b/i.test(s)) tags.push("WEB");
+        if (/\b(x265|h\.?265|hevc|10bit)\b/i.test(s)) tags.push("HEVC");
+        return tags.join(" · ");
+    }
+
+    function inferTorrentSizeText(text) {
+        if (!text) return "";
+        const m = /\b(\d{1,4}(?:\.\d{1,2})?\s*(?:GB|GiB|MB|MiB))\b/i.exec(text);
+        return m ? m[1].replace(/\s+/g, " ").toUpperCase().replace("GIB", "GB").replace("MIB", "MB") : "";
+    }
+
+    function inferTorrentSeeds(el, contextText) {
+        try {
+            const row = el?.closest?.("tr, .tgxtablerow, .torrent-row, li, .modal-torrent");
+            if (row) {
+                const seedEl = row.querySelector('[class*="seed" i], font[color="green"], td.seeds, span.seeds');
+                if (seedEl) {
+                    const n = parseInt((seedEl.textContent || "").replace(/[,.\s]/g, ""), 10);
+                    if (Number.isFinite(n) && n > 0 && n < 1000000) return n;
+                }
+            }
+        } catch (_) {}
+        const sm = /\b(?:seeds?|seeders?|S)\s*[:=]?\s*(\d{1,6})\b/i.exec(contextText || "");
+        return sm ? (parseInt(sm[1], 10) || 0) : 0;
+    }
+
+    function buildStandardMagnet(hash, displayName) {
+        const cleanDn = (displayName || extractCleanMediaTitle() || document.title || "Torrent").slice(0, 140);
+        const tr = [
+            "udp://tracker.opentrackr.org:1337/announce",
+            "udp://open.stealth.si:80/announce",
+            "udp://tracker.torrent.eu.org:451/announce",
+            "udp://exodus.desync.com:6969/announce",
+            "udp://open.demonii.com:1337/announce"
+        ].map(t => "&tr=" + encodeURIComponent(t)).join("");
+        return `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(cleanDn)}${tr}`;
+    }
+
+    function rememberTorrent(rawUri, meta = {}) {
+        if (!rawUri || typeof rawUri !== "string") return;
+        const trimmed = rawUri.trim();
+        let isMagnet = /^magnet:\?xt=urn:btih:/i.test(trimmed);
+        let resolvedUrl = "";
+        if (!isMagnet) {
+            try {
+                const u = new URL(trimmed, location.href);
+                if (!/^https?:$/i.test(u.protocol) || u.username || u.password) return;
+                resolvedUrl = u.href;
+            } catch (_) {
+                return;
+            }
+        }
+        const hash = extractInfoHash(isMagnet ? trimmed : resolvedUrl);
+        const key = hash ? ("btih:" + hash) : ("tor:" + resolvedUrl);
+        if (!torrentNetwork.has(key) && torrentNetwork.size >= 45) return;
+        const prev = torrentNetwork.get(key) || {};
+        const dn = isMagnet ? extractMagnetDisplayName(trimmed) : "";
+        let magnetUri = isMagnet ? trimmed : (prev.magnetUri || (hash.length === 40 ? buildStandardMagnet(hash, meta.title || prev.title) : ""));
+        let torrentUrl = !isMagnet ? resolvedUrl : (prev.torrentUrl || "");
+        const rawLabel = (dn || meta.title || prev.title || extractCleanMediaTitle() || document.title || "").replace(/[._]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 180);
+        const combinedHint = `${dn} ${meta.hint || ""} ${rawLabel} ${resolvedUrl}`;
+        const quality = meta.quality || inferTorrentQuality(combinedHint) || prev.quality || "";
+        const sizeText = meta.sizeText || inferTorrentSizeText(meta.hint || "") || prev.sizeText || "";
+        const seeds = Math.max(Number(meta.seeds) || 0, Number(prev.seeds) || 0);
+        torrentNetwork.set(key, {
+            key,
+            hash,
+            magnetUri,
+            torrentUrl,
+            uri: magnetUri || torrentUrl,
+            kind: magnetUri ? "magnet" : "torrent",
+            title: rawLabel,
+            quality,
+            sizeText,
+            size: Number(meta.size) || Number(prev.size) || 0,
+            seeds,
+            referer: meta.referer || prev.referer || location.href,
+            userAgent: meta.userAgent || prev.userAgent || navigator.userAgent,
+            cookie: meta.cookie || prev.cookie || document.cookie || ""
+        });
+    }
 
     function collectUrlsFromText(text) {
         if (typeof text !== "string" || text.length < 10 || text.length > 524288) return;
         const normalized = text.replace(/\\\//g, "/");
         let match;
         directMediaPattern.lastIndex = 0;
-        while ((match = directMediaPattern.exec(normalized)) !== null && network.size < 35) {
+        while ((match = directMediaPattern.exec(normalized)) !== null && network.size < 40) {
             try {
                 const candidate = new URL(match[0], location.href);
                 if (candidate.username || candidate.password) continue;
                 if (/(^|\.)googlevideo\.com$/i.test(candidate.hostname)) continue;
                 if (/\.(png|jpe?g|gif|webp|css|js|svg)(\?|$)/i.test(candidate.pathname)) continue;
+                if (isAdStreamUrl(candidate.href)) continue;
                 const format = /\.m3u8(\?|$)/i.test(candidate.href) ? "hls"
                     : /\.mpd(\?|$)/i.test(candidate.href) ? "dash" : "progressive";
                 if (!network.has(candidate.href)) {
@@ -361,6 +735,94 @@
                 }
             } catch (_) {}
         }
+        magnetTextPattern.lastIndex = 0;
+        while ((match = magnetTextPattern.exec(normalized)) !== null && torrentNetwork.size < 45) {
+            rememberTorrent(match[0].replace(/&amp;/gi, "&"));
+        }
+    }
+
+    function scanInlineScripts() {
+        try {
+            const scripts = document.querySelectorAll("script:not([src])");
+            for (let i = 0; i < scripts.length && i < 60; i++) {
+                const sc = scripts[i];
+                if (!sc || inspectedScripts.has(sc)) continue;
+                inspectedScripts.add(sc);
+                const txt = sc.textContent || "";
+                if (txt.length >= 16 && txt.length <= 320000
+                        && /(?:m3u8|mpd|mp4|mkv|webm|magnet:\?xt=urn:btih:)/i.test(txt)) {
+                    collectUrlsFromText(txt);
+                }
+            }
+        } catch (_) {}
+    }
+
+    function scanDomTorrents() {
+        try {
+            const pageTitle = extractCleanMediaTitle();
+            const nodes = document.querySelectorAll(
+                'a[href], button[data-magnet], [data-magnet], [data-clipboard-text^="magnet:"], [data-href*="magnet:"], [onclick*="magnet:"]');
+            for (let i = 0; i < nodes.length && torrentNetwork.size < 45; i++) {
+                const el = nodes[i];
+                const rawHref = el.getAttribute("href")
+                    || el.getAttribute("data-magnet")
+                    || el.getAttribute("data-clipboard-text")
+                    || el.getAttribute("data-href")
+                    || "";
+                let candidate = rawHref.trim();
+                if (!candidate) {
+                    const oc = el.getAttribute("onclick") || "";
+                    const m = /magnet:\?xt=urn:btih:[^"'\s)]+/i.exec(oc);
+                    if (m) candidate = m[0];
+                }
+                if (!candidate || candidate.startsWith("#") || candidate.startsWith("javascript:")) continue;
+                const isMag = /^magnet:\?xt=urn:btih:/i.test(candidate);
+                let isTorLink = false;
+                if (!isMag) {
+                    isTorLink = /\.torrent(?:[?#]|$)/i.test(candidate)
+                        || /\/torrent\/download\/[A-Fa-f0-9]{40}\b/i.test(candidate)
+                        || /itorrents\.org\/torrent\/[A-Fa-f0-9]{40}/i.test(candidate)
+                        || ((el.classList?.contains("download-torrent") || /\btorrent\b/i.test(el.getAttribute("rel") || ""))
+                            && /\/download\/|\/get\/|torrent/i.test(candidate));
+                }
+                if (!isMag && !isTorLink) continue;
+
+                const container = el.closest(".modal-torrent, .tgxtablerow, tr, .torrent-item, .card, li") || el.parentElement;
+                const contextText = ((container ? container.textContent : "") || "").replace(/\s+/g, " ").trim().slice(0, 360);
+                const elTitle = (el.getAttribute("title") || el.getAttribute("aria-label") || el.textContent || "")
+                    .replace(/^(?:download|magnet|torrent)\s+/i, "").replace(/\s+/g, " ").trim();
+                let rowTitle = "";
+                if (container) {
+                    const titleAnchor = container.querySelector(
+                        'a[href*="/torrent/"], a[title]:not([href^="magnet:"]), .tgxtablecell a b, td.name a, .modal-quality');
+                    if (titleAnchor) rowTitle = (titleAnchor.getAttribute("title") || titleAnchor.textContent || "").replace(/\s+/g, " ").trim();
+                }
+                const bestTitle = (rowTitle && rowTitle.length > 6 && !/^(720p|1080p|2160p|4k)$/i.test(rowTitle))
+                    ? rowTitle
+                    : (pageTitle ? (rowTitle ? `${pageTitle} · ${rowTitle}` : pageTitle) : elTitle);
+                rememberTorrent(candidate, {
+                    title: bestTitle || elTitle || pageTitle,
+                    hint: `${elTitle} ${rowTitle} ${contextText}`,
+                    seeds: inferTorrentSeeds(el, contextText)
+                });
+            }
+        } catch (_) {}
+    }
+
+    function collectedTorrents() {
+        scanDomTorrents();
+        const list = [...torrentNetwork.values()];
+        const qRank = q => {
+            if (!q) return 0;
+            if (q.includes("2160p")) return 400;
+            if (q.includes("1440p")) return 300;
+            if (q.includes("1080p")) return 200;
+            if (q.includes("720p")) return 100;
+            if (q.includes("480p")) return 50;
+            return 10;
+        };
+        list.sort((a, b) => (qRank(b.quality) - qRank(a.quality)) || ((b.seeds || 0) - (a.seeds || 0)));
+        return list.slice(0, 35);
     }
 
     if (typeof exportFunction === "function" && window.wrappedJSObject) {
@@ -473,6 +935,8 @@
             const sub = new URL(subUrl, location.href);
             const isBlobOrData = sub.protocol === "blob:" || sub.protocol === "data:";
             if (sub.username || sub.password || (!isBlobOrData && !/^https?:$/i.test(sub.protocol))) return;
+            if (isStoryboardSubtitleHint(sub.href, meta.label || "") || isAdStreamUrl(sub.href)) return;
+            if (meta.content && isEntirelyStoryboardText(meta.content)) return;
             if (subtitleNetwork.size >= 30 && !subtitleNetwork.has(sub.href)) {
                 const oldest = subtitleNetwork.keys().next().value;
                 if (oldest) subtitleNetwork.delete(oldest);
@@ -508,12 +972,16 @@
                 return `${h}:${m}:${s}.${f}`;
             };
             const out = ["WEBVTT\n"];
+            let kept = 0;
             for (let i = 0; i < cues.length && i < 4000; i++) {
                 const c = cues[i];
                 if (!c || !c.text) continue;
-                out.push(`${fmt(c.startTime)} --> ${fmt(c.endTime)}\n${c.text}\n`);
+                const cleanLines = String(c.text).split(/\r?\n/).filter(l => !isStoryboardCueLine(l));
+                if (!cleanLines.length) continue;
+                kept++;
+                out.push(`${fmt(c.startTime)} --> ${fmt(c.endTime)}\n${cleanLines.join("\n")}\n`);
             }
-            return out.join("\n");
+            return kept > 0 ? out.join("\n") : "";
         } catch (_) {
             return "";
         }
@@ -532,7 +1000,7 @@
             if (!text && trackEl?.track) {
                 text = serializeCuesToVtt(trackEl.track);
             }
-            if (startRev !== discoveryRevision || !text) return;
+            if (startRev !== discoveryRevision || !text || isEntirelyStoryboardText(text)) return;
             const trimmed = text.slice(0, 1400000);
             const size = new Blob([trimmed]).size;
             const lang = detectLanguageFromText(trimmed);
@@ -546,15 +1014,17 @@
 
     function scanDomSubtitles() {
         for (const video of document.querySelectorAll("video")) {
+            if (isPlayerShowingAd(video)) continue;
             for (const trackEl of video.querySelectorAll("track")) {
                 const kind = (trackEl.kind || "").toLowerCase();
                 if (kind && kind !== "subtitles" && kind !== "captions") continue;
                 const rawSrc = trackEl.src || trackEl.getAttribute("src") || "";
                 if (!rawSrc) continue;
-                const isBlob = rawSrc.startsWith("blob:") || rawSrc.startsWith("data:");
-                if (!isBlob && !/^https?:\/\//i.test(rawSrc)) continue;
                 const lang = (trackEl.srclang || "").trim();
                 const label = (trackEl.label || "").trim();
+                if (isStoryboardSubtitleHint(rawSrc, label)) continue;
+                const isBlob = rawSrc.startsWith("blob:") || rawSrc.startsWith("data:");
+                if (!isBlob && !/^https?:\/\//i.test(rawSrc)) continue;
                 const cached = isBlob ? blobSubtitleCache.get(rawSrc) : null;
                 if (isBlob && !cached) loadBlobOrDataTrack(rawSrc, trackEl);
                 rememberSubtitle(rawSrc, {
@@ -582,12 +1052,15 @@
                 try { parsed = new URL(name); } catch (_) { continue; }
                 const size = Number(res.decodedBodySize) || Number(res.encodedBodySize) || Number(res.transferSize) || 0;
                 if (/\.(vtt|srt|ass|ssa)(\?|$)/i.test(parsed.pathname)) {
-                    rememberSubtitle(parsed.href, {
-                        mime: inferSubMime(parsed.href),
-                        size
-                    });
+                    if (!isStoryboardSubtitleHint(parsed.href) && !isAdStreamUrl(parsed.href)) {
+                        rememberSubtitle(parsed.href, {
+                            mime: inferSubMime(parsed.href),
+                            size
+                        });
+                    }
                 } else if (/\.(m3u8|mp4|mpd|mkv|webm|mov)(\?|$)/i.test(parsed.pathname)
-                        && !/(^|\.)googlevideo\.com$/i.test(parsed.hostname)) {
+                        && !/(^|\.)googlevideo\.com$/i.test(parsed.hostname)
+                        && !isAdStreamUrl(parsed.href)) {
                     const format = /\.m3u8(\?|$)/i.test(parsed.pathname) ? "hls"
                         : /\.mpd(\?|$)/i.test(parsed.pathname) ? "dash" : "progressive";
                     if (!network.has(parsed.href)) {
@@ -652,9 +1125,10 @@
 
     function entry(url, extra = {}) {
         const cleanTitle = extractCleanMediaTitle();
+        const fallbackTitle = window === window.top ? cleanMediaTitle(document.title || "") : "";
         return {
             url,
-            title: cleanTitle || String(document.title || "").slice(0, 160),
+            title: cleanTitle || fallbackTitle,
             referer: extra.referer || location.href,
             origin: extra.origin || location.origin,
             userAgent: extra.userAgent || navigator.userAgent,
@@ -668,7 +1142,9 @@
         let bestVideo = null;
         let bestArea = 0;
         for (const el of document.querySelectorAll("video")) {
-            if (el.mediaKeys) continue;
+            if (el.mediaKeys || isPlayerShowingAd(el)) continue;
+            const srcCandidate = el.currentSrc || el.src || "";
+            if (srcCandidate && isAdStreamUrl(srcCandidate)) continue;
             const rect = el.getBoundingClientRect();
             const area = Math.max(0, rect.width) * Math.max(0, rect.height);
             const eligible = (el.duration >= 5 || el.duration === Infinity || el.readyState >= 2)
@@ -680,7 +1156,7 @@
                 bestVideo = el;
             }
         }
-        if (!bestVideo) return { element: null, url: "", height: 0, playing: false };
+        if (!bestVideo) return { element: null, url: "", height: 0, playing: false, duration: 0 };
         let activeH = 0;
         if (bestVideo.videoWidth > 0 && bestVideo.videoHeight > 0) {
             activeH = normalizeResolutionHeight(bestVideo.videoWidth, bestVideo.videoHeight);
@@ -694,26 +1170,39 @@
         }
         const src = bestVideo.currentSrc || bestVideo.src || "";
         if (activeH <= 0 && src) activeH = inferHeightFromUrl(src);
-        return { element: bestVideo, url: src, height: activeH, playing: true };
+        const dur = Number.isFinite(bestVideo.duration) ? Math.round(bestVideo.duration) : 0;
+        return { element: bestVideo, url: src, height: activeH, playing: true, duration: dur };
     }
 
     function scanDomMedia() {
-        for (const el of document.querySelectorAll("video, source, a[href], [data-src]")) {
+        for (const el of document.querySelectorAll("video, source, a[href], [data-src], [data-video], [data-mp4], [data-stream], [data-url]")) {
+            if ((el.tagName === "VIDEO" || el.tagName === "SOURCE") && isPlayerShowingAd(el.tagName === "VIDEO" ? el : el.closest("video"))) {
+                const adSrc = el.currentSrc || el.src || el.getAttribute("src") || "";
+                if (adSrc) network.delete(adSrc);
+                continue;
+            }
             const raw = el.currentSrc || el.src || el.getAttribute("src") || el.getAttribute("data-src")
+                || el.getAttribute("data-video") || el.getAttribute("data-mp4")
+                || el.getAttribute("data-stream") || el.getAttribute("data-url")
                 || (el.tagName === "A" ? el.getAttribute("href") : "");
             if (!raw || raw.startsWith("blob:") || raw.startsWith("data:")) continue;
             try {
                 const u = new URL(raw, location.href);
                 if (!/^https?:$/i.test(u.protocol) || u.username || u.password) continue;
-                if (/(^|\.)googlevideo\.com$/i.test(u.hostname)) continue;
+                if (/(^|\.)googlevideo\.com$/i.test(u.hostname) || isAdStreamUrl(u.href)) continue;
                 const isVideoTag = el.tagName === "VIDEO" || el.tagName === "SOURCE";
-                const isMediaExt = /\.(m3u8|mp4|mpd|mkv|webm|mov)(\?|$)/i.test(u.pathname);
+                const isMediaExt = /\.(m3u8|mp4|mpd|mkv|webm|mov)(\?|$)/i.test(u.pathname)
+                    || /\.(m3u8|mp4|mpd|mkv|webm|mov)(\b|$)/i.test(u.search);
                 if (!isVideoTag && !isMediaExt) continue;
-                const format = /\.m3u8(\?|$)/i.test(u.pathname) ? "hls"
-                    : /\.mpd(\?|$)/i.test(u.pathname) ? "dash" : "progressive";
+                const format = /\.m3u8(\?|$)/i.test(u.pathname) || /\.m3u8(\b|$)/i.test(u.search) ? "hls"
+                    : /\.mpd(\?|$)/i.test(u.pathname) || /\.mpd(\b|$)/i.test(u.search) ? "dash" : "progressive";
                 let h = inferHeightFromUrl(u.href);
                 if (h <= 0 && el.tagName === "VIDEO" && el.videoWidth > 0 && el.videoHeight > 0) {
                     h = normalizeResolutionHeight(el.videoWidth, el.videoHeight);
+                }
+                if (h <= 0) {
+                    const attrHint = (el.getAttribute("label") || el.getAttribute("res") || el.getAttribute("size") || el.getAttribute("title") || "");
+                    h = inferHeightFromUrl(attrHint);
                 }
                 if (!network.has(u.href)) {
                     const item = entry(u.href, { format, height: h });
@@ -897,19 +1386,46 @@
         reset();
         if (!port) connectNative();
         scanDomMedia();
+        scanInlineScripts();
         scanPerformanceResources();
         const activeInfo = getActiveVideoInfo();
+        let adPlayingNow = false;
         const items = protectedVideo ? new Map() : new Map(network);
         for (const video of document.querySelectorAll("video")) {
-            if (protectedVideo || video.mediaKeys || (!(video.duration >= 5) && video.duration !== Infinity)) continue;
             const source = video.currentSrc || video.src;
+            if (isPlayerShowingAd(video) || (source && isAdStreamUrl(source))) {
+                if (!video.paused && !video.ended) adPlayingNow = true;
+                if (source) {
+                    items.delete(source);
+                    network.delete(source);
+                }
+                continue;
+            }
+            if (protectedVideo || video.mediaKeys || (video.duration > 0 && video.duration < 8)) {
+                if (source && video.duration > 0 && video.duration < 8) {
+                    items.delete(source);
+                }
+                continue;
+            }
             if (source && /^https?:\/\//.test(source) && !/(^|\.)googlevideo\.com$/i.test(new URL(source).hostname)) {
                 const existing = items.get(source);
                 const intrinsicH = (video.videoWidth > 0 && video.videoHeight > 0)
                     ? normalizeResolutionHeight(video.videoWidth, video.videoHeight)
                     : 0;
                 const h = existing?.height || intrinsicH || inferHeightFromUrl(source);
-                items.set(source, entry(source, { ...existing, height: h }));
+                const durSec = Number.isFinite(video.duration) ? Math.round(video.duration) : (existing?.durationSec || 0);
+                items.set(source, entry(source, { ...existing, height: h, durationSec: durSec }));
+            }
+        }
+        // If there is a longer main video (>90s) or HLS manifest in items, purge short pre-roll MP4 clips (<50s)
+        const hasLongOrAdaptiveMain = [...items.values()].some(it =>
+            it.format === "hls" || it.format === "dash" || (Number(it.durationSec) >= 90) || (Number(it.size) >= 25 * 1024 * 1024));
+        if (hasLongOrAdaptiveMain) {
+            for (const [k, it] of [...items.entries()]) {
+                if (it.format === "progressive" && Number(it.durationSec) > 0 && Number(it.durationSec) <= 50) {
+                    items.delete(k);
+                    network.delete(k);
+                }
             }
         }
         if (thisIsYouTube && !protectedVideo) youtubeOptions(items);
@@ -937,9 +1453,19 @@
             }
         }
 
+        const hardcodedSubs = isHardcodedSubsSite();
         const allSubs = protectedVideo ? [] : collectedSubtitles();
-        const sub = bestSubtitle(allSubs);
-        const out = [...items.values()].slice(0, 30).map(item => {
+        const allTorrents = window === window.top ? collectedTorrents() : [];
+        const sub = hardcodedSubs ? null : bestSubtitle(allSubs);
+        const out = [...items.values()].slice(0, 35).map(item => {
+            if (hardcodedSubs) {
+                const cleaned = { ...item };
+                delete cleaned.subtitleUrl;
+                delete cleaned.subtitleMime;
+                delete cleaned.subtitleLanguage;
+                delete cleaned.subtitleContent;
+                return cleaned;
+            }
             if (!sub || item.subtitleUrl) return item;
             return {
                 ...item,
@@ -955,15 +1481,20 @@
             };
         });
         const cleanTitle = extractCleanMediaTitle();
+        const topCloaked = window === window.top && isTopDocumentCloaked();
         updateFloatingCastButton(activeInfo, out.length > 0);
         const payload = JSON.stringify({
             frameToken,
             isTopFrame: window === window.top,
+            topCloaked,
             revision: discoveryRevision,
             metaTitle: cleanTitle,
+            adPlaying: adPlayingNow,
+            hardcodedSubtitles: hardcodedSubs,
             audioPlaying: isAudioPlaying(),
             items: out,
-            subtitles: allSubs
+            subtitles: allSubs,
+            torrents: allTorrents
         });
         if (!force && payload === previous) return;
         previous = payload;
@@ -1393,6 +1924,17 @@
             } catch (_) {}
             return;
         }
+        if (typeof message.torrentUrl === "string") {
+            rememberTorrent(message.torrentUrl, {
+                title: message.filename || "",
+                size: Number(message.size) || 0,
+                referer: message.referer || "",
+                userAgent: message.userAgent || "",
+                cookie: message.cookie || ""
+            });
+            publish();
+            return;
+        }
         if (typeof message.subtitleUrl === "string") {
             rememberSubtitle(message.subtitleUrl, {
                 mime: message.mime || "",
@@ -1406,29 +1948,35 @@
             publish();
             return;
         }
-        if (typeof message.mediaUrl !== "string" || network.size >= 25) return;
+        if (typeof message.mediaUrl !== "string" || network.size >= 40) return;
         let url;
         try {
             url = new URL(message.mediaUrl);
         } catch (_) {
             return;
         }
-        if (url.username || url.password) return;
+        if (url.username || url.password || isAdStreamUrl(url.href)) return;
         const mime = message.mime || "";
-        const format = /mpegurl/i.test(mime) || /\.m3u8$/i.test(url.pathname) ? "hls"
-            : /dash\+xml/i.test(mime) || /\.mpd$/i.test(url.pathname) ? "dash" : "progressive";
+        const fname = message.filename || "";
+        const format = /mpegurl/i.test(mime) || /\.m3u8$/i.test(url.pathname) || /\.m3u8$/i.test(fname) ? "hls"
+            : /dash\+xml/i.test(mime) || /\.mpd$/i.test(url.pathname) || /\.mpd$/i.test(fname) ? "dash" : "progressive";
         const existing = network.get(url.href);
-        const h = existing?.height || inferHeightFromUrl(url.href);
+        const h = existing?.height || inferHeightFromUrl(url.href) || inferHeightFromUrl(fname);
+        const resolvedRef = message.referer || existing?.referer || location.href;
+        let resolvedOrigin = message.origin || existing?.origin || "";
+        if (!resolvedOrigin) {
+            try { resolvedOrigin = new URL(resolvedRef).origin; } catch (_) { resolvedOrigin = location.origin; }
+        }
         const item = entry(url.href, {
             ...existing,
             format,
             mime,
             height: h,
             size: Number(message.size) || existing?.size || 0,
-            referer: message.referer || existing?.referer || "",
-            origin: message.origin || existing?.origin || "",
-            userAgent: message.userAgent || existing?.userAgent || "",
-            cookie: message.cookie || existing?.cookie || "",
+            referer: resolvedRef,
+            origin: resolvedOrigin,
+            userAgent: message.userAgent || existing?.userAgent || navigator.userAgent,
+            cookie: message.cookie || existing?.cookie || document.cookie || "",
             authorization: message.authorization || existing?.authorization || ""
         });
         network.set(url.href, item);
@@ -1443,12 +1991,12 @@
         clickScanCooldown = now;
         publish();
         updateFloatingCastButton();
-        setTimeout(() => { scanDomMedia(); scanPerformanceResources(); publish(); updateFloatingCastButton(); }, 250);
-        setTimeout(() => { scanDomMedia(); scanPerformanceResources(); publish(); updateFloatingCastButton(); }, 850);
+        setTimeout(() => { scanDomMedia(); scanDomTorrents(); scanPerformanceResources(); publish(); updateFloatingCastButton(); }, 250);
+        setTimeout(() => { scanDomMedia(); scanDomTorrents(); scanPerformanceResources(); publish(); updateFloatingCastButton(); }, 850);
     };
     document.addEventListener("click", triggerInteractionScan, true);
     document.addEventListener("pointerup", triggerInteractionScan, true);
-    for (const event of ["play", "playing", "loadedmetadata", "pause", "ended", "emptied", "volumechange"]) {
+    for (const event of ["play", "playing", "loadedmetadata", "loadeddata", "durationchange", "pause", "ended", "emptied", "volumechange"]) {
         document.addEventListener(event, () => {
             if ((event === "play" || event === "playing") && Date.now() < suppressUntil) pauseMedia();
             updateFloatingCastButton();
@@ -1484,10 +2032,13 @@
     });
     document.addEventListener("encrypted", event => {
         if (event.target instanceof HTMLVideoElement) {
-            protectedVideo = true;
-            network.clear();
-            hideFloatingButton();
-            publish();
+            const rect = event.target.getBoundingClientRect();
+            if (event.target.mediaKeys && (rect.width >= 160 || network.size === 0)) {
+                protectedVideo = true;
+                network.clear();
+                hideFloatingButton();
+                publish();
+            }
         }
     }, true);
 

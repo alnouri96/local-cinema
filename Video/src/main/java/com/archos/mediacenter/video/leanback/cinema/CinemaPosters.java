@@ -47,6 +47,10 @@ final class CinemaPosters {
     private static final Pattern EPISODE_TAG = Pattern.compile(
             "(?i)\\b(?:S\\d{1,2}\\s*E\\d{1,3}(?:[-E]\\d{1,3})?|S\\d{1,2}\\b|\\d{1,2}x\\d{1,3}|Season\\s*\\d+|Episode\\s*\\d+|Ep\\.?\\s*\\d+|الموسم\\s*\\d*|الحلقة\\s*\\d*)");
     private static final Pattern YEAR = Pattern.compile("(?<![\\p{L}\\d])((?:18|19|20)\\d{2})(?![\\p{L}\\d])");
+    private static final android.util.LruCache<String, Query> PARSE_CACHE = new android.util.LruCache<>(2048);
+    private static final android.util.LruCache<String, Query> URI_QUERY_CACHE = new android.util.LruCache<>(2048);
+    private static final android.util.LruCache<String, String> CLEAN_TITLE_CACHE = new android.util.LruCache<>(2048);
+    private static final android.util.LruCache<String, int[]> SE_CACHE = new android.util.LruCache<>(2048);
     private static long nextRequest;
 
     record Query(String title, int year, boolean show) {}
@@ -101,6 +105,9 @@ final class CinemaPosters {
     }
 
     static int[] findSeasonEpisode(String filePath, String name) {
+        String cacheKey = (filePath == null ? "" : filePath) + "\n" + (name == null ? "" : name);
+        int[] cached = SE_CACHE.get(cacheKey);
+        if (cached != null) return cached;
         int season = 0;
         int episode = 0;
         String parentSeg = null;
@@ -143,7 +150,9 @@ final class CinemaPosters {
                 }
             }
         }
-        return new int[]{season, episode};
+        int[] resolved = new int[]{season, episode};
+        SE_CACHE.put(cacheKey, resolved);
+        return resolved;
     }
 
     static String seriesRootPath(String filePath) {
@@ -169,22 +178,33 @@ final class CinemaPosters {
     static String cleanDisplayTitle(Base item, boolean arabicMode) {
         if (item == null) return "";
         String raw = item.getName() == null ? "" : item.getName();
+        Uri fileUri = item instanceof Video v ? v.getFileUri() : (item instanceof Tvshow s ? s.getFileUri() : null);
+        String cacheKey = (arabicMode ? "1|" : "0|")
+                + (item instanceof Tvshow ? "S|" : (item instanceof Episode ? "E|" : "V|"))
+                + raw + "|" + (fileUri != null ? fileUri.toString() : "");
+        String cached = CLEAN_TITLE_CACHE.get(cacheKey);
+        if (cached != null) return cached;
         String parsed = query(item).title();
+        String result = raw;
         if (!arabicMode && OpenMetadata.containsArabic(raw)) {
-            if (!parsed.isBlank() && !OpenMetadata.containsArabic(parsed)) return parsed;
-        }
-        if (!parsed.isBlank() && (raw.contains("..") || RELEASE_TAG.matcher(raw.replace('.', ' ')).find()
+            if (!parsed.isBlank() && !OpenMetadata.containsArabic(parsed)) result = parsed;
+        } else if (!parsed.isBlank() && (raw.contains("..") || RELEASE_TAG.matcher(raw.replace('.', ' ')).find()
                 || raw.matches(".*\\.(mp4|mkv|avi|mov|m4v|webm|ts|wmv)$"))) {
-            return parsed;
+            result = parsed;
         }
-        return raw;
+        CLEAN_TITLE_CACHE.put(cacheKey, result);
+        return result;
     }
 
     private static Query parseFromUri(Uri uri, int year, boolean show) {
         if (uri == null) return new Query("", year, show);
+        String cacheKey = (show ? "1|" : "0|") + year + "|" + uri.toString();
+        Query cached = URI_QUERY_CACHE.get(cacheKey);
+        if (cached != null) return cached;
         List<String> segments = uri.getPathSegments();
         Query last = parse(uri.getLastPathSegment(), year, show);
         if (!last.title().isBlank() && !last.title().matches("(?i)^(?:e?p?\\s*\\d+|s\\d+.*)$") && segments != null) {
+            URI_QUERY_CACHE.put(cacheKey, last);
             return last;
         }
         if (segments != null) {
@@ -194,14 +214,36 @@ final class CinemaPosters {
                     continue;
                 }
                 Query parent = parse(seg, year, show);
-                if (!parent.title().isBlank()) return parent;
+                if (!parent.title().isBlank()) {
+                    URI_QUERY_CACHE.put(cacheKey, parent);
+                    return parent;
+                }
             }
         }
+        URI_QUERY_CACHE.put(cacheKey, last);
         return last;
     }
 
     static Query parse(String name, int year, boolean show) {
-        String title = name == null ? "" : name.replaceFirst("(?i)\\.(mp4|mkv|avi|mov|m4v|webm|ts|wmv)$", "")
+        String cacheKey = (show ? "1|" : "0|") + year + "|" + (name == null ? "" : name);
+        Query cached = PARSE_CACHE.get(cacheKey);
+        if (cached != null) return cached;
+        String baseName = com.meedx.providers.UnifiedSubtitleEngine.normalizePipesAndBidi(name == null ? "" : name);
+        if (baseName.contains("|")) {
+            var datesInRaw = YEAR.matcher(baseName);
+            if (year <= 0 && datesInRaw.find()) {
+                try { year = Integer.parseInt(datesInRaw.group(1)); } catch (Exception ignored) {}
+            }
+            List<String> pipeSegs = com.meedx.providers.UnifiedSubtitleEngine.extractCleanPipeSegments(baseName);
+            if (!pipeSegs.isEmpty()) {
+                String chosen = pipeSegs.get(0);
+                for (String s : pipeSegs) {
+                    if (!OpenMetadata.containsArabic(s)) { chosen = s; break; }
+                }
+                baseName = chosen;
+            }
+        }
+        String title = baseName.replaceFirst("(?i)\\.(mp4|mkv|avi|mov|m4v|webm|ts|wmv)$", "")
                 .replaceAll("\\[[^\\]]*\\]|\\{[^}]*\\}", " ")
                 .replaceAll("[._]+", " ").strip();
         var epMatch = EPISODE_TAG.matcher(title);
@@ -227,7 +269,9 @@ final class CinemaPosters {
         var release2 = RELEASE_TAG.matcher(title);
         if (release2.find() && release2.start() > 0) title = title.substring(0, release2.start()).strip();
         title = title.replaceAll("[\\s(\\[-]+$", "").replaceAll("\\s+", " ").strip();
-        return new Query(title, year, show);
+        Query parsed = new Query(title, year, show);
+        PARSE_CACHE.put(cacheKey, parsed);
+        return parsed;
     }
 
     static boolean valid(Uri uri) {

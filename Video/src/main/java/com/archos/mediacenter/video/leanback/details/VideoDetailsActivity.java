@@ -35,6 +35,16 @@ public class VideoDetailsActivity extends LeanbackActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (!getIntent().getBooleanExtra("cinema_legacy_details", false)
+                && !getIntent().getBooleanExtra(VideoDetailsFragment.EXTRA_LAUNCHED_FROM_PLAYER, false)
+                && getIntent().getSerializableExtra(VideoDetailsFragment.EXTRA_VIDEO) != null) {
+            android.content.Intent cinema = new android.content.Intent(
+                    this, com.archos.mediacenter.video.leanback.cinema.CinemaDetailsActivity.class);
+            cinema.putExtras(getIntent());
+            startActivity(cinema);
+            finish();
+            return;
+        }
 
         // Lollipop only :-(
         getWindow().requestFeature(Window.FEATURE_ACTIVITY_TRANSITIONS);

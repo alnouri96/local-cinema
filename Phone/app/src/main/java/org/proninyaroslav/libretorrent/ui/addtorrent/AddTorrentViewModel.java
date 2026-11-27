@@ -360,7 +360,7 @@ public class AddTorrentViewModel extends AndroidViewModel {
         List<BencodeFileItem> files = infoObj.fileList;
         if (!cinemaVideoDefaultsApplied) {
             cinemaVideoDefaultsApplied = true;
-            org.proninyaroslav.libretorrent.cinema_hub.VideoTorrentDefaults.apply(mutableParams, files);
+            org.proninyaroslav.libretorrent.ui.LibreTorrentCinemaBridge.applyVideoSequentialDefaults(mutableParams, files);
             var phoneLibrary = org.proninyaroslav.libretorrent.cinema_hub.CinemaStorage.phoneLibrary();
             var current = mutableParams.getDirPath().get();
             String name = mutableParams.getName();

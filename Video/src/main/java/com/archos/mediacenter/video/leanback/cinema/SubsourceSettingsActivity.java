@@ -131,10 +131,13 @@ public class SubsourceSettingsActivity extends LeanbackActivity {
         // ---- SECTION 1: Collapsed Dropdown for All Subtitle Sources & Add-ons ----
         sectionHeader(l("1. مصادر وإضافات الترجمة المدمجة والمفتوحة", "1. Built-in, Open-Source & Add-on Subtitle Sources"));
         int activeCount = UnifiedSubtitleConfig.runnableSources(this, UnifiedSubtitleConfig.enabledSources(this)).size();
-        int addonCount = countInstalledSubtitleAddons();
+        List<String> addonNames = UnifiedSubtitleConfig.activeAddonSourceNames(this);
+        String addonHint = addonNames.isEmpty()
+                ? getString(R.string.cinema_sub_sources_dropdown_hint, countInstalledSubtitleAddons())
+                : l("إضافات الترجمة المفعّلة: ", "Active subtitle add-ons: ") + String.join(" · ", addonNames);
         sourcesDropdownCard(
                 getString(R.string.cinema_sub_sources_dropdown_title, activeCount),
-                getString(R.string.cinema_sub_sources_dropdown_hint, addonCount),
+                addonHint,
                 () -> openAllSourcesDropdownDialog(0));
 
         // ---- SECTION 2: Preferred Subtitle Language, Auto-Select Behavior & Dual Subtitles ----
@@ -319,7 +322,7 @@ public class SubsourceSettingsActivity extends LeanbackActivity {
         scroll.addView(listBody);
 
         final AlertDialog[] dlgRef = {null};
-        final List<UnifiedSubtitleConfig.ProviderInfo> providers = UnifiedSubtitleConfig.allProviders();
+        final List<UnifiedSubtitleConfig.ProviderInfo> providers = UnifiedSubtitleConfig.allProviders(this);
         final View[] initialFocus = {null};
 
         for (int i = 0; i < providers.size(); i++) {
@@ -332,14 +335,13 @@ public class SubsourceSettingsActivity extends LeanbackActivity {
                 sub.append(hasKey
                         ? l(" · المفتاح محفوظ ✓", " · API Key Saved ✓")
                         : l(" · بدون مفتاح (اضغط للإضافة)", " · No Key (Tap to Add)"));
-            } else if (UnifiedSubtitleConfig.SRC_STREMIO_ADDONS.equals(info.id)) {
-                sub.append(l(" · المثبّتة حالياً: ", " · Installed: ")).append(countInstalledSubtitleAddons());
             }
             String testNote = liveTestResults.get(info.id);
             if (testNote != null && !testNote.isBlank()) {
                 sub.append(" · ").append(testNote);
             }
-            int iconRes = info.keyless ? R.drawable.cinema_globe : R.drawable.cinema_ic_addons;
+            int iconRes = info.isStremioAddon ? R.drawable.cinema_addons
+                    : (info.keyless ? R.drawable.cinema_globe : R.drawable.cinema_ic_addons);
             LinearLayout card = settingsCard(this, listBody, iconRes, info.name, sub.toString(),
                     enabled && hasKey, null, () -> {
                         if (dlgRef[0] != null) dlgRef[0].dismiss();
@@ -374,7 +376,7 @@ public class SubsourceSettingsActivity extends LeanbackActivity {
         int c = 0;
         try {
             for (StremioAddons.Addon a : StremioAddons.list(this)) {
-                if (a != null && a.enabled && StremioAddons.providesSubtitles(a)) c++;
+                if (a != null && a.enabled && StremioAddons.isDedicatedSubtitleAddon(a)) c++;
             }
         } catch (Exception ignored) {}
         return c;
@@ -403,9 +405,10 @@ public class SubsourceSettingsActivity extends LeanbackActivity {
             actions.add(() -> promptApiKeyDialog(info, reopenDropdown));
         }
 
-        if (UnifiedSubtitleConfig.SRC_STREMIO_ADDONS.equals(info.id)) {
+        if (info.isStremioAddon || UnifiedSubtitleConfig.SRC_STREMIO_ADDONS.equals(info.id)) {
             labels.add(l("فتح إدارة إضافات Stremio", "Manage Stremio Add-ons"));
             actions.add(() -> new CinemaAddonsManagerDialog(this, io, main, () -> {
+                CinemaSubtitleSyncBridge.onTvSubtitleConfigChanged(this);
                 render();
                 if (reopenDropdown != null) reopenDropdown.run();
             }).show());
@@ -536,177 +539,15 @@ public class SubsourceSettingsActivity extends LeanbackActivity {
         content.addView(header);
     }
 
-    private String colorName(int color) {
-        if (color == Color.YELLOW || color == 0xffffd54f) return l("أصفر", "Yellow");
-        if (color == 0xff00e5ff || color == 0xff4dd0e1 || color == Color.CYAN) return l("سماوي", "Cyan");
-        if (color == 0xff81c784 || color == Color.GREEN) return l("أخضر", "Green");
-        if (color == 0xffe5b94c) return l("ذهبي", "Gold");
-        return l("أبيض", "White");
-    }
-
     private String appearanceSummary() {
-        int size = UnifiedSubtitleConfig.textSize(this);
-        int vpos = UnifiedSubtitleConfig.vpos(this);
-        int color = UnifiedSubtitleConfig.textColor(this);
-        boolean outline = UnifiedSubtitleConfig.opaqueBg(this);
         long delay = UnifiedSubtitleConfig.defaultDelayMs(this);
-        return l("الحجم: ", "Size: ") + size
-                + " · " + l("اللون: ", "Color: ") + colorName(color)
-                + " · " + l("الموضع: ", "Position: ") + vpos
-                + " · " + l("الخلفية: ", "BG: ") + (outline ? l("داكنة", "Dark") : l("شفافة", "Transparent"))
-                + (delay != 0L ? " · " + CinemaSubtitleTimingOverlay.formatAudioDelayMs(this, delay) : "");
+        String base = UnifiedSubtitleConfig.appearanceSummary(this, arabic(this));
+        return delay != 0L ? (base + " · " + CinemaSubtitleTimingOverlay.formatDelaySeconds(this, delay)) : base;
     }
 
     private void openAppearanceDialog() {
-        boolean rtl = arabic(this);
-        LinearLayout body = new LinearLayout(this);
-        body.setOrientation(LinearLayout.VERTICAL);
-        body.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
-        body.setClipChildren(false);
-        body.setClipToPadding(false);
-        body.setPadding(dp(this, 16), dp(this, 10), dp(this, 16), dp(this, 10));
-
-        // Compact bilingual Live Preview Box (Arabic + English)
-        LinearLayout previewFrame = new LinearLayout(this);
-        previewFrame.setOrientation(LinearLayout.VERTICAL);
-        previewFrame.setGravity(Gravity.CENTER);
-        previewFrame.setBackground(rounded(0xff0d0e11, dp(this, 10), 0xff4a4332));
-        previewFrame.setPadding(dp(this, 14), dp(this, 12), dp(this, 14), dp(this, 12));
-        LinearLayout.LayoutParams previewLp = new LinearLayout.LayoutParams(-1, -2);
-        previewLp.bottomMargin = dp(this, 14);
-
-        LinearLayout previewPill = new LinearLayout(this);
-        previewPill.setOrientation(LinearLayout.VERTICAL);
-        previewPill.setGravity(Gravity.CENTER);
-        previewPill.setPadding(dp(this, 14), dp(this, 8), dp(this, 14), dp(this, 8));
-
-        TextView previewAr = text(this, 16, true);
-        previewAr.setText(getString(R.string.cinema_sub_preview_ar));
-        previewAr.setGravity(Gravity.CENTER);
-        previewPill.addView(previewAr);
-
-        TextView previewEn = text(this, 14, true);
-        previewEn.setText(getString(R.string.cinema_sub_preview_en));
-        previewEn.setGravity(Gravity.CENTER);
-        previewEn.setPadding(0, dp(this, 3), 0, 0);
-        previewPill.addView(previewEn);
-
-        previewFrame.addView(previewPill, new LinearLayout.LayoutParams(-2, -2));
-        body.addView(previewFrame, previewLp);
-
-        int[] sizeHolder = {UnifiedSubtitleConfig.textSize(this)};
-        int[] vposHolder = {UnifiedSubtitleConfig.vpos(this)};
-        int[] colorHolder = {UnifiedSubtitleConfig.textColor(this)};
-        boolean[] outlineHolder = {UnifiedSubtitleConfig.opaqueBg(this)};
-        long[] delayHolder = {UnifiedSubtitleConfig.defaultDelayMs(this)};
-
-        Runnable syncPreview = () -> {
-            UnifiedSubtitleConfig.saveAppearance(this, sizeHolder[0], vposHolder[0], colorHolder[0],
-                    outlineHolder[0], delayHolder[0]);
-            CinemaSubtitleSyncBridge.applyUnifiedToTvPrefs(this);
-            float arSp = Math.max(13f, Math.min(24f, 13f + (sizeHolder[0] - 18) * 0.21f));
-            previewAr.setTextSize(arSp);
-            previewEn.setTextSize(Math.max(12f, arSp - 1.5f));
-            previewAr.setTextColor(colorHolder[0]);
-            previewEn.setTextColor(colorHolder[0]);
-            if (outlineHolder[0]) {
-                previewPill.setBackground(rounded(0xcc000000, dp(this, 8), 0x44ffffff));
-                previewAr.setShadowLayer(1.5f, 0f, 1f, 0xaa000000);
-                previewEn.setShadowLayer(1.5f, 0f, 1f, 0xaa000000);
-            } else {
-                previewPill.setBackground(null);
-                previewAr.setShadowLayer(3.5f, 0f, 1.5f, 0xf0000000);
-                previewEn.setShadowLayer(3.5f, 0f, 1.5f, 0xf0000000);
-            }
-        };
-        syncPreview.run();
-
-        Runnable[] refreshDlg = {null};
-        Runnable updateDialogOnly = () -> {
-            syncPreview.run();
-            if (refreshDlg[0] != null) refreshDlg[0].run();
-        };
-
-        LinearLayout sizeCard = settingsCard(this, body, R.drawable.cinema_subtitles,
-                l("حجم الخط (كبّر / صغّر)", "Font Size (+ / -)"),
-                "", null, null, () -> {
-                    sizeHolder[0] = sizeHolder[0] >= 72 ? 22 : sizeHolder[0] + 6;
-                    updateDialogOnly.run();
-                });
-        LinearLayout posCard = settingsCard(this, body, R.drawable.cinema_ic_appearance,
-                l("الموضع العمودي للترجمة", "Vertical Position"),
-                "", null, null, () -> {
-                    vposHolder[0] = vposHolder[0] >= 160 ? 24 : vposHolder[0] + 16;
-                    updateDialogOnly.run();
-                });
-        int[] colors = {Color.WHITE, 0xffffd54f, 0xff4dd0e1, 0xff81c784, 0xffe5b94c};
-        LinearLayout colorCard = settingsCard(this, body, R.drawable.cinema_ic_appearance,
-                l("لون نص الترجمة", "Subtitle Text Color"),
-                colorName(colorHolder[0]), null, null, () -> {
-                    int next = 0;
-                    for (int i = 0; i < colors.length; i++) {
-                        if (colors[i] == colorHolder[0]) {
-                            next = (i + 1) % colors.length;
-                            break;
-                        }
-                    }
-                    colorHolder[0] = colors[next];
-                    updateDialogOnly.run();
-                });
-        LinearLayout outlineCard = settingsCard(this, body, R.drawable.cinema_subtitles,
-                l("خلفية وحدود داكنة للترجمة", "Dark Background & Outline"),
-                "", null, null, () -> {
-                    outlineHolder[0] = !outlineHolder[0];
-                    updateDialogOnly.run();
-                });
-        LinearLayout delayCard = settingsCard(this, body, R.drawable.cinema_ic_timer,
-                l("التوقيت الافتراضي (تقديم / تأخير)", "Default Timing Offset"),
-                "", null, null, () -> {
-                    delayHolder[0] = delayHolder[0] >= 1000L ? -1000L : delayHolder[0] + 250L;
-                    updateDialogOnly.run();
-                });
-        settingsCard(this, body, R.drawable.cinema_ic_updates,
-                l("استعادة المظهر الافتراضي", "Reset Default Appearance"),
-                l("إرجاع الحجم والموضع واللون والخلفية والتوقيت للافتراضي", "Restore default size, position, color, BG & sync"),
-                null, null, () -> {
-                    sizeHolder[0] = 36;
-                    vposHolder[0] = 64;
-                    colorHolder[0] = Color.WHITE;
-                    outlineHolder[0] = false;
-                    delayHolder[0] = 0L;
-                    updateDialogOnly.run();
-                });
-
-        refreshDlg[0] = () -> {
-            updateSettingsCardSubtitle(sizeCard, sizeHolder[0] + " " + l("نقطة (اضغط للتغيير)", "pt (Tap to cycle)"));
-            updateSettingsCardSubtitle(posCard, vposHolder[0] + " " + l("نقطة (اضغط للرفع)", "dp (Tap to cycle height)"));
-            updateSettingsCardSubtitle(colorCard, colorName(colorHolder[0]));
-            updateSettingsCardSubtitle(outlineCard, outlineHolder[0]
-                    ? l("خلفية وحدود داكنة مفعّلة ✓", "Dark box & outline ON ✓")
-                    : l("حدود شفافة قياسية", "Standard transparent outline"));
-            updateSettingsCardSubtitle(delayCard, CinemaSubtitleTimingOverlay.formatAudioDelayMs(this, delayHolder[0]));
-        };
-        refreshDlg[0].run();
-
-        ScrollView dlgScroll = new ScrollView(this);
-        dlgScroll.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
-        dlgScroll.setClipChildren(false);
-        dlgScroll.setClipToPadding(false);
-        dlgScroll.addView(body);
-
-        AlertDialog dlg = dialog(this)
-                .setTitle(l("مظهر وموضع وتوقيت الترجمة", "Subtitle Appearance & Timing"))
-                .setView(dlgScroll)
-                .setPositiveButton(android.R.string.ok, null)
-                .setOnDismissListener(d -> {
-                    CinemaSubtitleSyncBridge.onTvSubtitleConfigChanged(this);
-                    if (!isFinishing() && !isDestroyed()) render();
-                })
-                .create();
-        dlg.setOnShowListener(d -> {
-            widenSubtitleDialog(dlg.getWindow());
-            sizeCard.requestFocus();
+        CinemaSubtitleAppearancePanel.showStandaloneDialog(this, () -> {
+            if (!isFinishing() && !isDestroyed()) render();
         });
-        dlg.show();
     }
 }

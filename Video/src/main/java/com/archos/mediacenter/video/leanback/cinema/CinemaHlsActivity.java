@@ -86,10 +86,10 @@ public final class CinemaHlsActivity extends Activity {
     private TextView osdLiveBadge;
     private androidx.media3.exoplayer.ExoPlayer adaptivePlayer;
     private android.media.MediaPlayer player;
-    private TextView videoViewSubtitles;
-    private TextView exoSubtitles;
-    private TextView externalSubtitleView;
-    private TextView secondarySubtitleView;
+    private com.archos.mediacenter.video.player.SubtitleTextView videoViewSubtitles;
+    private com.archos.mediacenter.video.player.SubtitleTextView exoSubtitles;
+    private com.archos.mediacenter.video.player.SubtitleTextView externalSubtitleView;
+    private com.archos.mediacenter.video.player.SubtitleTextView secondarySubtitleView;
     private LinearLayout osdBar;
     private FrameLayout rootContainer;
     private CinemaSubtitleTimingOverlay subtitleTimingOverlay;
@@ -156,6 +156,9 @@ public final class CinemaHlsActivity extends Activity {
     private int subtitleColor = android.graphics.Color.WHITE;
     private int subtitleBottomMarginDp = 32;
     private boolean subtitleOpaqueBg = false;
+    private int subtitleBgOpacity = 70;
+    private int subtitleOutlineLevel = 0;
+    private int subtitleOutlineColor = android.graphics.Color.BLACK;
     private boolean subtitleVisible = true;
     private long subtitleDelayMs = 0L;
     private byte[] lastSubtitleBytes;
@@ -290,7 +293,7 @@ public final class CinemaHlsActivity extends Activity {
             if (keyFinal.startsWith("addon:") && !CinemaWatchStore.includeAddonContinue(app)) return;
             CinemaWatchStore.StreamEntry before = CinemaWatchStore.getStream(app, keyFinal);
             boolean wasWatched = before != null && before.watched();
-            if (wasWatched && !soughtBelow85 && !reachedThreshold) {
+            if (wasWatched && pos <= 1000 && !soughtBelow85 && !reachedThreshold) {
                 return;
             }
             if (poster != null && !poster.isBlank() && CinemaWatchStore.getIdentity(app, keyFinal) == null) {
@@ -438,7 +441,17 @@ public final class CinemaHlsActivity extends Activity {
         subtitleBottomMarginDp = Math.max(16, Math.min(180, defaultPrefs.getInt(
                 com.archos.mediacenter.video.player.PlayerActivity.KEY_SUBTITLE_VPOS, defVpos) / 2));
         subtitleOpaqueBg = defaultPrefs.getBoolean(
-                com.archos.mediacenter.video.player.PlayerActivity.KEY_SUBTITLE_OUTLINE, false);
+                com.archos.mediacenter.video.player.PlayerActivity.KEY_SUBTITLE_BG,
+                com.meedx.providers.UnifiedSubtitleConfig.opaqueBg(this));
+        subtitleBgOpacity = com.meedx.providers.UnifiedSubtitleConfig.normalizeBgOpacity(
+                defaultPrefs.getInt(com.archos.mediacenter.video.player.PlayerActivity.KEY_SUBTITLE_BG_OPACITY,
+                        com.meedx.providers.UnifiedSubtitleConfig.bgOpacity(this)));
+        subtitleOutlineLevel = Math.max(0, Math.min(3, defaultPrefs.getInt(
+                com.archos.mediacenter.video.player.PlayerActivity.KEY_SUBTITLE_OUTLINE_LEVEL,
+                com.meedx.providers.UnifiedSubtitleConfig.outlineLevel(this))));
+        subtitleOutlineColor = com.meedx.providers.UnifiedSubtitleConfig.normalizeOutlineColor(
+                defaultPrefs.getInt(com.archos.mediacenter.video.player.PlayerActivity.KEY_SUBTITLE_OUTLINE_COLOR,
+                        com.meedx.providers.UnifiedSubtitleConfig.outlineColor(this)));
         dualSubtitlePosition = Math.max(0, Math.min(2,
                 defaultPrefs.getInt("pref_dual_sub_position", DUAL_POS_SPLIT_PRIMARY_BOTTOM)));
         manualRotationDegrees = normalizeRotationDegrees(getIntent().getIntExtra("manual_rotation", 0));
@@ -479,12 +492,15 @@ public final class CinemaHlsActivity extends Activity {
         }
         String dataPath = dataUri != null && dataUri.getPath() != null
                 ? dataUri.getPath().toLowerCase(java.util.Locale.ROOT) : "";
+        boolean isHttpScheme = dataUri != null
+                && ("http".equalsIgnoreCase(dataUri.getScheme()) || "https".equalsIgnoreCase(dataUri.getScheme()));
         if ("torrent".equals(currentFormat) || "dash".equals(currentFormat) || "audio".equals(currentFormat)
                 || "split".equals(currentFormat) || "addon".equals(currentFormat)
                 || "portrait_cast".equals(currentFormat) || "phone_local_media".equals(currentFormat)
                 || "adaptive_file".equals(currentFormat)
                 || (currentAudioUrl != null && !currentAudioUrl.isEmpty())
                 || "hls".equals(currentFormat)
+                || isHttpScheme
                 || dataPath.endsWith(".m3u8") || dataPath.endsWith(".mpd")) {
             startAdaptive(root, currentFormat, currentAudioUrl);
             findArabicAddonSubtitles();
@@ -503,12 +519,17 @@ public final class CinemaHlsActivity extends Activity {
         int extraRot = getIntent().getIntExtra("video_rotation", 0);
         float initRatio = computeDisplayAspectRatio(extraW, extraH, extraRot, 1.0f);
         if (initRatio > 0f) aspectContainer.setAspectRatio(initRatio);
-        videoViewSubtitles = new TextView(this);
+        videoViewSubtitles = new com.archos.mediacenter.video.player.SubtitleTextView(this);
         videoViewSubtitles.setGravity(Gravity.CENTER);
         videoViewSubtitles.setTextColor(subtitleColor);
+        videoViewSubtitles.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         videoViewSubtitles.setTextSize(subtitleSizeSp);
-        videoViewSubtitles.setShadowLayer(4, 1, 2, android.graphics.Color.BLACK);
-        var position = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
+        videoViewSubtitles.setMaxWidth(Math.max(CinemaUi.dp(this, 260),
+                getResources().getDisplayMetrics().widthPixels - CinemaUi.dp(this, 48)));
+        videoViewSubtitles.setSubtitleBackground(subtitleOpaqueBg, subtitleBgOpacity);
+        videoViewSubtitles.setOutline(subtitleOutlineLevel, subtitleOutlineColor);
+        videoViewSubtitles.setVisibility(View.GONE);
+        var position = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         position.bottomMargin = Math.round(subtitleBottomMarginDp * getResources().getDisplayMetrics().density);
         root.addView(videoViewSubtitles, position);
         attachExternalSubtitleOverlay(root);
@@ -605,7 +626,14 @@ public final class CinemaHlsActivity extends Activity {
         osdBar.addView(osdSpeedButton);
         if (!isLiveChannelPlayback() && !"audio".equals(getIntent().getStringExtra("media_type"))) {
             for (CinemaPlaybackOption option : CinemaPlaybackOption.values()) {
-                TextView button = osdButton(getString(option.title), () -> option.toggle(this));
+                String prefix = option == CinemaPlaybackOption.FAMILY_WATCH ? "🛡 " : "⏭ ";
+                TextView button = osdButton(prefix + getString(option.title), () -> {
+                    option.toggle(this);
+                    refreshOsdLabels();
+                    Toast.makeText(this,
+                            getString(option.title) + ": " + option.state(this),
+                            Toast.LENGTH_SHORT).show();
+                });
                 button.setEnabled(option.available());
                 button.setAlpha(option.available() ? 1f : 0.48f);
                 button.setTag(option);
@@ -765,7 +793,10 @@ public final class CinemaHlsActivity extends Activity {
         if (osdBar != null) {
             for (CinemaPlaybackOption option : CinemaPlaybackOption.values()) {
                 TextView button = osdBar.findViewWithTag(option);
-                if (button != null) button.setText(getString(option.title) + " · " + option.state(this));
+                if (button != null) {
+                    String prefix = option == CinemaPlaybackOption.FAMILY_WATCH ? "🛡 " : "⏭ ";
+                    button.setText(prefix + getString(option.title) + " · " + option.state(this));
+                }
             }
         }
     }
@@ -1000,6 +1031,10 @@ public final class CinemaHlsActivity extends Activity {
         int releaseYearExtra = getIntent() != null ? getIntent().getIntExtra("release_year", -1) : -1;
         int seasonExtra = getIntent() != null ? getIntent().getIntExtra("season", -1) : -1;
         int episodeExtra = getIntent() != null ? getIntent().getIntExtra("episode", -1) : -1;
+        String videoFilenameExtra = getIntent() != null ? getIntent().getStringExtra("video_filename") : null;
+        long videoSizeExtra = getIntent() != null ? getIntent().getLongExtra("video_size", 0L) : 0L;
+        String videoHashExtra = getIntent() != null ? getIntent().getStringExtra("video_hash") : null;
+        String addonItemIdExtra = getIntent() != null ? getIntent().getStringExtra("addon_item_id") : null;
 
         var hub = CinemaSubtitleHubDialog.create(this)
                 .title(getString(com.archos.mediacenter.video.R.string.cinema_sub_hub_short))
@@ -1049,6 +1084,10 @@ public final class CinemaHlsActivity extends Activity {
             if (imdbExtra != null && !imdbExtra.isBlank()) search.putExtra("imdb_id", imdbExtra);
             if (seasonExtra > 0) search.putExtra("season", seasonExtra);
             if (episodeExtra > 0) search.putExtra("episode", episodeExtra);
+            if (videoFilenameExtra != null && !videoFilenameExtra.isBlank()) search.putExtra("video_filename", videoFilenameExtra);
+            if (videoSizeExtra > 0L) search.putExtra("video_size", videoSizeExtra);
+            if (videoHashExtra != null && !videoHashExtra.isBlank()) search.putExtra("video_hash", videoHashExtra);
+            if (addonItemIdExtra != null && !addonItemIdExtra.isBlank()) search.putExtra("addon_item_id", addonItemIdExtra);
             search.putExtra("both_providers", true);
             search.putExtra("video_id", -1L);
             if (data != null) search.setData(data);
@@ -1061,6 +1100,7 @@ public final class CinemaHlsActivity extends Activity {
         Runnable fetchOnlineNow = () -> CinemaAutoSubtitleFetcher.fetchNow(
                 this, data, titleFinal, englishTitleExtra, imdbExtra, releaseYearExtra,
                 seasonExtra > 0 || episodeExtra > 0, seasonExtra, episodeExtra,
+                videoFilenameExtra, videoSizeExtra, videoHashExtra, addonItemIdExtra,
                 savedUri -> {
                     if (savedUri != null) {
                         onActivityResult(REQ_SUBSOURCE, Activity.RESULT_OK, new Intent().setData(savedUri));
@@ -1103,6 +1143,9 @@ public final class CinemaHlsActivity extends Activity {
                         () -> {
                             boolean nowOn = com.meedx.providers.UnifiedSubtitleConfig.dualSubtitlesEnabled(this);
                             setDualSubtitleMode(nowOn ? SUB_MODE_DUAL : SUB_MODE_PRIMARY);
+                            if (nowOn && secondaryCues.isEmpty()) {
+                                findArabicAddonSubtitles();
+                            }
                         },
                         () -> {
                             dualSubtitlePosition = com.meedx.providers.UnifiedSubtitleConfig.dualSubPosition(this);
@@ -1112,7 +1155,8 @@ public final class CinemaHlsActivity extends Activity {
                         },
                         null,
                         () -> applyPhoneSubtitleStyle("sub_clear_secondary", 0))
-                .liveAppearance(subtitleDelayMs, currentSizeVal, subtitleColor, subtitleOpaqueBg, subtitleVisible,
+                .liveAppearance(subtitleDelayMs, currentSizeVal, subtitleColor, subtitleOpaqueBg,
+                        subtitleBgOpacity, subtitleOutlineLevel, subtitleOutlineColor, subtitleVisible,
                         (action, value) -> {
                             applyPhoneSubtitleStyle(action, value);
                             persistLiveStyleToUnified();
@@ -1123,7 +1167,8 @@ public final class CinemaHlsActivity extends Activity {
     private void persistLiveStyleToUnified() {
         int sizeVal = Math.max(18, Math.min(80, Math.round((subtitleSizeSp - 14f) / 0.35f)));
         com.meedx.providers.UnifiedSubtitleConfig.saveAppearance(
-                this, sizeVal, subtitleBottomMarginDp, subtitleColor, subtitleOpaqueBg, subtitleDelayMs);
+                this, sizeVal, subtitleBottomMarginDp, subtitleColor, subtitleOpaqueBg,
+                subtitleBgOpacity, subtitleOutlineLevel, subtitleOutlineColor, subtitleDelayMs);
         CinemaSubtitleSyncBridge.onTvSubtitleConfigChanged(this);
     }
 
@@ -1190,6 +1235,9 @@ public final class CinemaHlsActivity extends Activity {
         final String addonItemId = intent.getStringExtra("addon_item_id");
         final String addonBaseUrl = intent.getStringExtra("addon_base_url");
         final String mediaType = intent.getStringExtra("media_type");
+        final String videoFilename = intent.getStringExtra("video_filename");
+        final long videoSize = intent.getLongExtra("video_size", 0L);
+        final String videoHash = intent.getStringExtra("video_hash");
         final java.util.ArrayList<String> inlineSubUrls = intent.getStringArrayListExtra("stream_subtitle_urls");
         final java.util.ArrayList<String> inlineSubLangs = intent.getStringArrayListExtra("stream_subtitle_langs");
         int season = intent.getIntExtra("season", 0);
@@ -1217,10 +1265,11 @@ public final class CinemaHlsActivity extends Activity {
                 }
             }
 
-            // 2. Check the originating add-on's /subtitles/{type}/{itemId}.json directly (supports Persian Stremio "ip..." IDs)
+            // 2. Check the originating add-on's /subtitles/{type}/{itemId}[/{extra}].json directly
             if (primaryUrls.isEmpty() && addonBaseUrl != null && !addonBaseUrl.isBlank()
                     && addonItemId != null && !addonItemId.isBlank()) {
-                for (var sub : com.meedx.providers.StremioAddons.fetchAddonSubtitles(addonBaseUrl, mediaType, addonItemId)) {
+                for (var sub : com.meedx.providers.StremioAddons.fetchAddonSubtitles(
+                        addonBaseUrl, mediaType, addonItemId, videoFilename, videoSize, videoHash)) {
                     if (pCanon.equals(com.meedx.providers.UnifiedSubtitleConfig.canonicalLangName(sub.lang()))) {
                         primaryUrls.add(sub.url());
                     }
@@ -1235,9 +1284,11 @@ public final class CinemaHlsActivity extends Activity {
                         season > 0 || episode > 0, season, episode);
                 if (rq.imdbId != null && rq.imdbId.matches("tt[0-9]+")) imdb = rq.imdbId;
             }
-            if (!imdb.isEmpty()) {
+            String subLookupId = !imdb.isEmpty() ? imdb
+                    : (addonItemId != null && addonItemId.startsWith("kitsu:") ? addonItemId : "");
+            if (!subLookupId.isEmpty()) {
                 primaryUrls.addAll(com.meedx.providers.StremioAddons.subtitleUrls(
-                        getApplicationContext(), imdb, season, episode, pIso));
+                        getApplicationContext(), subLookupId, season, episode, pIso, videoFilename, videoSize, videoHash));
             }
 
             for (String url : primaryUrls) {
@@ -1253,8 +1304,9 @@ public final class CinemaHlsActivity extends Activity {
                     break;
                 } catch (Exception ignored) {}
             }
-            if (wantDual && !imdb.isEmpty() && !isDestroyed() && !isFinishing()) {
-                var secondaryUrls = com.meedx.providers.StremioAddons.subtitleUrls(getApplicationContext(), imdb, season, episode, sIso);
+            if (wantDual && !subLookupId.isEmpty() && !isDestroyed() && !isFinishing()) {
+                var secondaryUrls = com.meedx.providers.StremioAddons.subtitleUrls(
+                        getApplicationContext(), subLookupId, season, episode, sIso, videoFilename, videoSize, videoHash);
                 for (String url : secondaryUrls) {
                     if (isDestroyed() || isFinishing()) return;
                     try {
@@ -1438,20 +1490,26 @@ public final class CinemaHlsActivity extends Activity {
         botLp.bottomMargin = Math.round(subtitleBottomMarginDp * getResources().getDisplayMetrics().density);
         root.addView(bottomSubtitleStack, botLp);
 
-        externalSubtitleView = new TextView(this);
+        int maxSubW = Math.max(CinemaUi.dp(this, 260),
+                getResources().getDisplayMetrics().widthPixels - CinemaUi.dp(this, 48));
+        externalSubtitleView = new com.archos.mediacenter.video.player.SubtitleTextView(this);
         externalSubtitleView.setGravity(Gravity.CENTER);
         externalSubtitleView.setTextColor(subtitleColor);
         externalSubtitleView.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         externalSubtitleView.setTextSize(subtitleSizeSp);
-        externalSubtitleView.setShadowLayer(6f, 0f, 0f, android.graphics.Color.BLACK);
+        externalSubtitleView.setMaxWidth(maxSubW);
+        externalSubtitleView.setSubtitleBackground(subtitleOpaqueBg, subtitleBgOpacity);
+        externalSubtitleView.setOutline(subtitleOutlineLevel, subtitleOutlineColor);
         externalSubtitleView.setVisibility(View.GONE);
 
-        secondarySubtitleView = new TextView(this);
+        secondarySubtitleView = new com.archos.mediacenter.video.player.SubtitleTextView(this);
         secondarySubtitleView.setGravity(Gravity.CENTER);
         secondarySubtitleView.setTextColor(0xfffef08a);
         secondarySubtitleView.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         secondarySubtitleView.setTextSize(Math.max(14f, subtitleSizeSp - 2f));
-        secondarySubtitleView.setShadowLayer(6f, 0f, 0f, android.graphics.Color.BLACK);
+        secondarySubtitleView.setMaxWidth(maxSubW);
+        secondarySubtitleView.setSubtitleBackground(subtitleOpaqueBg, subtitleBgOpacity);
+        secondarySubtitleView.setOutline(subtitleOutlineLevel, subtitleOutlineColor);
         secondarySubtitleView.setVisibility(View.GONE);
 
         applyDualSubtitleLayout();
@@ -1697,13 +1755,18 @@ public final class CinemaHlsActivity extends Activity {
                     getIntent().getIntExtra("video_height", 0), normalizeRotationDegrees(getIntent().getIntExtra("video_rotation", 0)));
         adaptiveSurface = useTextureView ? newVideoTexture() : new SurfaceView(this);
         aspectContainer.addView(adaptiveSurface, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
-        exoSubtitles = new TextView(this);
+        exoSubtitles = new com.archos.mediacenter.video.player.SubtitleTextView(this);
         exoSubtitles.setGravity(Gravity.CENTER);
-        exoSubtitles.setTextColor(android.graphics.Color.WHITE);
-        exoSubtitles.setTextSize(20);
-        exoSubtitles.setShadowLayer(4, 1, 2, android.graphics.Color.BLACK);
-        var subLp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
-        subLp.bottomMargin = Math.round(32 * getResources().getDisplayMetrics().density);
+        exoSubtitles.setTextColor(subtitleColor);
+        exoSubtitles.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        exoSubtitles.setTextSize(subtitleSizeSp);
+        exoSubtitles.setMaxWidth(Math.max(CinemaUi.dp(this, 260),
+                getResources().getDisplayMetrics().widthPixels - CinemaUi.dp(this, 48)));
+        exoSubtitles.setSubtitleBackground(subtitleOpaqueBg, subtitleBgOpacity);
+        exoSubtitles.setOutline(subtitleOutlineLevel, subtitleOutlineColor);
+        exoSubtitles.setVisibility(View.GONE);
+        var subLp = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        subLp.bottomMargin = Math.round(subtitleBottomMarginDp * getResources().getDisplayMetrics().density);
         root.addView(exoSubtitles, subLp);
         attachExternalSubtitleOverlay(root);
         attachOsdBar(root);
@@ -1790,6 +1853,19 @@ public final class CinemaHlsActivity extends Activity {
 
         String subUrl = getIntent().getStringExtra("subtitle_url");
         String sub2Url = getIntent().getStringExtra("secondary_subtitle_url");
+        if (com.archos.mediacenter.video.player.CinemaSubtitleText.isStoryboardTrackHint(subUrl)) {
+            subUrl = null;
+        }
+        if (com.archos.mediacenter.video.player.CinemaSubtitleText.isStoryboardTrackHint(sub2Url)) {
+            sub2Url = null;
+        }
+        if (getIntent().getBooleanExtra("suppress_auto_subtitles", false)
+                && (subUrl == null || subUrl.isBlank())) {
+            adaptivePlayer.setTrackSelectionParameters(adaptivePlayer.getTrackSelectionParameters()
+                    .buildUpon()
+                    .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, true)
+                    .build());
+        }
         boolean subIsHlsPlaylist = subUrl != null && subUrl.toLowerCase(java.util.Locale.ROOT).contains(".m3u8");
         if (isCatalogChannel() && !liveCandidates.isEmpty() && (audio == null || audio.isEmpty())) {
             adaptivePlayer.setMediaSource(buildLiveMediaSource(liveCandidates.get(activeLiveCandidateIndex), liveStreamMode));
@@ -2006,12 +2082,28 @@ public final class CinemaHlsActivity extends Activity {
             adaptivePlayer.play();
             return;
         }
-        if (isCatalogChannel() && !liveCandidates.isEmpty() && liveStreamMode == LIVE_MODE_AUTO && isFormatMismatchError(error)) {
-            int fallbackMode = currentLiveCandidateLooksHls() ? LIVE_MODE_PROGRESSIVE : LIVE_MODE_HLS;
-            android.util.Log.w("CinemaWebPlayer", "Live format mismatch (" + errName
-                    + "), switching immediately to mode=" + fallbackMode);
-            switchLiveCandidate(activeLiveCandidateIndex, fallbackMode);
-            return;
+        if (!addonFrameRendered && localTorrent == null && isFormatMismatchError(error)) {
+            if (isCatalogChannel() && !liveCandidates.isEmpty() && liveStreamMode == LIVE_MODE_AUTO) {
+                int fallbackMode = currentLiveCandidateLooksHls() ? LIVE_MODE_PROGRESSIVE : LIVE_MODE_HLS;
+                android.util.Log.w("CinemaWebPlayer", "Live format mismatch (" + errName
+                        + "), switching immediately to mode=" + fallbackMode);
+                switchLiveCandidate(activeLiveCandidateIndex, fallbackMode);
+                return;
+            }
+            if (!isCatalogChannel() && liveStreamMode == LIVE_MODE_AUTO && getIntent() != null && getIntent().getData() != null) {
+                String dataStr = getIntent().getData().toString();
+                boolean looksHls = "hls".equals(currentFormat) || dataStr.toLowerCase(java.util.Locale.ROOT).contains(".m3u8");
+                liveStreamMode = looksHls ? LIVE_MODE_PROGRESSIVE : LIVE_MODE_HLS;
+                var vodCandidate = new LiveCandidate(dataStr, getIntent().getStringExtra("title"),
+                        currentFormat == null ? "addon" : currentFormat, getIntent().getBundleExtra(CHANNEL_HEADERS));
+                android.util.Log.w("CinemaWebPlayer", "VOD HTTP format mismatch (" + errName
+                        + "), retrying with mode=" + liveStreamMode);
+                adaptivePlayer.stop();
+                adaptivePlayer.setMediaSource(buildLiveMediaSource(vodCandidate, liveStreamMode));
+                adaptivePlayer.prepare();
+                adaptivePlayer.play();
+                return;
+            }
         }
         int maxRetries = isCatalogChannel() ? (liveCandidates.size() > 1 ? 1 : 2) : MAX_ADAPTIVE_RETRIES;
         if (adaptiveRetryCount < maxRetries) {
@@ -2213,6 +2305,11 @@ public final class CinemaHlsActivity extends Activity {
                 for (int i = 0; i < group.length; i++) {
                     var fmt = group.getTrackFormat(i);
                     String label = fmt.label != null ? fmt.label : (fmt.language != null ? fmt.language : "Track " + (idx + 1));
+                    if (com.archos.mediacenter.video.player.CinemaSubtitleText.isStoryboardTrackHint(
+                            label + " " + (fmt.id != null ? fmt.id : "") + " " + (fmt.sampleMimeType != null ? fmt.sampleMimeType : ""))) {
+                        idx++;
+                        continue;
+                    }
                     arr.put(new org.json.JSONObject()
                             .put("index", idx)
                             .put("label", label)
@@ -2293,7 +2390,23 @@ public final class CinemaHlsActivity extends Activity {
             case "color" -> subtitleColor = value;
             case "size" -> subtitleSizeSp = Math.max(12f, Math.min(48f, subtitleSizeSp + (value * 1.5f)));
             case "position" -> subtitleBottomMarginDp = Math.max(8, Math.min(180, subtitleBottomMarginDp + (value * 2)));
-            case "background" -> subtitleOpaqueBg = !subtitleOpaqueBg;
+            case "background" -> {
+                subtitleOpaqueBg = !subtitleOpaqueBg;
+                if (subtitleOpaqueBg && subtitleBgOpacity == 0) subtitleBgOpacity = 70;
+            }
+            case "bg_opacity" -> {
+                subtitleBgOpacity = value >= 0
+                        ? com.meedx.providers.UnifiedSubtitleConfig.normalizeBgOpacity(value)
+                        : com.meedx.providers.UnifiedSubtitleConfig.nextBgOpacity(subtitleBgOpacity);
+                subtitleOpaqueBg = subtitleBgOpacity > 0;
+            }
+            case "outline" -> subtitleOutlineLevel = value >= 0
+                    ? Math.max(0, Math.min(3, value))
+                    : com.meedx.providers.UnifiedSubtitleConfig.nextOutlineLevel(subtitleOutlineLevel);
+            case "outline_color" -> {
+                subtitleOutlineColor = com.meedx.providers.UnifiedSubtitleConfig.normalizeOutlineColor(value);
+                if (subtitleOutlineLevel == 0) subtitleOutlineLevel = 2;
+            }
             case "visible" -> subtitleVisible = !subtitleVisible;
             case "dual_position" -> {
                 dualSubtitlePosition = Math.max(0, Math.min(2, value));
@@ -2333,12 +2446,21 @@ public final class CinemaHlsActivity extends Activity {
                     }
                 }
             }
+            case "delay_reset" -> {
+                subtitleDelayMs = 0L;
+                if (externalSubtitlesEnabled || secondarySubtitlesEnabled) {
+                    updateExternalSubtitleNow();
+                }
+            }
             case "reset" -> {
                 subtitleDelayMs = 0L;
                 subtitleSizeSp = 20f;
                 subtitleColor = android.graphics.Color.WHITE;
                 subtitleBottomMarginDp = 32;
                 subtitleOpaqueBg = false;
+                subtitleBgOpacity = 70;
+                subtitleOutlineLevel = 0;
+                subtitleOutlineColor = android.graphics.Color.BLACK;
                 subtitleVisible = true;
                 if (externalSubtitlesEnabled || secondarySubtitlesEnabled) {
                     updateExternalSubtitleNow();
@@ -2352,21 +2474,36 @@ public final class CinemaHlsActivity extends Activity {
         }
     }
 
-    private void applySubtitleViewStyle(TextView view) {
+    /** Reloads subtitle appearance from UnifiedSubtitleConfig when synced live from Phone. */
+    void reloadUnifiedSubtitleAppearance() {
+        subtitleSizeSp = Math.max(14f, Math.min(38f, 14f + (com.meedx.providers.UnifiedSubtitleConfig.textSize(this) * 0.17f)));
+        subtitleColor = com.meedx.providers.UnifiedSubtitleConfig.textColor(this);
+        subtitleBottomMarginDp = Math.max(16, Math.min(180, com.meedx.providers.UnifiedSubtitleConfig.vpos(this) / 2));
+        subtitleOpaqueBg = com.meedx.providers.UnifiedSubtitleConfig.opaqueBg(this);
+        subtitleBgOpacity = com.meedx.providers.UnifiedSubtitleConfig.bgOpacity(this);
+        subtitleOutlineLevel = com.meedx.providers.UnifiedSubtitleConfig.outlineLevel(this);
+        subtitleOutlineColor = com.meedx.providers.UnifiedSubtitleConfig.outlineColor(this);
+        dualSubtitlePosition = com.meedx.providers.UnifiedSubtitleConfig.dualSubPosition(this);
+        applyDualSubtitleLayout();
+        applyAllSubtitleStyles();
+        updateExternalSubtitleNow();
+    }
+
+    private void applySubtitleViewStyle(com.archos.mediacenter.video.player.SubtitleTextView view) {
         if (view == null) return;
+        boolean hasText = view.getText() != null && view.getText().toString().trim().length() > 0;
         if (view == externalSubtitleView) {
             boolean showPrimary = externalSubtitlesEnabled && !externalCues.isEmpty() && subDisplayMode != SUB_MODE_SECONDARY;
-            boolean hasText = view.getText() != null && view.getText().length() > 0;
             view.setVisibility(showPrimary && subtitleVisible && hasText ? View.VISIBLE : View.GONE);
         } else if (externalSubtitlesEnabled) {
             view.setVisibility(View.GONE);
         } else {
-            view.setVisibility(subtitleVisible ? View.VISIBLE : View.GONE);
+            view.setVisibility(subtitleVisible && hasText ? View.VISIBLE : View.GONE);
         }
         view.setTextColor(subtitleColor);
         view.setTextSize(subtitleSizeSp);
-        view.setBackgroundColor(subtitleOpaqueBg ? 0xAA000000 : android.graphics.Color.TRANSPARENT);
-        view.setPadding(subtitleOpaqueBg ? 18 : 0, subtitleOpaqueBg ? 8 : 0, subtitleOpaqueBg ? 18 : 0, subtitleOpaqueBg ? 8 : 0);
+        view.setSubtitleBackground(subtitleOpaqueBg, subtitleBgOpacity);
+        view.setOutline(subtitleOutlineLevel, subtitleOutlineColor);
         if (view.getLayoutParams() instanceof FrameLayout.LayoutParams lp) {
             lp.bottomMargin = Math.round(subtitleBottomMarginDp * getResources().getDisplayMetrics().density);
             view.setLayoutParams(lp);
@@ -2377,11 +2514,11 @@ public final class CinemaHlsActivity extends Activity {
         if (secondarySubtitleView == null) return;
         boolean showSec = secondarySubtitlesEnabled && !secondaryCues.isEmpty()
                 && subDisplayMode != SUB_MODE_PRIMARY;
-        boolean hasText = secondarySubtitleView.getText() != null && secondarySubtitleView.getText().length() > 0;
+        boolean hasText = secondarySubtitleView.getText() != null && secondarySubtitleView.getText().toString().trim().length() > 0;
         secondarySubtitleView.setVisibility(showSec && subtitleVisible && hasText ? View.VISIBLE : View.GONE);
         secondarySubtitleView.setTextSize(Math.max(14f, subtitleSizeSp - 2f));
-        secondarySubtitleView.setBackgroundColor(subtitleOpaqueBg ? 0xAA000000 : android.graphics.Color.TRANSPARENT);
-        secondarySubtitleView.setPadding(subtitleOpaqueBg ? 18 : 0, subtitleOpaqueBg ? 8 : 0, subtitleOpaqueBg ? 18 : 0, subtitleOpaqueBg ? 8 : 0);
+        secondarySubtitleView.setSubtitleBackground(subtitleOpaqueBg, subtitleBgOpacity);
+        secondarySubtitleView.setOutline(subtitleOutlineLevel, subtitleOutlineColor);
     }
 
     void setSubtitle(String extension, byte[] data) {
@@ -2409,6 +2546,7 @@ public final class CinemaHlsActivity extends Activity {
         subtitleRevision++;
         lastSubtitleExt = resolvedExt;
         lastSubtitleBytes = data;
+        if (playbackFilters != null) playbackFilters.setLoadedSubtitleBytes(data);
         externalCues = parsed;
         externalSubtitlesEnabled = true;
         subDisplayMode = secondarySubtitlesEnabled ? SUB_MODE_DUAL : SUB_MODE_PRIMARY;
@@ -2491,6 +2629,9 @@ public final class CinemaHlsActivity extends Activity {
         if (rawData == null || rawData.length == 0) return java.util.Collections.emptyList();
         String text = new String(rawData, java.nio.charset.StandardCharsets.UTF_8);
         if (!text.isEmpty() && text.charAt(0) == '\uFEFF') text = text.substring(1);
+        if (com.archos.mediacenter.video.player.CinemaSubtitleText.isEntirelyStoryboardVtt(text)) {
+            return java.util.Collections.emptyList();
+        }
         var cues = new java.util.ArrayList<ExternalCue>();
         if ("ass".equals(extension) || "ssa".equals(extension)) {
             for (String line : text.split("\\r?\\n")) {
@@ -2603,9 +2744,20 @@ public final class CinemaHlsActivity extends Activity {
         if (isFinishing() || isLiveChannelPlayback()) return;
         if (playbackFilters == null) {
             playbackFilters = new CinemaPlaybackFilters(this, this::position, this::duration,
-                    () -> playing() && !live(), target -> seekInternal(target, false));
+                    () -> playing() && !live(),
+                    target -> seekInternal(target, false),
+                    muted -> {
+                        float vol = muted ? 0f : 1f;
+                        if (adaptivePlayer != null) adaptivePlayer.setVolume(vol);
+                        else if (player != null) {
+                            try { player.setVolume(vol, vol); } catch (Exception ignored) {}
+                        }
+                    });
         }
         playbackFilters.setMedia(getIntent().getData(), getIntent().getLongExtra("cinema_filter_video_id", -1), getIntent());
+        if (lastSubtitleBytes != null && lastSubtitleBytes.length > 0) {
+            playbackFilters.setLoadedSubtitleBytes(lastSubtitleBytes);
+        }
         playbackFilters.resume();
         if (adaptivePlayer != null) loadChapterMetadata(adaptivePlayer.getCurrentTracks());
     }

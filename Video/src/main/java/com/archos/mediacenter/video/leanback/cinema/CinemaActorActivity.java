@@ -680,15 +680,17 @@ public class CinemaActorActivity extends LeanbackActivity {
                     CinemaUi.dialog(this).setTitle(c.title())
                             .setItems(labels, (d, which) -> {
                                 StremioAddons.Stream chosen = streams.get(which);
-                                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(chosen.url), this, CinemaHlsActivity.class)
-                                        .putExtra("format", "addon")
-                                        .putExtra("title", c.title())
-                                        .putExtra("stream_key", "addon:" + finalImdb + (c.isShow() ? ":s1e1" : ""))
-                                        .putExtra("media_type", c.isShow() ? "episode" : "movie")
-                                        .putExtra("imdb_id", finalImdb)
-                                        .putExtra("season", s)
-                                        .putExtra("episode", ep);
-                                startActivity(intent);
+                                CinemaPlaybackRouter.playStream(this, CinemaPlaybackRouter.StreamRequest.basicVod(
+                                        Uri.parse(chosen.url),
+                                        "addon",
+                                        c.title(),
+                                        "addon:" + finalImdb + (c.isShow() ? ":s1e1" : ""),
+                                        c.isShow() ? "episode" : "movie",
+                                        finalImdb,
+                                        0L,
+                                        s,
+                                        ep,
+                                        0L));
                             }).setNegativeButton(android.R.string.cancel, null).show();
                 });
             });

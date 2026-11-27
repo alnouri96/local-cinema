@@ -82,8 +82,6 @@ final class CinemaAddonsManagerDialog {
         installedButton = card(R.drawable.cinema_ic_addons, installedSummaryTitle(),
                 host.getString(R.string.addon_manage_installed_hint), this::openInstalledManager);
         rows.addView(installedButton);
-        rows.addView(card(R.drawable.cinema_ic_addons, host.getString(R.string.addon_choose_enabled),
-                host.getString(R.string.addon_choose_hint), this::chooseInstalled));
         rows.addView(card(R.drawable.cinema_ic_addons, host.getString(R.string.addon_add_manifest), "", this::paste));
         rows.addView(card(R.drawable.cinema_ic_posters, host.getString(R.string.addon_recommended),
                 host.getString(R.string.addon_recommended_hint), this::chooseRecommended));
@@ -122,33 +120,184 @@ final class CinemaAddonsManagerDialog {
             toast(R.string.addon_empty);
             return;
         }
+        boolean rtl = CinemaUi.arabic(host);
         var content = column();
-        var dialogRef = new AlertDialog[1];
+        var hint = CinemaUi.text(host, 13, false);
+        hint.setTextColor(0xffb8b8c2);
+        hint.setPaddingRelative(dp(4), 0, dp(4), dp(6));
+        hint.setText(CinemaUi.label(host,
+                "اضغط OK لتفعيل أو تعطيل الإضافة فوراً · انتقل إلى ⚙ (أو اضغط مطوّلاً) لتعديل الرابط أو الفحص أو الحذف",
+                "Press OK to toggle immediately · Move to ⚙ (or long-press) to edit Manifest, test, or remove"));
+        content.addView(hint);
+
         Runnable[] populate = new Runnable[1];
         populate[0] = () -> {
-            content.removeAllViews();
+            while (content.getChildCount() > 1) content.removeViewAt(1);
             var current = installed();
             for (var addon : current) {
-                String state = host.getString(addon.enabled ? R.string.addon_enabled_label : R.string.addon_disabled_label);
-                String typeLabel = addonCapabilityLabel(addon);
-                String subtitle = state + " · " + typeLabel;
-                if (StremioAddons.connectionIssue(addon)) {
-                    subtitle = host.getString(R.string.addon_unavailable) + " · " + subtitle;
-                }
-                var itemCard = card(R.drawable.cinema_ic_addons, addon.name, subtitle,
-                        () -> manageAddon(addon, () -> {
-                            populate[0].run();
-                            updateCount();
-                        }, null));
-                content.addView(itemCard);
+                content.addView(createUnifiedAddonRow(addon, rtl, () -> {
+                    populate[0].run();
+                    updateCount();
+                }), cardSize());
             }
         };
         populate[0].run();
         var dialog = sheet(R.string.addon_installed_settings, content)
                 .setNegativeButton(R.string.addon_back, null)
                 .create();
-        dialogRef[0] = dialog;
         showSheet(dialog, content);
+    }
+
+    private LinearLayout createUnifiedAddonRow(StremioAddons.Addon addon, boolean rtl, Runnable onStructureChanged) {
+        var wrapper = new LinearLayout(host);
+        wrapper.setOrientation(LinearLayout.HORIZONTAL);
+        wrapper.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
+        wrapper.setGravity(Gravity.CENTER_VERTICAL);
+        wrapper.setClipChildren(false);
+        wrapper.setClipToPadding(false);
+
+        final boolean[] enabledState = {addon.enabled};
+        String typeLabel = addonCapabilityLabel(addon);
+        boolean offline = StremioAddons.connectionIssue(addon);
+
+        var mainCard = new LinearLayout(host);
+        mainCard.setId(View.generateViewId());
+        mainCard.setOrientation(LinearLayout.HORIZONTAL);
+        mainCard.setGravity(Gravity.CENTER_VERTICAL);
+        mainCard.setMinimumHeight(dp(68));
+        mainCard.setPaddingRelative(dp(12), dp(10), dp(14), dp(10));
+        mainCard.setFocusable(true);
+        mainCard.setClickable(true);
+        mainCard.setLongClickable(true);
+        mainCard.setClipChildren(false);
+        mainCard.setClipToPadding(false);
+
+        var mainBg = new android.graphics.drawable.StateListDrawable();
+        var mainFocus = CinemaUi.rounded(0xff332814, dp(12), 0xffe5a93b);
+        mainFocus.setStroke(dp(2), 0xffe5a93b);
+        mainBg.addState(new int[]{android.R.attr.state_focused}, mainFocus);
+        mainBg.addState(new int[]{}, CinemaUi.rounded(0xff1e1f23, dp(12), 0xff32343c));
+        mainCard.setBackground(mainBg);
+
+        var logoBadge = CinemaAddonTilePresenter.createLogoBadge(
+                host, addon, R.drawable.cinema_ic_addons, 46, io, main);
+        var logoLp = new LinearLayout.LayoutParams(dp(46), dp(46));
+        logoLp.setMarginEnd(dp(14));
+        mainCard.addView(logoBadge, logoLp);
+
+        var textCol = new LinearLayout(host);
+        textCol.setOrientation(LinearLayout.VERTICAL);
+        textCol.setGravity(Gravity.CENTER_VERTICAL);
+
+        var titleView = CinemaUi.text(host, 16, true);
+        titleView.setText(addon.name);
+        titleView.setTextColor(Color.WHITE);
+        titleView.setSingleLine(true);
+        titleView.setEllipsize(TextUtils.TruncateAt.END);
+        textCol.addView(titleView, new LinearLayout.LayoutParams(-1, -2));
+
+        var subView = CinemaUi.text(host, 13, false);
+        subView.setTextColor(offline ? 0xfff59e0b : 0xffb8b8c2);
+        subView.setSingleLine(true);
+        subView.setEllipsize(TextUtils.TruncateAt.END);
+        String subBase = offline ? (host.getString(R.string.addon_unavailable) + " · " + typeLabel) : typeLabel;
+        subView.setText(subBase);
+        var subLp = new LinearLayout.LayoutParams(-1, -2);
+        subLp.topMargin = dp(2);
+        textCol.addView(subView, subLp);
+        mainCard.addView(textCol, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        var statusPill = CinemaUi.text(host, 12, true);
+        statusPill.setGravity(Gravity.CENTER);
+        statusPill.setSingleLine(true);
+        statusPill.setPaddingRelative(dp(12), dp(5), dp(12), dp(5));
+        var pillLp = new LinearLayout.LayoutParams(-2, -2);
+        pillLp.setMarginStart(dp(10));
+        mainCard.addView(statusPill, pillLp);
+
+        Runnable updateStatusVisuals = () -> {
+            boolean on = enabledState[0];
+            statusPill.setText(on
+                    ? ("✓ " + host.getString(R.string.addon_enabled_label))
+                    : host.getString(R.string.addon_disabled_label));
+            statusPill.setTextColor(on ? 0xff86efac : 0xff9ca3af);
+            statusPill.setBackground(CinemaUi.rounded(
+                    on ? 0xff193325 : 0xff282930, dp(10), on ? 0xff2f6848 : 0xff3d3f48));
+            logoBadge.setAlpha(on ? 1f : 0.55f);
+            titleView.setTextColor(mainCard.hasFocus() ? 0xffffe394 : (on ? Color.WHITE : 0xffb8b8c2));
+        };
+        updateStatusVisuals.run();
+
+        mainCard.setOnFocusChangeListener((v, focused) -> {
+            titleView.setTextColor(focused ? 0xffffe394 : (enabledState[0] ? Color.WHITE : 0xffb8b8c2));
+            v.animate().scaleX(focused ? 1.015f : 1f).scaleY(focused ? 1.015f : 1f)
+                    .setDuration(CinemaUi.motion(host) ? 90 : 0).start();
+        });
+
+        Runnable openActions = () -> manageAddon(addon, onStructureChanged, null);
+
+        mainCard.setOnClickListener(v -> {
+            enabledState[0] = !enabledState[0];
+            StremioAddons.setEnabled(host, addon.manifestUrl, enabledState[0]);
+            CinemaLinkServer.sendAddonEnabled(addon.manifestUrl, enabledState[0]);
+            updateStatusVisuals.run();
+            notifyChange();
+        });
+        mainCard.setOnLongClickListener(v -> {
+            openActions.run();
+            return true;
+        });
+
+        var gearBtn = new ImageView(host);
+        gearBtn.setId(View.generateViewId());
+        gearBtn.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        gearBtn.setPadding(dp(13), dp(13), dp(13), dp(13));
+        gearBtn.setFocusable(true);
+        gearBtn.setClickable(true);
+        gearBtn.setContentDescription(CinemaUi.label(host, "إعدادات الإضافة: ", "Add-on options: ") + addon.name);
+        var gearIcon = androidx.core.content.ContextCompat.getDrawable(host, R.drawable.ic_cog_outline);
+        if (gearIcon != null) {
+            gearIcon = gearIcon.mutate();
+            gearIcon.setTint(0xffe5a93b);
+            gearBtn.setImageDrawable(gearIcon);
+        }
+        var gearBg = new android.graphics.drawable.StateListDrawable();
+        var gearFocus = CinemaUi.rounded(0xffe5a93b, dp(12), 0xffffd875);
+        gearFocus.setStroke(dp(2), 0xffffe394);
+        gearBg.addState(new int[]{android.R.attr.state_focused}, gearFocus);
+        gearBg.addState(new int[]{}, CinemaUi.rounded(0xff222329, dp(12), 0xff363842));
+        gearBtn.setBackground(gearBg);
+        gearBtn.setOnFocusChangeListener((v, focused) -> {
+            if (gearBtn.getDrawable() != null) {
+                gearBtn.getDrawable().setTint(focused ? 0xff141517 : 0xffe5a93b);
+            }
+            v.animate().scaleX(focused ? 1.06f : 1f).scaleY(focused ? 1.06f : 1f)
+                    .setDuration(CinemaUi.motion(host) ? 90 : 0).start();
+        });
+        gearBtn.setOnClickListener(v -> openActions.run());
+
+        // Smooth horizontal D-pad pairing between main toggle row and gear options button
+        if (rtl) {
+            mainCard.setNextFocusLeftId(gearBtn.getId());
+            gearBtn.setNextFocusRightId(mainCard.getId());
+        } else {
+            mainCard.setNextFocusRightId(gearBtn.getId());
+            gearBtn.setNextFocusLeftId(mainCard.getId());
+        }
+        mainCard.setOnKeyListener((v, keyCode, event) -> {
+            if (event.getAction() == android.view.KeyEvent.ACTION_DOWN
+                    && keyCode == android.view.KeyEvent.KEYCODE_MENU) {
+                openActions.run();
+                return true;
+            }
+            return false;
+        });
+
+        wrapper.addView(mainCard, new LinearLayout.LayoutParams(0, -2, 1f));
+        var gearLp = new LinearLayout.LayoutParams(dp(54), dp(54));
+        gearLp.setMarginStart(dp(8));
+        wrapper.addView(gearBtn, gearLp);
+        return wrapper;
     }
 
     private void notifyChange() {
@@ -182,16 +331,29 @@ final class CinemaAddonsManagerDialog {
     }
 
     private void manageAddon(StremioAddons.Addon addon, Runnable refresh, Runnable onReloadCatalog) {
+        var latest = installed().stream()
+                .filter(a -> a.manifestUrl.equals(addon.manifestUrl))
+                .findFirst().orElse(addon);
         var content = column();
+        var headerRow = new LinearLayout(host);
+        headerRow.setOrientation(LinearLayout.HORIZONTAL);
+        headerRow.setGravity(Gravity.CENTER_VERTICAL);
+        headerRow.setPaddingRelative(dp(4), 0, dp(4), dp(8));
+        var logoBadge = CinemaAddonTilePresenter.createLogoBadge(
+                host, latest, R.drawable.cinema_ic_addons, 44, io, main);
+        var logoLp = new LinearLayout.LayoutParams(dp(44), dp(44));
+        logoLp.setMarginEnd(dp(12));
+        headerRow.addView(logoBadge, logoLp);
+
         var info = CinemaUi.text(host, 13, false);
         info.setTextColor(0xffc9beaa);
-        info.setPaddingRelative(dp(6), 0, dp(6), dp(8));
         info.setMaxLines(3);
         info.setEllipsize(TextUtils.TruncateAt.MIDDLE);
-        info.setText(addonCapabilityLabel(addon) + "\n" + addon.manifestUrl);
-        content.addView(info);
+        info.setText(addonCapabilityLabel(latest) + "\n" + latest.manifestUrl);
+        headerRow.addView(info, new LinearLayout.LayoutParams(0, -2, 1f));
+        content.addView(headerRow);
 
-        var dialog = sheet(R.string.addon_single_settings_title, content).setTitle(addon.name)
+        var dialog = sheet(R.string.addon_single_settings_title, content).setTitle(latest.name)
                 .setNegativeButton(R.string.addon_back, null).create();
         var needsRefresh = new boolean[1];
         dialog.setOnDismissListener(d -> {
@@ -200,11 +362,11 @@ final class CinemaAddonsManagerDialog {
 
         toggleRow(content,
                 host.getString(R.string.addon_enable_toggle_title),
-                host.getString(addon.enabled ? R.string.addon_enabled_label : R.string.addon_disabled_label),
-                addon.enabled,
+                host.getString(latest.enabled ? R.string.addon_enabled_label : R.string.addon_disabled_label),
+                latest.enabled,
                 (row, value) -> {
-                    StremioAddons.setEnabled(host, addon.manifestUrl, value);
-                    CinemaLinkServer.sendAddonEnabled(addon.manifestUrl, value);
+                    StremioAddons.setEnabled(host, latest.manifestUrl, value);
+                    CinemaLinkServer.sendAddonEnabled(latest.manifestUrl, value);
                     row.setSubtitle(host.getString(value ? R.string.addon_enabled_label : R.string.addon_disabled_label));
                     needsRefresh[0] = true;
                     notifyChange();
@@ -318,55 +480,34 @@ final class CinemaAddonsManagerDialog {
         CinemaUi.focusDialogControl(dialog, field);
     }
 
-    private void chooseInstalled() {
-        var addons = installed();
-        if (addons.isEmpty()) {
-            toast(R.string.addon_empty);
-            return;
-        }
-        var content = column();
-        var checks = new java.util.ArrayList<ToggleRow>();
-        for (var addon : addons) {
-            String description = StremioAddons.localizedDescription(addon.description, host);
-            if (StremioAddons.connectionIssue(addon)) {
-                description = host.getString(R.string.addon_unavailable)
-                        + (description.isBlank() ? "" : " · " + description);
-            }
-            checks.add(toggleRow(content, addon.name, description, addon.enabled, null));
-        }
-        var dialog = sheet(R.string.addon_choose_enabled, content)
-                .setNegativeButton(R.string.addon_back, null)
-                .setPositiveButton(R.string.addon_save_apply, null).create();
-        showSheet(dialog, content);
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            var updates = new java.util.LinkedHashMap<String, Boolean>();
-            var current = installed();
-            for (int i = 0; i < checks.size(); i++) {
-                String url = addons.get(i).manifestUrl;
-                boolean enabled = checks.get(i).checked;
-                if (current.stream().anyMatch(addon -> addon.manifestUrl.equals(url) && addon.enabled != enabled)) {
-                    updates.put(url, enabled);
-                }
-            }
-            StremioAddons.setEnabled(host, updates);
-            updates.forEach(CinemaLinkServer::sendAddonEnabled);
-            if (!updates.isEmpty()) notifyChange();
-            toast(R.string.addon_preferences_saved);
-            dialog.dismiss();
-        });
-    }
-
     private void chooseRecommended() {
         CinemaAddonPicker.load(host, io, main, R.string.addon_loading, () -> StremioAddons.fetchCurated(host), recommendations -> {
             if (recommendations == null || recommendations.isEmpty()) {
                 toast(R.string.addon_manifest_error);
                 return;
             }
+            var directItems = recommendations.stream().filter(item -> !item.requiresConfigure()).toList();
+            var configureItems = recommendations.stream().filter(StremioAddons.CuratedAddon::requiresConfigure).toList();
             var content = column();
             var checks = new java.util.ArrayList<ToggleRow>();
-            for (var addon : recommendations) {
-                boolean active = installed().stream().anyMatch(item -> item.enabled && item.manifestUrl.equals(addon.manifestUrl));
-                checks.add(toggleRow(content, addon.name, addon.description, active, null));
+            for (var addon : directItems) {
+                boolean active = installed().stream().anyMatch(item -> item.enabled && item.manifestUrl.equalsIgnoreCase(addon.manifestUrl));
+                String sub = (addon.category == null || addon.category.isBlank())
+                        ? addon.description : ("[" + addon.category + "] · " + addon.description);
+                checks.add(toggleRow(content, addon.name, sub, active, null));
+            }
+            if (!configureItems.isEmpty()) {
+                content.addView(sectionLabel(CinemaUi.label(host,
+                        "إضافات تُضبط من متصفح الهاتف (CinemaBrowser)",
+                        "Configure via Phone Browser (CinemaBrowser)")));
+                for (var cfgAddon : configureItems) {
+                    String sub = "[" + cfgAddon.category + "] · " + cfgAddon.description;
+                    content.addView(card(R.drawable.cinema_ic_addons, cfgAddon.name, sub, () -> Toast.makeText(host,
+                            CinemaUi.label(host,
+                                    "افتح قائمة الإضافات الجاهزة من تطبيق الهاتف لإعداد هذه الإضافة وإرسالها للشاشة تلقائياً.",
+                                    "Open Curated Add-ons in the Phone app to configure and send this add-on to TV."),
+                            Toast.LENGTH_LONG).show()));
+                }
             }
             var dialog = sheet(R.string.addon_recommended, content).setNegativeButton(R.string.addon_back, null)
                     .setPositiveButton(R.string.addon_save_apply, null).create();
@@ -374,14 +515,15 @@ final class CinemaAddonsManagerDialog {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
                 var urls = new java.util.ArrayList<String>();
                 for (int i = 0; i < checks.size(); i++) {
-                    var addon = recommendations.get(i);
-                    if (checks.get(i).checked && installed().stream().noneMatch(item -> item.enabled
-                            && item.manifestUrl.equals(addon.manifestUrl))) {
+                    var addon = directItems.get(i);
+                    if (checks.get(i).checked && !addon.manifestUrl.isBlank()
+                            && installed().stream().noneMatch(item -> item.enabled
+                                    && item.manifestUrl.equalsIgnoreCase(addon.manifestUrl))) {
                         urls.add(addon.manifestUrl);
                     }
                 }
+                dialog.dismiss();
                 if (!urls.isEmpty()) {
-                    dialog.dismiss();
                     install(urls);
                 }
             });
@@ -470,9 +612,19 @@ final class CinemaAddonsManagerDialog {
         }
         for (int index = 0; index < content.getChildCount(); index++) {
             View option = content.getChildAt(index);
-            if (option.isFocusable() && option.isEnabled() && option.isShown()) {
+            if (!option.isShown()) continue;
+            if (option.isFocusable() && option.isEnabled()) {
                 CinemaUi.focusDialogControl(dialog, option);
                 return;
+            }
+            if (option instanceof android.view.ViewGroup group) {
+                for (int c = 0; c < group.getChildCount(); c++) {
+                    View inner = group.getChildAt(c);
+                    if (inner.isShown() && inner.isFocusable() && inner.isEnabled()) {
+                        CinemaUi.focusDialogControl(dialog, inner);
+                        return;
+                    }
+                }
             }
         }
         CinemaUi.focusDialogControl(dialog, dialog.getButton(AlertDialog.BUTTON_NEGATIVE));
@@ -480,14 +632,14 @@ final class CinemaAddonsManagerDialog {
 
     private AlertDialog.Builder sheet(int heading, LinearLayout content) {
         var scroll = new ScrollView(host);
-        scroll.setClipChildren(false);
-        scroll.setClipToPadding(false);
+        scroll.setClipChildren(true);
+        scroll.setClipToPadding(true);
         scroll.setFillViewport(false);
         scroll.setDescendantFocusability(android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS);
         scroll.addView(content, new ScrollView.LayoutParams(-1, -2));
         var frame = new android.widget.FrameLayout(host);
-        frame.setClipChildren(false);
-        frame.setClipToPadding(false);
+        frame.setClipChildren(true);
+        frame.setClipToPadding(true);
         frame.addView(scroll, new android.widget.FrameLayout.LayoutParams(-1,
                 Math.min(dp(480), host.getResources().getDisplayMetrics().heightPixels * 64 / 100)));
         return CinemaUi.dialog(host).setTitle(heading).setView(frame);

@@ -42,10 +42,7 @@ import com.archos.mediacenter.video.browser.loader.AllTvshowsLoader;
 import com.archos.mediacenter.video.leanback.adapter.NetworkShortcutMapper;
 import com.archos.mediacenter.video.leanback.adapter.object.NetworkShortcut;
 import com.archos.mediacenter.video.leanback.details.VideoDetailsFragment;
-import com.archos.mediacenter.video.leanback.filebrowsing.ListingActivity;
-import com.archos.mediacenter.video.leanback.network.NetworkRootActivity;
 import com.archos.mediacenter.video.leanback.search.VideoSearchActivity;
-import com.archos.mediacenter.video.leanback.tvshow.TvshowActivity;
 import com.archos.mediacenter.video.leanback.tvshow.TvshowFragment;
 import com.archos.mediaprovider.NetworkScanner;
 import com.archos.mediaprovider.video.VideoStore;
@@ -80,6 +77,21 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     private final java.util.Set<String> failedPosterLoads = new java.util.HashSet<>();
     private final Map<String, Long> posterRetryAt = new java.util.concurrent.ConcurrentHashMap<>();
     private final ExecutorService posterIo=Executors.newFixedThreadPool(4);
+    private final ExecutorService rowDiffIo=Executors.newSingleThreadExecutor();
+    private final ExecutorService watchActionIo=Executors.newCachedThreadPool();
+    private final Map<String, Long> optimisticRemovedContinueAt = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, Boolean> optimisticWatchedState = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<Integer, Integer> rowLoadTokens = new java.util.concurrent.ConcurrentHashMap<>();
+    private final RecyclerView.RecycledViewPool sharedPosterPool = new RecyclerView.RecycledViewPool();
+    private final android.util.LruCache<String, Integer> backdropTintCache = new android.util.LruCache<>(128);
+    private volatile boolean videoStoreDirtyWhilePaused = false;
+    private long lastObservedWatchEpoch = -1L;
+    private long lastLoadedLibraryEpoch = -1L;
+    private boolean warmStartupDone = false;
+    private volatile boolean cachedAddonsEnabled = false;
+    private static volatile String cachedSectionsSignature = "";
+    private static volatile List<LibraryRow> cachedDynamicSections = List.of();
+    private android.database.ContentObserver videoStoreObserver;
     private final Map<String,CinemaArtwork.Art> heroArt=new HashMap<>();
     private final Map<Integer,java.util.concurrent.Future<?>> posterTasks=new HashMap<>();
     private final Map<Integer, List<Item>> data = new HashMap<>();
@@ -139,6 +151,8 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     private boolean librariesLoaded;
     private String lastRailSignature = "";
     private boolean railBuilt;
+    private boolean sidebarSubmenuOpen;
+    private TextView searchTile;
     private TextView librariesTile;
     private record DiscoverLocation(int strip,String key) {}
     private DiscoverLocation selectedDiscover,returningDiscover;
@@ -148,12 +162,19 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     private int pendingContinueFocusPos = -1;
 
     private List<Integer> rowOrder(){
-        List<Integer> order=HomePreferences.order(prefs);
-        order.removeIf(id -> id == 6);
-        boolean hasNonMobileLibrary = libraryRows.values().stream().anyMatch(r -> !r.mobile());
-        if (hasNonMobileLibrary) order.removeIf(id -> id != 1);
+        List<Integer> order = new ArrayList<>();
+        order.add(1);
         order.addAll(libraryRows.keySet());
         return order;
+    }
+
+    private void restartActiveLoaders() {
+        if (!isAdded() || root == null) return;
+        LoaderManager lm = LoaderManager.getInstance(this);
+        lm.restartLoader(1, null, this);
+        for (int id : libraryRows.keySet()) {
+            lm.restartLoader(id, null, this);
+        }
     }
 
     private List<String> activeSectionOrder() {
@@ -198,12 +219,24 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     }
     private boolean contentLoaded;
     private String selectedKey;
-    private int selectedRow=2;
-    private int pendingRow=2;
+    private int selectedRow=1;
+    private int selectedPosition=0;
+    private int pendingRow=1;
     private androidx.appcompat.app.AlertDialog exitDialog;
     private final java.util.Set<Long> autoCompletedContinueIds = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
-    private record PosterLocation(int row, String key, int position) {}
+    private record PosterLocation(int row, String sectionKey, String key, int position, int scrollY, int rowScrollPos, int rowScrollOffset) {}
     private PosterLocation returningPoster;
+    private PosterLocation persistedRestore;
+    private DiscoverLocation persistedDiscoverRestore;
+    private static final String PREF_HOME_SECTION = "cinema_home_last_section";
+    private static final String PREF_HOME_ROW = "cinema_home_last_row";
+    private static final String PREF_HOME_KEY = "cinema_home_last_key";
+    private static final String PREF_HOME_POS = "cinema_home_last_pos";
+    private static final String PREF_HOME_SCROLL_Y = "cinema_home_last_scroll_y";
+    private static final String PREF_HOME_ROW_POS = "cinema_home_last_row_pos";
+    private static final String PREF_HOME_ROW_OFF = "cinema_home_last_row_off";
+    private static final String PREF_HOME_DISC_STRIP = "cinema_home_last_disc_strip";
+    private static final String PREF_HOME_DISC_KEY = "cinema_home_last_disc_key";
     private int focusRequest;
     private int generation;
     private int viewGeneration;
@@ -218,6 +251,11 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     };
     static final class Item {
         final Base value; final Uri background; final CinemaWatchStore.StreamEntry stream; final long dateAdded; final CinemaWatchStore.TraktItem trakt;
+        String cachedPosterKey;
+        String cachedCardTitle;
+        String cachedEpisodeTag;
+        boolean cachedWatched;
+        int cachedProgressWidth = -1;
         Item(Base value, Uri background) { this(value, background, null, 0L); }
         Item(Base value, Uri background, CinemaWatchStore.StreamEntry stream) { this(value, background, stream, 0L); }
         Item(Base value, Uri background, CinemaWatchStore.StreamEntry stream, long dateAdded) {
@@ -239,9 +277,29 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         };
     }
     @Override public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle state) {
-        viewGeneration++;pending=null;lists.clear(); layoutSignature="";contentLoaded=false;librariesLoaded=false;lastRailSignature="";railBuilt=false;librariesTile=null;expanded=false;lastContentFocus=null;
+        viewGeneration++;pending=null;lists.clear();rowLoadTokens.clear();optimisticRemovedContinueAt.clear();optimisticWatchedState.clear();layoutSignature="";contentLoaded=false;librariesLoaded=false;lastLoadedLibraryEpoch=-1L;lastRailSignature="";railBuilt=false;sidebarSubmenuOpen=false;searchTile=null;librariesTile=null;expanded=false;lastContentFocus=null;
+        sharedPosterPool.setMaxRecycledViews(0, 32);
         Context c = requireContext();
         prefs = PreferenceManager.getDefaultSharedPreferences(c);
+        libraryRows.clear();
+        nextLibraryRow = 100;
+        List<LibraryRow> cachedSections = cachedDynamicSections;
+        if (cachedSections != null && !cachedSections.isEmpty()) {
+            for (LibraryRow row : cachedSections) {
+                libraryRows.put(nextLibraryRow++, row);
+            }
+            librariesLoaded = true;
+        }
+        videoStoreObserver = new android.database.ContentObserver(handler) {
+            @Override public void onChange(boolean selfChange) {
+                if (!isResumed()) videoStoreDirtyWhilePaused = true;
+            }
+        };
+        try {
+            c.getApplicationContext().getContentResolver().registerContentObserver(
+                    VideoStore.Video.Media.EXTERNAL_CONTENT_URI, true, videoStoreObserver);
+        } catch (Exception ignored) {}
+        loadPersistedFocusState();
         data.clear();
         boolean rtl = CinemaUi.arabic(c);
         root = new FrameLayout(c);
@@ -323,8 +381,9 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         rail.setClipToPadding(false);
         root.getViewTreeObserver().addOnGlobalFocusChangeListener((oldFocus,newFocus)->{
             if(newFocus==null) return;
-            boolean inRail=isInRail(newFocus);
-            if (inRail && newFocus.getParent() == rail) {
+            boolean inSubmenu = CinemaActionMenu.isPanelDescendant(newFocus, root);
+            boolean inRail = isInRail(newFocus) || sidebarSubmenuOpen || inSubmenu;
+            if (isInRail(newFocus) && newFocus.getParent() == rail) {
                 var bounds = new android.graphics.Rect();
                 newFocus.getDrawingRect(bounds);
                 newFocus.requestRectangleOnScreen(bounds, true);
@@ -345,6 +404,10 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         selectedDiscover = null;
         selectedRow = -1;
         selectedKey = null;
+        selectedPosition = 0;
+        returningPoster = null;
+        persistedRestore = null;
+        persistedDiscoverRestore = null;
         lastContentFocus = null;
         if (contentScroll != null) {
             contentScroll.smoothScrollTo(0, 0);
@@ -363,6 +426,9 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
 
     public boolean handleBackPress() {
         if (!isAdded() || root == null) return false;
+        if (CinemaActionMenu.isShowing(root)) {
+            return CinemaActionMenu.dismiss(root, true);
+        }
         if (exitDialog != null && exitDialog.isShowing()) {
             exitDialog.dismiss();
             return true;
@@ -539,15 +605,104 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         });
         return true;
     }
-    private void restorePoster(PosterLocation location){
-        RecyclerView list=lists.get(location.row());
+    private PosterLocation capturePosterLocation(int rowId, String key, int position) {
+        int scrollY = contentScroll != null ? contentScroll.getScrollY() : 0;
+        int rowScrollPos = -1;
+        int rowScrollOff = 0;
+        RecyclerView list = lists.get(rowId);
+        if (list != null && list.getLayoutManager() instanceof LinearLayoutManager lm) {
+            int first = lm.findFirstVisibleItemPosition();
+            if (first != RecyclerView.NO_POSITION) {
+                rowScrollPos = first;
+                View fv = lm.findViewByPosition(first);
+                rowScrollOff = fv != null ? (fv.getLeft() - list.getPaddingLeft()) : 0;
+            }
+        }
+        return new PosterLocation(rowId, rowIdToSectionKey.get(rowId), key, Math.max(0, position),
+                Math.max(0, scrollY), rowScrollPos, rowScrollOff);
+    }
+
+    private void saveHomeFocusState() {
+        if (prefs == null) return;
+        SharedPreferences.Editor ed = prefs.edit();
+        if (selectedRow == 5 && selectedDiscover != null) {
+            ed.putInt(PREF_HOME_ROW, 5)
+                    .putInt(PREF_HOME_DISC_STRIP, selectedDiscover.strip())
+                    .putString(PREF_HOME_DISC_KEY, selectedDiscover.key())
+                    .putInt(PREF_HOME_SCROLL_Y, contentScroll != null ? Math.max(0, contentScroll.getScrollY()) : 0)
+                    .remove(PREF_HOME_KEY);
+        } else if (selectedKey != null && selectedRow > 0) {
+            PosterLocation loc = capturePosterLocation(selectedRow, selectedKey, selectedPosition);
+            ed.putInt(PREF_HOME_ROW, loc.row())
+                    .putString(PREF_HOME_SECTION, loc.sectionKey() != null ? loc.sectionKey() : "")
+                    .putString(PREF_HOME_KEY, loc.key())
+                    .putInt(PREF_HOME_POS, loc.position())
+                    .putInt(PREF_HOME_SCROLL_Y, loc.scrollY())
+                    .putInt(PREF_HOME_ROW_POS, loc.rowScrollPos())
+                    .putInt(PREF_HOME_ROW_OFF, loc.rowScrollOffset())
+                    .remove(PREF_HOME_DISC_KEY);
+        }
+        ed.apply();
+    }
+
+    private void loadPersistedFocusState() {
+        persistedRestore = null;
+        persistedDiscoverRestore = null;
+        if (prefs == null) return;
+        Intent actIntent = getActivity() != null ? getActivity().getIntent() : null;
+        if (actIntent != null && actIntent.getBooleanExtra(EXTRA_RETURN_HOME_TOP, false)) return;
+        int savedRow = prefs.getInt(PREF_HOME_ROW, -1);
+        String discKey = prefs.getString(PREF_HOME_DISC_KEY, null);
+        if (savedRow == 5 && discKey != null && !discKey.isBlank()) {
+            persistedDiscoverRestore = new DiscoverLocation(prefs.getInt(PREF_HOME_DISC_STRIP, 0), discKey);
+            return;
+        }
+        String savedKey = prefs.getString(PREF_HOME_KEY, null);
+        if (savedRow > 0 && savedKey != null && !savedKey.isBlank()) {
+            String savedSection = prefs.getString(PREF_HOME_SECTION, "");
+            int savedPos = prefs.getInt(PREF_HOME_POS, 0);
+            int savedScrollY = prefs.getInt(PREF_HOME_SCROLL_Y, 0);
+            int savedRowPos = prefs.getInt(PREF_HOME_ROW_POS, -1);
+            int savedRowOff = prefs.getInt(PREF_HOME_ROW_OFF, 0);
+            persistedRestore = new PosterLocation(savedRow, savedSection.isBlank() ? null : savedSection,
+                    savedKey, savedPos, savedScrollY, savedRowPos, savedRowOff);
+        }
+    }
+
+    private RecyclerView resolveRowForLocation(PosterLocation location) {
+        if (location == null) return null;
+        if (location.sectionKey() != null) {
+            Integer mapped = sectionKeyToRowId.get(location.sectionKey());
+            if (mapped != null) {
+                RecyclerView bySec = lists.get(mapped);
+                if (bySec != null && bySec.getAdapter() instanceof Posters p && p.getItemCount() > 0) return bySec;
+            }
+        }
+        RecyclerView direct = lists.get(location.row());
+        if (direct != null && direct.getAdapter() instanceof Posters p && p.getItemCount() > 0) return direct;
+        return null;
+    }
+
+    private boolean restorePoster(PosterLocation location){
+        RecyclerView list = resolveRowForLocation(location);
         if(list!=null&&list.getAdapter() instanceof Posters posters&&posters.getItemCount()>0){
             int position=posters.find(location.key());
-            if(position<0)position=Math.min(location.position(),posters.getItemCount()-1);
+            if(position<0)position=Math.min(Math.max(0,location.position()),posters.getItemCount()-1);
+            setPosterRowsShown(true);
+            if(location.rowScrollPos()>=0 && location.rowScrollPos()<posters.getItemCount()
+                    && list.getLayoutManager() instanceof LinearLayoutManager lm){
+                lm.scrollToPositionWithOffset(location.rowScrollPos(), location.rowScrollOffset());
+            }
+            if(contentScroll!=null){
+                int targetY = location.scrollY() > 0 ? location.scrollY()
+                        : (list.getParent() instanceof View pv ? pv.getTop() : 0);
+                contentScroll.post(() -> { if(root!=null&&contentScroll!=null) contentScroll.scrollTo(0, targetY); });
+            }
             focusPoster(list,position);
-        }else{
-            focusContent();
+            return true;
         }
+        focusContent();
+        return false;
     }
     private int logicalKey(View view, int physical) {
         boolean rtl = view.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL
@@ -563,13 +718,239 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     }
 
     private static String mediaKey(Base item) {
-        if (item instanceof Video v) return "v:" + v.getId();
+        if (item instanceof Video v) {
+            if (v.getId() > 0) return "v:" + v.getId();
+            String fp = v.getFilePath();
+            if (fp == null || fp.isBlank()) fp = v.getFileUri() != null ? v.getFileUri().toString() : v.getName();
+            return "vu:" + Integer.toHexString((fp == null ? "" : fp).toLowerCase(Locale.ROOT).hashCode());
+        }
         Tvshow s = (Tvshow) item;
         if (s.getTvshowId() > 0) return "s:" + s.getTvshowId();
         String name = s.getName() == null ? "" : s.getName().toLowerCase(Locale.ROOT).trim();
         return "st:" + Integer.toHexString(name.hashCode());
     }
     private static String itemKey(Item item){return item.stream!=null?"stream:"+item.stream.streamKey():mediaKey(item.value);}
+
+    private static boolean isValidContinuePath(String rawPath) {
+        if (rawPath == null || rawPath.isBlank()) return false;
+        String trimmed = rawPath.trim();
+        if (trimmed.startsWith("/")) {
+            return new File(trimmed).isFile();
+        }
+        Uri uri = Uri.parse(trimmed);
+        String scheme = uri.getScheme();
+        if (scheme == null || scheme.isEmpty()) {
+            return new File(trimmed).isFile();
+        }
+        String low = scheme.toLowerCase(Locale.ROOT);
+        if ("file".equals(low)) {
+            String p = uri.getPath();
+            return p != null && new File(p).isFile();
+        }
+        return "smb".equals(low) || "smbj".equals(low) || "webdav".equals(low) || "webdavs".equals(low)
+                || "upnp".equals(low) || "ftp".equals(low) || "ftps".equals(low) || "sftp".equals(low)
+                || "sshj".equals(low) || "http".equals(low) || "https".equals(low) || "magnet".equals(low)
+                || "content".equals(low) || "trakt".equals(low) || "addon".equals(low);
+    }
+
+    private List<String> matchKeysForItem(Item item) {
+        List<String> keys = new ArrayList<>(6);
+        if (item == null) return keys;
+        keys.add(itemKey(item));
+        keys.add(mediaKey(item.value));
+        if (item.stream != null && item.stream.streamKey() != null && !item.stream.streamKey().isBlank()) {
+            keys.add("stream:" + item.stream.streamKey());
+            if (item.stream.episode() > 0) {
+                String ek = continueEpisodeKey(item.stream.title(), item.stream.season(), item.stream.episode());
+                if (!ek.isEmpty()) keys.add(ek);
+            } else {
+                String n = CinemaWatchStore.normalizeTitle(item.stream.title());
+                if (!n.isEmpty()) keys.add("norm:" + n);
+            }
+        }
+        if (item.trakt != null && item.trakt.itemKey() != null && !item.trakt.itemKey().isBlank()) {
+            keys.add("trakt:" + item.trakt.itemKey());
+            if (item.trakt.episode() > 0) {
+                String ek = continueEpisodeKey(item.trakt.title(), item.trakt.season(), item.trakt.episode());
+                if (!ek.isEmpty()) keys.add(ek);
+            } else {
+                String n = CinemaWatchStore.normalizeTitle(item.trakt.title());
+                if (!n.isEmpty()) keys.add("norm:" + n);
+            }
+        }
+        if (item.value instanceof Video v) {
+            if (v.getFilePath() != null && !v.getFilePath().isBlank()) keys.add("path:" + v.getFilePath());
+            boolean epFile = v instanceof com.archos.mediacenter.video.browser.adapters.object.Episode
+                    || isSeriesOrEpisodeFile(v, v.getFilePath());
+            if (epFile) {
+                int[] se = v instanceof com.archos.mediacenter.video.browser.adapters.object.Episode ep
+                        ? new int[]{ep.getSeasonNumber(), ep.getEpisodeNumber()}
+                        : CinemaPosters.extractSeasonEpisode(v.getFilePath(), v.getName());
+                String qt = CinemaPosters.query(v, true).title();
+                String ek = continueEpisodeKey(qt, se[0], se[1]);
+                if (!ek.isEmpty()) keys.add(ek);
+            } else {
+                String n = CinemaWatchStore.normalizeTitle(v.getName());
+                if (!n.isEmpty()) keys.add("norm:" + n);
+            }
+        }
+        return keys;
+    }
+
+    private boolean isOptimisticallyRemovedFromContinue(Item item, long candidateUpdatedAtMs) {
+        if (optimisticRemovedContinueAt.isEmpty()) return false;
+        for (String k : matchKeysForItem(item)) {
+            Long removedAt = optimisticRemovedContinueAt.get(k);
+            if (removedAt != null && (candidateUpdatedAtMs <= 0L || candidateUpdatedAtMs <= removedAt)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void clearOptimisticRemovedForPlay(Item item) {
+        for (String k : matchKeysForItem(item)) {
+            optimisticRemovedContinueAt.remove(k);
+        }
+    }
+
+    private boolean itemsReferToSameMedia(Item a, Item b) {
+        if (a == b) return true;
+        if (a == null || b == null) return false;
+        if (itemKey(a).equals(itemKey(b)) || mediaKey(a.value).equals(mediaKey(b.value))) return true;
+        List<String> ka = matchKeysForItem(a);
+        for (String kb : matchKeysForItem(b)) {
+            if (ka.contains(kb)) return true;
+        }
+        return false;
+    }
+
+    private void applyOptimisticRemoveFromContinue(int sourceRowId, Item target) {
+        if (target == null || !isAdded() || root == null) return;
+        long now = System.currentTimeMillis();
+        for (String k : matchKeysForItem(target)) {
+            optimisticRemovedContinueAt.put(k, now);
+        }
+        boolean keepWatched = isItemWatched(target);
+        if (target.value instanceof Video v) {
+            CinemaMediaTime.clearResume(v.getId(), v.getFilePath(), v.getFileUri());
+            if (keepWatched) {
+                CinemaMediaTime.rememberState(v.getId(), v.getFileUri(), v.getDurationMs(), CinemaPlaybackRouter.BOOKMARK_COMPLETED);
+            }
+        }
+        RecyclerView cwList = lists.get(1);
+        List<Item> cwItems = data.get(1);
+        if (cwItems != null && !cwItems.isEmpty()) {
+            int focusIdx = -1;
+            if (cwList != null && cwList.getAdapter() instanceof Posters cwPosters) {
+                for (int i = 0; i < cwItems.size(); i++) {
+                    if (itemsReferToSameMedia(cwItems.get(i), target)) {
+                        focusIdx = i;
+                        break;
+                    }
+                }
+                if (focusIdx < 0) {
+                    View focused = root.findFocus();
+                    if (focused != null && focused.getParent() == cwList) {
+                        focusIdx = cwList.getChildAdapterPosition(focused);
+                    }
+                }
+            }
+            List<Item> nextCw = new ArrayList<>(cwItems.size());
+            for (Item it : cwItems) {
+                if (!itemsReferToSameMedia(it, target)) nextCw.add(it);
+            }
+            if (nextCw.size() != cwItems.size()) {
+                data.put(1, nextCw);
+                if (cwList != null && cwList.getAdapter() instanceof Posters cwPosters) {
+                    cwPosters.replace(nextCw);
+                    updateVisibility();
+                    if (sourceRowId == 1) {
+                        final int targetPos = Math.max(0, focusIdx);
+                        if (!nextCw.isEmpty()) {
+                            focusPoster(cwList, Math.min(targetPos, nextCw.size() - 1));
+                        } else if (!focusAdjacentSection(HomePreferences.KEY_CONTINUE, 1, 0)) {
+                            focusFirstVisibleSection();
+                        }
+                    }
+                }
+            }
+        }
+        for (Map.Entry<Integer, RecyclerView> entry : lists.entrySet()) {
+            if (entry.getKey() == 1) continue;
+            RecyclerView rv = entry.getValue();
+            if (rv != null && rv.getAdapter() instanceof Posters adapter) {
+                List<Item> snap = adapter.snapshot();
+                for (int i = 0; i < snap.size(); i++) {
+                    Item rowItem = snap.get(i);
+                    if (itemsReferToSameMedia(rowItem, target)) {
+                        rowItem.cachedProgressWidth = 0;
+                        rowItem.cachedWatched = keepWatched;
+                        adapter.notifyItemChanged(i, Posters.PAYLOAD_STATE);
+                    }
+                }
+            }
+        }
+    }
+
+    private void applyOptimisticWatchedToggle(int sourceRowId, Item target, boolean newWatched) {
+        if (target == null || !isAdded() || root == null) return;
+        long now = System.currentTimeMillis();
+        for (String k : matchKeysForItem(target)) {
+            optimisticWatchedState.put(k, newWatched);
+            optimisticRemovedContinueAt.put(k, now);
+        }
+        if (target.value instanceof Video v) {
+            CinemaMediaTime.clearResume(v.getId(), v.getFilePath(), v.getFileUri());
+            CinemaMediaTime.rememberState(v.getId(), v.getFileUri(), v.getDurationMs(),
+                    newWatched ? CinemaPlaybackRouter.BOOKMARK_COMPLETED : 0L);
+        }
+        RecyclerView cwList = lists.get(1);
+        List<Item> cwItems = data.get(1);
+        if (cwItems != null && !cwItems.isEmpty()) {
+            int focusIdx = -1;
+            for (int i = 0; i < cwItems.size(); i++) {
+                if (itemsReferToSameMedia(cwItems.get(i), target)) {
+                    focusIdx = i;
+                    break;
+                }
+            }
+            List<Item> nextCw = new ArrayList<>(cwItems.size());
+            for (Item it : cwItems) {
+                if (!itemsReferToSameMedia(it, target)) nextCw.add(it);
+            }
+            if (nextCw.size() != cwItems.size()) {
+                data.put(1, nextCw);
+                if (cwList != null && cwList.getAdapter() instanceof Posters cwPosters) {
+                    cwPosters.replace(nextCw);
+                    updateVisibility();
+                    if (sourceRowId == 1) {
+                        final int targetPos = Math.max(0, focusIdx);
+                        if (!nextCw.isEmpty()) {
+                            focusPoster(cwList, Math.min(targetPos, nextCw.size() - 1));
+                        } else if (!focusAdjacentSection(HomePreferences.KEY_CONTINUE, 1, 0)) {
+                            focusFirstVisibleSection();
+                        }
+                    }
+                }
+            }
+        }
+        for (Map.Entry<Integer, RecyclerView> entry : lists.entrySet()) {
+            if (entry.getKey() == 1) continue;
+            RecyclerView rv = entry.getValue();
+            if (rv != null && rv.getAdapter() instanceof Posters adapter) {
+                List<Item> snap = adapter.snapshot();
+                for (int i = 0; i < snap.size(); i++) {
+                    Item rowItem = snap.get(i);
+                    if (itemsReferToSameMedia(rowItem, target)) {
+                        rowItem.cachedWatched = newWatched;
+                        rowItem.cachedProgressWidth = 0;
+                        adapter.notifyItemChanged(i, Posters.PAYLOAD_STATE);
+                    }
+                }
+            }
+        }
+    }
     private void expand(boolean open) {
         if(expanded==open||rail==null) return;
         expanded=open; shade.setVisibility(View.VISIBLE);shade.animate().alpha(open?1:0).setDuration(motion(requireContext())?CinemaTokens.PANEL_MS:0).withEndAction(()->{if(!expanded)shade.setVisibility(View.GONE);}).start();
@@ -689,6 +1070,25 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     }
 
     private static List<LibraryRow> resolveDynamicLibrarySections(Context c, List<NetworkShortcut> sources) {
+        StringBuilder sig = new StringBuilder();
+        for (NetworkShortcut s : sources) {
+            sig.append(s.getId()).append('|').append(s.getName()).append('|').append(s.getUri()).append(';');
+        }
+        try (Cursor cntCursor = c.getContentResolver().query(
+                VideoStore.Video.Media.EXTERNAL_CONTENT_URI,
+                new String[]{"COUNT(*)", "MAX(_id)", "MAX(" + VideoStore.MediaColumns.DATE_MODIFIED + ")"},
+                VideoStore.Video.VideoColumns.ARCHOS_HIDE_FILE + "=0",
+                null, null)) {
+            if (cntCursor != null && cntCursor.moveToFirst()) {
+                sig.append("#").append(cntCursor.getLong(0))
+                        .append(":").append(cntCursor.getLong(1))
+                        .append(":").append(cntCursor.getLong(2));
+            }
+        } catch (Exception ignored) {}
+        String currentSig = sig.toString();
+        if (!currentSig.isEmpty() && currentSig.equals(cachedSectionsSignature)) {
+            return cachedDynamicSections;
+        }
         List<LibraryRow> resolved = new ArrayList<>();
         Map<String, List<String>> groupedPrefixes = new java.util.LinkedHashMap<>();
         Map<String, Integer> groupedCategory = new java.util.LinkedHashMap<>();
@@ -835,6 +1235,8 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                     Boolean.TRUE.equals(groupedMobile.get(groupKey))
             ));
         }
+        cachedDynamicSections = List.copyOf(resolved);
+        cachedSectionsSignature = currentSig;
         return resolved;
     }
 
@@ -872,7 +1274,8 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                     nav("⚙",c.getString(com.archos.mediacenter.video.R.string.cinema_settings),()->startActivity(new Intent(requireContext(),CinemaSettingsActivity.class)),null);
 
                     nav("⌂",c.getString(com.archos.mediacenter.video.R.string.cinema_home),this::returnToHomeTop,null);
-                    nav("⌕",c.getString(com.archos.mediacenter.video.R.string.cinema_search),()->startActivity(new Intent(requireContext(),VideoSearchActivity.class)),null);
+                    searchTile=nav("⌕",c.getString(com.archos.mediacenter.video.R.string.cinema_search),()->{},null);
+                    searchTile.setOnClickListener(v->showSearchMenu(v));
                     nav("♡",c.getString(com.archos.mediacenter.video.R.string.cinema_watchlist),()->startActivity(new Intent(requireContext(),CinemaWatchlistActivity.class)),null);
                     nav("✓",c.getString(com.archos.mediacenter.video.R.string.cinema_watched),()->startActivity(new Intent(requireContext(),CinemaWatchlistActivity.class).putExtra(CinemaWatchlistActivity.EXTRA_WATCHED,true)),null);
                     nav("⟳",label(c,"مزامنة Trakt","Sync Trakt"),this::syncTraktFromSidebar,null);
@@ -881,7 +1284,6 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                     librariesTile=nav("▣",c.getString(com.archos.mediacenter.video.R.string.cinema_libraries),()->{},null);
                     librariesTile.setOnClickListener(v->showLibraries(v,sources));
                     nav("▯",c.getString(com.archos.mediacenter.video.R.string.cinema_link_phone),()->startActivity(new Intent(requireContext(),CinemaPhoneLinkActivity.class)),null);
-                    nav("▤",c.getString(com.archos.mediacenter.video.R.string.cinema_network_files),()->startActivity(new Intent(requireContext(),NetworkRootActivity.class)),()->triggerDirectScan(requireContext()));
                     lastRailSignature = railSig;
                     railBuilt = true;
                     if(restoreNav!=null){
@@ -891,6 +1293,7 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                     librariesTile.setOnClickListener(v->showLibraries(v,sources));
                 }
                 librariesLoaded = true;
+                lastLoadedLibraryEpoch = CinemaLibraryScan.stateEpoch();
                 libraryCount=sources.size();updateLibraryRows(resolvedSections);updateVisibility();
             });
         });
@@ -994,94 +1397,69 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     }
 
     private void openSource(NetworkShortcut s) {
-        Intent i=new Intent(requireContext(),ListingActivity.getActivityForUri(s.getUri()));
-        i.putExtra(ListingActivity.EXTRA_ROOT_URI,s.getUri());i.putExtra(ListingActivity.EXTRA_ROOT_NAME,s.getName());startActivity(i);
+        if (s == null || s.getUri() == null) return;
+        Intent i = new Intent(requireContext(), CinemaNetworkActivity.class)
+                .putExtra(CinemaNetworkActivity.EXTRA_BROWSE_URI, s.getUri().toString())
+                .putExtra(CinemaNetworkActivity.EXTRA_BROWSE_NAME, s.getName());
+        startActivity(i);
     }
-    private android.widget.PopupWindow librariesPopup;
-
     private void closeLibraries(){
-        if(librariesPopup!=null)librariesPopup.dismiss();
+        if (root != null) CinemaActionMenu.dismiss(root, false);
+    }
+
+    private void showSearchMenu(View anchor) {
+        if (!isAdded() || root == null || getActivity() == null) return;
+        expand(true);
+        View railContainer = rail != null && rail.getParent() instanceof View pv ? pv : rail;
+        CinemaActionMenu.showSearchSidebarPanel(
+                requireActivity(), root, anchor, railContainer,
+                () -> { sidebarSubmenuOpen = true; expand(true); },
+                () -> sidebarSubmenuOpen = false);
     }
 
     private void showLibraries(View anchor,List<NetworkShortcut> sources){
-        closeLibraries();
-        Context context=requireContext();
-        List<String> names=new ArrayList<>();
-        names.add(context.getString(com.archos.mediacenter.video.R.string.cinema_scan_all));
-        for(NetworkShortcut source:sources)names.add(source.getName());
-
-        android.widget.ListView list=new android.widget.ListView(context);
-        list.setBackground(rounded(CinemaTokens.DRAWER,dp(context,8),0));
-        list.setSelector(rounded(CinemaTokens.FOCUS,dp(context,6),0));
-        list.setDivider(null);
-        list.setAdapter(new android.widget.ArrayAdapter<String>(context,android.R.layout.simple_list_item_1,names){
-            @Override public View getView(int position,View recycled,ViewGroup parent){
-                TextView row=recycled instanceof TextView view?view:text(context,CinemaTokens.LABEL,false);
-                row.setText(getItem(position));
-                row.setGravity(Gravity.CENTER_VERTICAL);
-                row.setMinHeight(dp(context,CinemaTokens.CONTROL_HEIGHT));
-                row.setPadding(dp(context,16),0,dp(context,16),0);
-                row.setTextColor(new android.content.res.ColorStateList(
-                        new int[][]{{android.R.attr.state_selected},{}},
-                        new int[]{CinemaTokens.ON_FOCUS,CinemaTokens.TEXT}));
-                return row;
-            }
-        });
-        int height=Math.min(dp(context,CinemaTokens.CONTROL_HEIGHT)*names.size(),root.getHeight()-dp(context,48));
-        android.widget.PopupWindow popup=new android.widget.PopupWindow(list,dp(context,280),height,true);
-        librariesPopup=popup;
-        popup.setBackgroundDrawable(rounded(CinemaTokens.DRAWER,dp(context,8),0));
-        popup.setOutsideTouchable(true);
-        popup.setElevation(dp(context,8));
-        list.setOnItemClickListener((parent,row,position,id)->{
-            popup.dismiss();
-            if(position==0)triggerDirectScan(context);
-            else openSource(sources.get(position-1));
-        });
-        list.setOnItemLongClickListener((parent,row,position,id)->{
-            if(position==0)return false;
-            popup.dismiss();
-            sourceMenu(sources.get(position-1));
-            return true;
-        });
-        boolean[] held={false};
-        list.setOnKeyListener((v,key,event)->{
-            key=logicalKey(v,key);
-            if(key==KeyEvent.KEYCODE_DPAD_CENTER||key==KeyEvent.KEYCODE_ENTER){
-                int position=list.getSelectedItemPosition();
-                if(event.getAction()==KeyEvent.ACTION_DOWN){
-                    if(event.getRepeatCount()==0)held[0]=false;
-                    else if(!held[0]&&position>0&&(event.isLongPress()||
-                            event.getEventTime()-event.getDownTime()>=android.view.ViewConfiguration.getLongPressTimeout())){
-                        held[0]=true;
-                        popup.dismiss();
-                        sourceMenu(sources.get(position-1));
-                    }
-                    return true;
-                }
-                if(!held[0]&&!event.isCanceled()&&position>=0)
-                    list.performItemClick(list.getSelectedView(),position,list.getItemIdAtPosition(position));
-                return true;
-            }
-            if(event.getAction()!=KeyEvent.ACTION_DOWN)return false;
-            if(key==KeyEvent.KEYCODE_DPAD_LEFT){popup.dismiss();return true;}
-            if(key==KeyEvent.KEYCODE_MENU&&list.getSelectedItemPosition()>0){
-                NetworkShortcut source=sources.get(list.getSelectedItemPosition()-1);
-                popup.dismiss();
-                sourceMenu(source);
-                return true;
-            }
-            return false;
-        });
-        popup.setOnDismissListener(()->{
-            librariesPopup=null;
-            if(anchor.isAttachedToWindow())anchor.requestFocus();
-        });
-        boolean rtl=root!=null&&root.getLayoutDirection()==View.LAYOUT_DIRECTION_RTL;
-        popup.showAtLocation(root,Gravity.TOP|(rtl?Gravity.RIGHT:Gravity.LEFT),dp(context,CinemaTokens.RAIL_OPEN+20),
-                Math.max(dp(context,24),(root.getHeight()-height)/2));
-        list.requestFocusFromTouch();
-        list.setSelection(0);
+        if (!isAdded() || root == null) return;
+        Context context = requireContext();
+        expand(true);
+        View railContainer = rail != null && rail.getParent() instanceof View pv ? pv : rail;
+        List<CinemaActionMenu.Action> actions = new ArrayList<>();
+        actions.add(new CinemaActionMenu.Action(
+                com.archos.mediacenter.video.R.drawable.ic_menu_refresh,
+                context.getString(com.archos.mediacenter.video.R.string.cinema_scan_all),
+                label(context, "فحص وتحديث جميع مجلدات المكتبة الآن", "Scan and refresh all library folders now"),
+                () -> triggerDirectScan(context)));
+        for (NetworkShortcut source : sources) {
+            boolean mobile = isMobileLibraryShortcut(source);
+            int folderIcon = mobile
+                    ? com.archos.mediacenter.video.R.drawable.ic_tablet_cellphone
+                    : com.archos.mediacenter.video.R.drawable.cinema_folder;
+            String hint = label(context,
+                    "اضغط للفتح · ضغطة مطوّلة أو زر القائمة للفحص أو الإزالة",
+                    "Press OK to open · Hold or Menu to scan or remove");
+            actions.add(new CinemaActionMenu.Action(
+                    folderIcon,
+                    source.getName(),
+                    hint,
+                    () -> openSource(source),
+                    () -> sourceMenu(source)));
+        }
+        actions.add(new CinemaActionMenu.Action(
+                com.archos.mediacenter.video.R.drawable.cinema_network,
+                context.getString(com.archos.mediacenter.video.R.string.cinema_manage_library_sources),
+                label(context, "إضافة أو تعديل مجلدات SMB والتخزين والشبكة", "Add or manage SMB, network & storage folders"),
+                () -> startActivity(new Intent(context, CinemaNetworkActivity.class))));
+        actions.add(new CinemaActionMenu.Action(
+                com.archos.mediacenter.video.R.drawable.cinema_folder,
+                label(context, "تصفح ملفات التخزين وUSB", "Browse Local & USB Files"),
+                label(context, "فتح متصفح الملفات الموحّد للفيديوهات والترجمات", "Open unified file browser for videos & subtitles"),
+                () -> startActivity(new Intent(context, CinemaFileBrowserActivity.class))));
+        CinemaActionMenu.showSidebarPanel(
+                root, anchor, railContainer,
+                com.archos.mediacenter.video.R.drawable.cinema_folder,
+                label(context, "فحص المكتبات", "Libraries & Scan"),
+                () -> { sidebarSubmenuOpen = true; expand(true); },
+                () -> sidebarSubmenuOpen = false,
+                actions);
     }
 
     private void sourceMenu(NetworkShortcut s) {
@@ -1109,9 +1487,9 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     }
     private final android.content.BroadcastReceiver scanReceiver=new android.content.BroadcastReceiver(){
         @Override public void onReceive(Context context,Intent intent){
+            CinemaLibraryScan.bumpStateEpoch();
             if(!isAdded()||root==null)return;
-            for(int i:new int[]{1,2,3,4,6})LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(i,null,CinemaHomeFragment.this);
-            for(int id:libraryRows.keySet())LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(id,null,CinemaHomeFragment.this);
+            restartActiveLoaders();
             loadLibraries();
         }
     };
@@ -1124,16 +1502,17 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                 return;
             }
             if (CinemaLinkServer.ACTION_WATCH_SYNC_UPDATED.equals(intent.getAction())) {
-                if (isAdded()) {
-                    for (int i : new int[]{1, 2, 3, 4, 6}) {
-                        LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(i, null, CinemaHomeFragment.this);
-                    }
-                }
+                restartActiveLoaders();
                 return;
             }
+            CinemaLibraryScan.bumpStateEpoch();
             loadLibraries();
         }
     };
+
+    private long computeWatchEpoch() {
+        return (CinemaMediaTime.stateEpoch() * 31L) ^ CinemaWatchStore.stateEpoch();
+    }
 
     @Override public void onResume() {
         super.onResume();
@@ -1153,7 +1532,6 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             android.content.IntentFilter noDataFilter=new android.content.IntentFilter(com.archos.mediaprovider.ArchosMediaIntent.ACTION_VIDEO_SCANNER_SCAN_FINISHED);
             androidx.core.content.ContextCompat.registerReceiver(requireContext(),scanReceiver,noDataFilter,androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED);
         }catch(Exception ignored){}
-        if (weatherWidget != null) weatherWidget.updateNow();
         handler.removeCallbacks(tick);tick.run();
         refreshTileStatusDots();
         handler.removeCallbacks(tileLedTick);
@@ -1184,28 +1562,41 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             }
             for (List<Item> items : data.values()) for (Item item : items) queuePoster(item, force);
         }
-        for(int i:new int[]{1,2,3,4})LoaderManager.getInstance(this).initLoader(i,null,this);
-        LoaderManager.getInstance(this).restartLoader(1,null,this);
+        LoaderManager.getInstance(this).initLoader(1, null, this);
+        long currentWatchEpoch = computeWatchEpoch();
+        boolean watchChanged = !contentLoaded || videoStoreDirtyWhilePaused || currentWatchEpoch != lastObservedWatchEpoch;
+        videoStoreDirtyWhilePaused = false;
+        lastObservedWatchEpoch = currentWatchEpoch;
+        if (watchChanged) {
+            LoaderManager.getInstance(this).restartLoader(1, null, this);
+        }
         for(int id:libraryRows.keySet())LoaderManager.getInstance(this).initLoader(id,null,this);
-        loadLibraries();
+        if (!librariesLoaded || lastLoadedLibraryEpoch != CinemaLibraryScan.stateEpoch()) {
+            loadLibraries();
+        }
         loadDiscover();
-        CinemaMetadataPrefetcher.maybeRunOnStartup(requireContext());
-        CinemaCacheMaintenance.maybeRunSmartMaintenanceAsync(requireContext());
-        handler.postDelayed(() -> {
-            if (isAdded() && getActivity() != null && !getActivity().isFinishing()) {
-                TvPermissionsWizardDialog.maybeShowFirstLaunch(requireActivity());
-            }
-        }, 650);
+        if (!warmStartupDone) {
+            warmStartupDone = true;
+            Context appCtx = requireContext().getApplicationContext();
+            handler.postDelayed(() -> {
+                CinemaMetadataPrefetcher.maybeRunOnStartup(appCtx);
+                CinemaCacheMaintenance.maybeRunSmartMaintenanceAsync(appCtx);
+            }, 2200L);
+            handler.postDelayed(() -> {
+                if (isAdded() && getActivity() != null && !getActivity().isFinishing()) {
+                    TvPermissionsWizardDialog.maybeShowFirstLaunch(requireActivity());
+                }
+            }, 650);
+        }
         if(returningDiscover!=null&&focusDiscover(returningDiscover))returningDiscover=null;
         if(returningPoster!=null&&contentLoaded){
             PosterLocation location=returningPoster;
-            returningPoster=null;
-            RecyclerView retList = lists.get(location.row());
+            RecyclerView retList = resolveRowForLocation(location);
             if (retList != null && retList.getAdapter() instanceof Posters retAdapter) {
                 int pos = retAdapter.find(location.key());
                 if (pos >= 0) retAdapter.notifyItemChanged(pos, Posters.PAYLOAD_STATE);
             }
-            restorePoster(location);
+            if (restorePoster(location)) returningPoster = null;
         }
         Intent actIntent = getActivity() != null ? getActivity().getIntent() : null;
         if (actIntent != null && actIntent.getBooleanExtra(EXTRA_RETURN_HOME_TOP, false)) {
@@ -1213,9 +1604,9 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             rows.post(this::returnToHomeTop);
         }
     }
-    @Override public void onPause(){CinemaLibraryScan.stopWatching();requireContext().unregisterReceiver(mobileLibraries);closeLibraries();try{requireContext().unregisterReceiver(scanReceiver);}catch(Exception ignored){}handler.removeCallbacks(tick);handler.removeCallbacks(tileLedTick);handler.removeCallbacks(refreshDiscover);super.onPause();}
-    @Override public void onDestroyView(){closeLibraries();generation++;viewGeneration++;pending=null;handler.removeCallbacksAndMessages(null);if(artworkTask!=null)artworkTask.cancel(true);for(java.util.concurrent.Future<?> task:posterTasks.values())task.cancel(true);posterTasks.clear();if(railAnimation!=null)railAnimation.cancel();Picasso.get().cancelRequest(backdrop);Picasso.get().cancelRequest(logo);tileNetworkLed=null;tileQrLed=null;tileRemoteLed=null;tileAddonsLed=null;otherRemoteCard=null;otherDescription=null;root=null;weatherWidget=null;super.onDestroyView();}
-    @Override public void onDestroy(){io.shutdownNow();posterIo.shutdownNow();super.onDestroy();}
+    @Override public void onPause(){saveHomeFocusState();lastObservedWatchEpoch=computeWatchEpoch();videoStoreDirtyWhilePaused=false;CinemaLibraryScan.stopWatching();requireContext().unregisterReceiver(mobileLibraries);closeLibraries();try{requireContext().unregisterReceiver(scanReceiver);}catch(Exception ignored){}handler.removeCallbacks(tick);handler.removeCallbacks(tileLedTick);handler.removeCallbacks(refreshDiscover);super.onPause();}
+    @Override public void onDestroyView(){if(videoStoreObserver!=null){try{requireContext().getApplicationContext().getContentResolver().unregisterContentObserver(videoStoreObserver);}catch(Exception ignored){}videoStoreObserver=null;}closeLibraries();generation++;viewGeneration++;rowLoadTokens.clear();pending=null;handler.removeCallbacksAndMessages(null);if(artworkTask!=null)artworkTask.cancel(true);for(java.util.concurrent.Future<?> task:posterTasks.values())task.cancel(true);posterTasks.clear();if(railAnimation!=null)railAnimation.cancel();Picasso.get().cancelRequest(backdrop);Picasso.get().cancelRequest(logo);tileNetworkLed=null;tileQrLed=null;tileRemoteLed=null;tileAddonsLed=null;otherRemoteCard=null;otherDescription=null;root=null;weatherWidget=null;super.onDestroyView();}
+    @Override public void onDestroy(){io.shutdownNow();posterIo.shutdownNow();rowDiffIo.shutdownNow();watchActionIo.shutdownNow();super.onDestroy();}
     private final Map<String, Item> relocatedShows = new java.util.LinkedHashMap<>();
 
     private int findShowsRowId() {
@@ -1280,95 +1671,146 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         return 0L;
     }
 
+    private record RawCursorEntry(Base value, String bgFile, String bgUrl, long showId,
+                                  String poster, String plot, int seasons, long addedTs) {}
+
+    private static Uri resolveBackgroundUri(String file, String url) {
+        if (file != null && !file.isEmpty()) return Uri.fromFile(new File(file));
+        return (url == null || url.isEmpty()) ? null : Uri.parse(url);
+    }
+
     @Override public void onLoadFinished(@NonNull Loader<Cursor> loader,Cursor cursor) {
-        if(root==null)return;
-        List<Item> items=new ArrayList<>();
-        LibraryRow libRow=libraryRows.get(loader.getId());
-        int rowCategory=libRow!=null?libRow.category():(loader.getId()==3?CinemaHomeLoader.CAT_MOVIES:(loader.getId()==4?CinemaHomeLoader.CAT_SHOWS:CinemaHomeLoader.CAT_DEFAULT));
-        boolean routedNewShows=false;
-        java.util.Set<String> seenKeys=new java.util.HashSet<>();
-        java.util.Map<String,Integer> seriesAt=new java.util.HashMap<>();
-        if(cursor!=null&&!cursor.isClosed()) {
+        if(root==null || !isAdded())return;
+        final int loaderId = loader.getId();
+        final int viewToken = viewGeneration;
+        final int loadToken = rowLoadTokens.merge(loaderId, 1, Integer::sum);
+        final Context app = requireContext().getApplicationContext();
+        final String lang = MetadataLanguage.resolve(app);
+        final boolean arabicMode = lang.startsWith("ar");
+        final boolean uiArabic = CinemaUi.arabic(app);
+        final int cardWidth = posterWidth();
+        final LibraryRow libRow = libraryRows.get(loaderId);
+        final int rowCategory = libRow != null ? libRow.category()
+                : (loaderId == 3 ? CinemaHomeLoader.CAT_MOVIES : (loaderId == 4 ? CinemaHomeLoader.CAT_SHOWS : CinemaHomeLoader.CAT_DEFAULT));
+        final List<String> indexedPrefixes = new ArrayList<>();
+        if (loaderId == 1) {
+            for (var lr : libraryRows.values()) indexedPrefixes.addAll(lr.prefixes());
+        }
+
+        // Fast main-thread snapshot of Cursor rows (~1ms in RAM) before CursorLoader recycles/closes the cursor.
+        final List<RawCursorEntry> rawEntries = new ArrayList<>();
+        if (cursor != null && !cursor.isClosed()) {
             cursor.moveToPosition(-1);
-            if(loader.getId()==4) {
-                TvshowCursorMapper mapper=new TvshowCursorMapper();mapper.bindColumns(cursor);
-                int addedCol=cursor.getColumnIndex(com.archos.mediaprovider.video.VideoStore.MediaColumns.DATE_ADDED);
-                while(cursor.moveToNext()){
-                    Base value=(Base)mapper.bind(cursor);
-                    long addedTs=addedCol>=0?cursor.getLong(addedCol):0L;
-                    String dedupe=CinemaPosters.query(value).title().toLowerCase(Locale.ROOT);
-                    if(!dedupe.isEmpty()&&seenKeys.add(dedupe)){
-                        items.add(new Item(value,background(cursor),null,addedTs));
+            int fCol = cursor.getColumnIndex(VideoStore.Video.VideoColumns.SCRAPER_BACKDROP_LARGE_FILE);
+            int uCol = cursor.getColumnIndex(VideoStore.Video.VideoColumns.SCRAPER_BACKDROP_LARGE_URL);
+            if (loaderId == 4) {
+                TvshowCursorMapper mapper = new TvshowCursorMapper();
+                mapper.bindColumns(cursor);
+                int addedCol = cursor.getColumnIndex(VideoStore.MediaColumns.DATE_ADDED);
+                while (cursor.moveToNext()) {
+                    Base value = (Base) mapper.bind(cursor);
+                    long addedTs = addedCol >= 0 ? cursor.getLong(addedCol) : 0L;
+                    String bgFile = fCol >= 0 ? cursor.getString(fCol) : null;
+                    String bgUrl = uCol >= 0 ? cursor.getString(uCol) : null;
+                    rawEntries.add(new RawCursorEntry(value, bgFile, bgUrl, 0L, null, null, 1, addedTs));
+                }
+            } else {
+                VideoCursorMapper mapper = new VideoCursorMapper();
+                mapper.bindColumns(cursor);
+                int showCol = cursor.getColumnIndex(VideoStore.Video.VideoColumns.SCRAPER_SHOW_ID);
+                int coverCol = cursor.getColumnIndex(VideoStore.Video.VideoColumns.SCRAPER_S_COVER);
+                int plotCol = cursor.getColumnIndex(VideoStore.Video.VideoColumns.SCRAPER_S_PLOT);
+                int seasonsCol = cursor.getColumnIndex("cinema_seasons");
+                int cinemaAddedCol = cursor.getColumnIndex("cinema_added");
+                int addedCol = cursor.getColumnIndex(VideoStore.MediaColumns.DATE_ADDED);
+                while (cursor.moveToNext()) {
+                    Base value = (Base) mapper.bind(cursor);
+                    long addedTs = cinemaAddedCol >= 0 ? cursor.getLong(cinemaAddedCol)
+                            : (addedCol >= 0 ? cursor.getLong(addedCol) : 0L);
+                    long showId = showCol >= 0 ? cursor.getLong(showCol) : 0L;
+                    String poster = coverCol >= 0 ? cursor.getString(coverCol) : null;
+                    String plot = plotCol >= 0 ? cursor.getString(plotCol) : null;
+                    int seasons = seasonsCol >= 0 ? cursor.getInt(seasonsCol) : 1;
+                    String bgFile = fCol >= 0 ? cursor.getString(fCol) : null;
+                    String bgUrl = uCol >= 0 ? cursor.getString(uCol) : null;
+                    rawEntries.add(new RawCursorEntry(value, bgFile, bgUrl, showId, poster, plot, seasons, addedTs));
+                }
+            }
+        }
+
+        final RecyclerView currentRv = lists.get(loaderId);
+        final List<Item> adapterOldSnapshot = (currentRv != null && currentRv.getAdapter() instanceof Posters p)
+                ? p.snapshot() : null;
+
+        rowDiffIo.execute(() -> {
+            if (viewGeneration != viewToken || !Integer.valueOf(loadToken).equals(rowLoadTokens.get(loaderId))) {
+                return;
+            }
+            List<Item> items = new ArrayList<>(rawEntries.size());
+            Map<String, Item> newlyRelocatedShows = new java.util.LinkedHashMap<>();
+            java.util.Set<String> seenKeys = new java.util.HashSet<>();
+            java.util.Map<String, Integer> seriesAt = new java.util.HashMap<>();
+
+            if (loaderId == 4) {
+                for (RawCursorEntry raw : rawEntries) {
+                    Base value = raw.value();
+                    String dedupe = CinemaPosters.query(value).title().toLowerCase(Locale.ROOT);
+                    if (!dedupe.isEmpty() && seenKeys.add(dedupe)) {
+                        items.add(new Item(value, resolveBackgroundUri(raw.bgFile(), raw.bgUrl()), null, raw.addedTs()));
                     }
                 }
-            }else{
-                VideoCursorMapper mapper=new VideoCursorMapper();mapper.bindColumns(cursor);
-                boolean library=libRow!=null;
-                int showCol=cursor.getColumnIndex(VideoStore.Video.VideoColumns.SCRAPER_SHOW_ID);
-                int coverCol=cursor.getColumnIndex(VideoStore.Video.VideoColumns.SCRAPER_S_COVER);
-                int plotCol=cursor.getColumnIndex(VideoStore.Video.VideoColumns.SCRAPER_S_PLOT);
-                int seasonsCol=cursor.getColumnIndex("cinema_seasons");
-                int cinemaAddedCol=cursor.getColumnIndex("cinema_added");
-                int addedCol=cursor.getColumnIndex(VideoStore.MediaColumns.DATE_ADDED);
-                while(cursor.moveToNext()){
-                    Base value=(Base)mapper.bind(cursor);
-                    long addedTs=cinemaAddedCol>=0?cursor.getLong(cinemaAddedCol):(addedCol>=0?cursor.getLong(addedCol):0L);
-                    String filePath=value instanceof Video v?v.getFilePath():(value instanceof Tvshow s&&s.getFileUri()!=null?s.getFileUri().toString():null);
-                    long showId=showCol>=0?cursor.getLong(showCol):0L;
-                    String poster=coverCol>=0?cursor.getString(coverCol):null;
-                    String plot=plotCol>=0?cursor.getString(plotCol):null;
-                    int seasons=seasonsCol>=0?cursor.getInt(seasonsCol):1;
-                    boolean isSeries=!(value instanceof com.archos.mediacenter.video.browser.adapters.object.Movie)
-                            && (showId>0||isSeriesOrEpisodeFile(value,filePath));
-                    boolean isCartoon=isCartoonFile(filePath);
-                    if(!library && rowCategory==CinemaHomeLoader.CAT_MOVIES){
-                        if(isCartoon)continue;
-                        if(isSeries){
-                            Tvshow showVal=convertSeriesToTvshow(value,showId,poster,plot,seasons,filePath);
-                            String showDedupe=(showId>0?"s:"+showId:"t:"+CinemaPosters.query(showVal,true).title().toLowerCase(Locale.ROOT));
-                            if(!relocatedShows.containsKey(showDedupe)){
-                                relocatedShows.put(showDedupe,new Item(showVal,background(cursor),null,addedTs));
-                                routedNewShows=true;
-                            }
+            } else {
+                boolean library = libRow != null;
+                for (RawCursorEntry raw : rawEntries) {
+                    Base value = raw.value();
+                    long addedTs = raw.addedTs();
+                    String filePath = value instanceof Video v ? v.getFilePath()
+                            : (value instanceof Tvshow s && s.getFileUri() != null ? s.getFileUri().toString() : null);
+                    long showId = raw.showId();
+                    String poster = raw.poster();
+                    String plot = raw.plot();
+                    int seasons = raw.seasons();
+                    boolean isSeries = !(value instanceof com.archos.mediacenter.video.browser.adapters.object.Movie)
+                            && (showId > 0 || isSeriesOrEpisodeFile(value, filePath));
+                    boolean isCartoon = isCartoonFile(filePath);
+                    if (!library && rowCategory == CinemaHomeLoader.CAT_MOVIES) {
+                        if (isCartoon) continue;
+                        if (isSeries) {
+                            Tvshow showVal = convertSeriesToTvshow(value, showId, poster, plot, seasons, filePath);
+                            String showDedupe = (showId > 0 ? "s:" + showId : "t:" + CinemaPosters.query(showVal, true).title().toLowerCase(Locale.ROOT));
+                            newlyRelocatedShows.putIfAbsent(showDedupe,
+                                    new Item(showVal, resolveBackgroundUri(raw.bgFile(), raw.bgUrl()), null, addedTs));
                             continue;
                         }
-                    }else if(rowCategory==CinemaHomeLoader.CAT_SHOWS && isSeries){
-                        if(!library && isCartoon && !isSeries)continue;
-                        value=convertSeriesToTvshow(value,showId,poster,plot,seasons,filePath);
-                    }else if(library&&isSeries){
-                        value=convertSeriesToTvshow(value,showId,poster,plot,seasons,filePath);
+                    } else if (rowCategory == CinemaHomeLoader.CAT_SHOWS && isSeries) {
+                        value = convertSeriesToTvshow(value, showId, poster, plot, seasons, filePath);
+                    } else if (library && isSeries) {
+                        value = convertSeriesToTvshow(value, showId, poster, plot, seasons, filePath);
                     }
-                    if(loader.getId()==1 && value instanceof Video v){
-                        var indexedPrefixes = new java.util.ArrayList<String>();
-                        for (var lr : libraryRows.values()) indexedPrefixes.addAll(lr.prefixes());
-                        if (CinemaWatchStore.isEphemeralLiveCast(v.getFilePath(), v.getName(), null, null, 0L)
+                    if (loaderId == 1 && value instanceof Video v) {
+                        if (!isValidContinuePath(v.getFilePath())
+                                || CinemaWatchStore.isEphemeralLiveCast(v.getFilePath(), v.getName(), null, null, 0L)
                                 || CinemaWatchStore.isNonLibraryVideoStoreItem(v.getFilePath(), v.getName(), indexedPrefixes)) {
                             io.execute(() -> {
                                 try {
-                                    android.content.ContentValues cv = new android.content.ContentValues();
-                                    cv.put(VideoStore.Video.VideoColumns.BOOKMARK, com.archos.mediacenter.video.player.PlayerActivity.LAST_POSITION_UNKNOWN);
-                                    cv.put(VideoStore.Video.VideoColumns.ARCHOS_BOOKMARK, 0);
-                                    requireContext().getApplicationContext().getContentResolver().update(
-                                            VideoStore.Video.Media.EXTERNAL_CONTENT_URI, cv, "_id=?", new String[]{Long.toString(v.getId())});
-                                    CinemaMediaTime.clearResume(v.getId(), v.getFilePath(), v.getFileUri());
+                                    com.archos.mediacenter.video.utils.DbUtils.clearResumeOnly(app, v);
                                 } catch (Exception ignored) {}
                             });
                             continue;
                         }
-                        long dur=CinemaMediaTime.known(v.getId(),v.getFilePath(),v.getDurationMs());
-                        long res=CinemaMediaTime.knownResume(v.getId(),v.getFilePath(),v.getResumeMs());
-                        if(dur>0 && res>0 && res*100L>=dur*85L){
-                            CinemaMediaTime.rememberState(v.getId(), v.getFileUri(), dur, com.archos.mediacenter.video.player.PlayerActivity.LAST_POSITION_END);
-                            if(autoCompletedContinueIds.add(v.getId())){
+                        long dur = CinemaMediaTime.known(v.getId(), v.getFilePath(), v.getDurationMs());
+                        long res = CinemaMediaTime.knownResume(v.getId(), v.getFilePath(), v.getResumeMs());
+                        if (dur > 0 && res > 0 && res * 100L >= dur * 85L) {
+                            CinemaMediaTime.rememberState(v.getId(), v.getFileUri(), dur, CinemaPlaybackRouter.BOOKMARK_COMPLETED);
+                            if (autoCompletedContinueIds.add(v.getId())) {
                                 final long finishedId = v.getId();
-                                final Context appCtx = requireContext().getApplicationContext();
                                 io.execute(() -> {
                                     try {
                                         android.content.ContentValues cv = new android.content.ContentValues();
-                                        cv.put(VideoStore.Video.VideoColumns.BOOKMARK, com.archos.mediacenter.video.player.PlayerActivity.LAST_POSITION_END);
+                                        cv.put(VideoStore.Video.VideoColumns.BOOKMARK, CinemaPlaybackRouter.BOOKMARK_COMPLETED);
                                         cv.put(VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN, com.archos.mediacenter.utils.trakt.Trakt.TRAKT_DB_MARKED);
                                         cv.put(VideoStore.Video.VideoColumns.ARCHOS_LAST_TIME_PLAYED, System.currentTimeMillis() / 1000L);
-                                        appCtx.getContentResolver().update(VideoStore.Video.Media.EXTERNAL_CONTENT_URI, cv,
+                                        app.getContentResolver().update(VideoStore.Video.Media.EXTERNAL_CONTENT_URI, cv,
                                                 VideoStore.Video.VideoColumns._ID + "=?", new String[]{Long.toString(finishedId)});
                                     } catch (Exception ignored) {}
                                     handler.post(() -> {
@@ -1380,13 +1822,23 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                             }
                             continue;
                         }
-                        if(res <= 1 || v.isWatched())continue;
+                        if (res <= 1) continue;
+                        long lastPlayedMs = Math.max(0L, v.getLastPlayed()) * 1000L;
+                        int[] epNums = isSeries
+                                ? (v instanceof com.archos.mediacenter.video.browser.adapters.object.Episode ep
+                                        ? new int[]{ep.getSeasonNumber(), ep.getEpisodeNumber()}
+                                        : CinemaPosters.extractSeasonEpisode(v.getFilePath(), v.getName()))
+                                : new int[]{0, 0};
+                        long onlineTmdb = v instanceof Movie m ? m.getOnlineId() : 0L;
+                        if (CinemaWatchStore.isContinueTombstoned(app, "", "v:" + v.getId(), v.getFilePath(),
+                                v.getName(), "", onlineTmdb, epNums[0], epNums[1], lastPlayedMs)) {
+                            continue;
+                        }
+                        Item probeItem = new Item(v, null, null, addedTs);
+                        if (isOptimisticallyRemovedFromContinue(probeItem, lastPlayedMs)) continue;
                         String queryTitle = CinemaPosters.query(v, isSeries).title();
                         if (isSeries) {
-                            int[] se = v instanceof com.archos.mediacenter.video.browser.adapters.object.Episode ep
-                                    ? new int[]{ep.getSeasonNumber(), ep.getEpisodeNumber()}
-                                    : CinemaPosters.extractSeasonEpisode(v.getFilePath(), v.getName());
-                            String episodeKey = continueEpisodeKey(queryTitle, se[0], se[1]);
+                            String episodeKey = continueEpisodeKey(queryTitle, epNums[0], epNums[1]);
                             if (!episodeKey.isEmpty()) seenKeys.add(episodeKey);
                         } else {
                             String norm = CinemaWatchStore.normalizeTitle(v.getName());
@@ -1394,209 +1846,275 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                             if (!queryTitle.isEmpty()) seenKeys.add("q:" + queryTitle.toLowerCase(Locale.ROOT));
                         }
                     }
-                    String seriesTitleKey=null;
-                    if(library||loader.getId()==3){
+                    String seriesTitleKey = null;
+                    if (library || loaderId == 3) {
                         String dedupe;
-                        if(value instanceof Tvshow){
-                            String tKey=CinemaPosters.query(value,true).title().toLowerCase(Locale.ROOT);
-                            String looseKey=tKey.replaceAll("\\s*\\((?:19|20)\\d{2}\\)\\s*"," ").replaceAll("[^\\p{L}\\p{N}]+","");
-                            seriesTitleKey=looseKey.isEmpty()?null:"series:"+looseKey;
-                            Integer known=seriesTitleKey==null?null:seriesAt.get(seriesTitleKey);
-                            if(known!=null){
-                                Item old=items.get(known);
-                                boolean oldScraped=old.value instanceof Tvshow ot&&ot.getTvshowId()>0;
-                                if(showId>0&&!oldScraped)items.set(known,new Item(value,background(cursor),null,Math.max(old.dateAdded,addedTs)));
+                        if (value instanceof Tvshow) {
+                            String tKey = CinemaPosters.query(value, true).title().toLowerCase(Locale.ROOT);
+                            String looseKey = tKey.replaceAll("\\s*\\((?:19|20)\\d{2}\\)\\s*", " ").replaceAll("[^\\p{L}\\p{N}]+", "");
+                            seriesTitleKey = looseKey.isEmpty() ? null : "series:" + looseKey;
+                            Integer known = seriesTitleKey == null ? null : seriesAt.get(seriesTitleKey);
+                            if (known != null) {
+                                Item old = items.get(known);
+                                boolean oldScraped = old.value instanceof Tvshow ot && ot.getTvshowId() > 0;
+                                if (showId > 0 && !oldScraped) {
+                                    items.set(known, new Item(value, resolveBackgroundUri(raw.bgFile(), raw.bgUrl()), null, Math.max(old.dateAdded, addedTs)));
+                                }
                                 continue;
                             }
-                            dedupe=(showId>0?"s:"+showId:"t:"+tKey);
-                        }else{
-                            dedupe=(showId>0?"s:"+showId:CinemaPosters.query(value,isSeries).title().toLowerCase(Locale.ROOT)+":"+(value instanceof Movie m?m.getYear():0));
+                            dedupe = (showId > 0 ? "s:" + showId : "t:" + tKey);
+                        } else {
+                            dedupe = (showId > 0 ? "s:" + showId : CinemaPosters.query(value, isSeries).title().toLowerCase(Locale.ROOT) + ":" + (value instanceof Movie m ? m.getYear() : 0));
                         }
-                        if(!dedupe.isBlank()&&!seenKeys.add(dedupe))continue;
+                        if (!dedupe.isBlank() && !seenKeys.add(dedupe)) continue;
                     }
-                    items.add(new Item(value,background(cursor),null,addedTs));
-                    if(seriesTitleKey!=null)seriesAt.put(seriesTitleKey,items.size()-1);
+                    items.add(new Item(value, resolveBackgroundUri(raw.bgFile(), raw.bgUrl()), null, addedTs));
+                    if (seriesTitleKey != null) seriesAt.put(seriesTitleKey, items.size() - 1);
                 }
             }
-        }
-        if(rowCategory==CinemaHomeLoader.CAT_SHOWS && !relocatedShows.isEmpty()){
-            for(var entry:relocatedShows.entrySet()){
-                String k=CinemaPosters.query(entry.getValue().value).title().toLowerCase(Locale.ROOT);
-                if(seenKeys.add(entry.getKey()) && (k.isEmpty() || seenKeys.add(k))){
-                    items.add(entry.getValue());
-                }
-            }
-        }
-        if(routedNewShows){
-            int showsRowId=findShowsRowId();
-            if(showsRowId!=loader.getId() && data.containsKey(showsRowId)){
-                List<Item> existingShows=new ArrayList<>(data.getOrDefault(showsRowId,List.of()));
-                java.util.Set<String> existingKeys=new java.util.HashSet<>();
-                for(Item it:existingShows){
-                    existingKeys.add(mediaKey(it.value));
-                    existingKeys.add(CinemaPosters.query(it.value).title().toLowerCase(Locale.ROOT));
-                }
-                boolean changed=false;
-                for(Item rel:relocatedShows.values()){
-                    String tKey=CinemaPosters.query(rel.value).title().toLowerCase(Locale.ROOT);
-                    if(existingKeys.add(mediaKey(rel.value)) && (tKey.isEmpty() || existingKeys.add(tKey))){
-                        existingShows.add(rel);
-                        changed=true;
+
+            synchronized (relocatedShows) {
+                if (!newlyRelocatedShows.isEmpty()) {
+                    for (var e : newlyRelocatedShows.entrySet()) {
+                        relocatedShows.putIfAbsent(e.getKey(), e.getValue());
                     }
                 }
-                if(changed){
-                    data.put(showsRowId,existingShows);
-                    RecyclerView sList=lists.get(showsRowId);
-                    if(sList!=null&&sList.getAdapter() instanceof Posters p){p.replace(existingShows);updateVisibility();}
-                    for(Item it:existingShows)if(it.stream==null)queuePoster(it,false);
-                    warmHeroArtwork(showsRowId,existingShows);
+                if (rowCategory == CinemaHomeLoader.CAT_SHOWS && !relocatedShows.isEmpty()) {
+                    for (var entry : relocatedShows.entrySet()) {
+                        String k = CinemaPosters.query(entry.getValue().value).title().toLowerCase(Locale.ROOT);
+                        if (seenKeys.add(entry.getKey()) && (k.isEmpty() || seenKeys.add(k))) {
+                            items.add(entry.getValue());
+                        }
+                    }
                 }
             }
-        }
-        if(loader.getId()==1){
-            Context app = requireContext().getApplicationContext();
-            io.execute(() -> CinemaWatchStore.purgeNonLibraryContinueEntries(app));
-            for(var s:CinemaWatchStore.listContinueStreams(requireContext())){
-                if (CinemaWatchStore.isNonLibraryOrPhoneCast(s.streamKey(), s.streamUri(), s.format(), s.title(), s.mediaType(), s.imdbId(), s.tmdbId())) {
-                    continue;
+
+            if (loaderId == 1) {
+                io.execute(() -> CinemaWatchStore.purgeNonLibraryContinueEntries(app));
+                for (var s : CinemaWatchStore.listContinueStreams(app)) {
+                    if (!isValidContinuePath(s.streamUri())
+                            || CinemaWatchStore.isNonLibraryOrPhoneCast(s.streamKey(), s.streamUri(), s.format(), s.title(), s.mediaType(), s.imdbId(), s.tmdbId())) {
+                        continue;
+                    }
+                    Uri u = Uri.parse(s.streamUri());
+                    var identity = CinemaWatchStore.getIdentity(app, s.streamKey());
+                    if (identity == null && !s.streamUri().isBlank()) {
+                        identity = CinemaWatchStore.getIdentityByUri(app, s.streamUri());
+                    }
+                    String title = identity != null && !identity.title().isBlank() ? identity.title() : s.title();
+                    Uri idPoster = (identity != null && identity.posterUrl() != null && !identity.posterUrl().isBlank())
+                            ? Uri.parse(identity.posterUrl()) : null;
+                    var v = new com.archos.mediacenter.video.browser.adapters.object.NonIndexedVideo(u, u, title, idPoster);
+                    Item streamItem = new Item(v, null, s);
+                    if (isOptimisticallyRemovedFromContinue(streamItem, s.updatedAt())) continue;
+                    if (s.episode() > 0) {
+                        String episodeKey = continueEpisodeKey(s.title(), s.season(), s.episode());
+                        if (!episodeKey.isEmpty() && !seenKeys.add(episodeKey)) continue;
+                    } else {
+                        String sNorm = CinemaWatchStore.normalizeTitle(s.title());
+                        String sQuery = CinemaPosters.query(v, false).title().toLowerCase(Locale.ROOT);
+                        if ((!sNorm.isEmpty() && seenKeys.contains("norm:" + sNorm))
+                                || (!sQuery.isEmpty() && seenKeys.contains("q:" + sQuery))) continue;
+                        if (!sNorm.isEmpty()) seenKeys.add("norm:" + sNorm);
+                        if (!sQuery.isEmpty()) seenKeys.add("q:" + sQuery);
+                    }
+                    items.add(streamItem);
                 }
-                Uri u=Uri.parse(s.streamUri());
-                var identity = s.streamKey().startsWith("addon:") ? CinemaWatchStore.getIdentity(app, s.streamKey()) : null;
-                String title = identity != null && !identity.title().isBlank() ? identity.title() : s.title();
-                var v=new com.archos.mediacenter.video.browser.adapters.object.NonIndexedVideo(u,u,title,null);
-                if (s.episode() > 0) {
-                    String episodeKey = continueEpisodeKey(s.title(), s.season(), s.episode());
-                    if (!episodeKey.isEmpty() && !seenKeys.add(episodeKey)) continue;
-                } else {
+                for (var ti : CinemaWatchStore.listTraktItems(app, "continue")) {
+                    if (("episode".equals(ti.mediaType()) || "show".equals(ti.mediaType()))
+                            && !CinemaWatchStore.isEpisodePlayback(ti.season(), ti.episode(), ti.positionMs(), ti.durationMs())) continue;
+                    if (ti.durationMs() > 0 && ti.positionMs() * 100L >= ti.durationMs() * 85L) {
+                        continue;
+                    }
+                    String vPath = "trakt://" + ti.listType() + "/" + Uri.encode(ti.itemKey());
+                    long synthId = 900_000_000L + (java.util.UUID.nameUUIDFromBytes(
+                            vPath.getBytes(java.nio.charset.StandardCharsets.UTF_8)).getMostSignificantBits() & ((1L << 52) - 1));
+                    Video v;
+                    if ("episode".equals(ti.mediaType()) || "show".equals(ti.mediaType()) || ti.season() > 0 || ti.episode() > 0) {
+                        String epLabel = ti.season() > 0 ? String.format(Locale.US, "S%02dE%02d", ti.season(), ti.episode()) : "Trakt";
+                        v = new com.archos.mediacenter.video.browser.adapters.object.Episode(
+                                synthId, synthId, Math.max(1, ti.season()), Math.max(1, ti.episode()), epLabel,
+                                Math.max(1L, ti.positionMs()), 0f, "", "", ti.title(), vPath, null, null, 0, 0,
+                                0, 0, false, true, false, false, ti.tmdbId(), ti.updatedAt() / 1000L,
+                                0, 0, "", "", "", "", 0, 1, Math.max(1000L, ti.durationMs()));
+                    } else {
+                        v = new Movie(synthId, vPath, ti.title(), Math.max(0L, ti.tmdbId()), "", ti.year(), 0f, "", null, 0, 0,
+                                0, 0, false, true, false, false, ti.tmdbId(), ti.updatedAt() / 1000L,
+                                0, 0, "", "", "", "", 0, 1, Math.max(1L, ti.positionMs()), Math.max(1000L, ti.durationMs()));
+                    }
+                    Item traktItem = new Item(v, null, null, ti.updatedAt() / 1000L, ti);
+                    if (isOptimisticallyRemovedFromContinue(traktItem, ti.updatedAt())) continue;
+                    if (ti.episode() > 0) {
+                        String episodeKey = continueEpisodeKey(ti.title(), ti.season(), ti.episode());
+                        if (!episodeKey.isEmpty() && !seenKeys.add(episodeKey)) continue;
+                    } else {
+                        String sNorm = CinemaWatchStore.normalizeTitle(ti.title());
+                        if (!sNorm.isEmpty() && (seenKeys.contains("q:" + sNorm) || !seenKeys.add("norm:" + sNorm))) continue;
+                    }
+                    CinemaMediaTime.rememberState(synthId, Uri.parse(vPath),
+                            Math.max(1000L, ti.durationMs()), Math.max(1L, ti.positionMs()));
+                    items.add(traktItem);
+                }
+            } else if (loaderId == 6) {
+                for (var s : CinemaWatchStore.listWatchedStreams(app)) {
+                    Uri u = Uri.parse(s.streamUri());
+                    var v = new com.archos.mediacenter.video.browser.adapters.object.NonIndexedVideo(u, u, s.title(), null);
                     String sNorm = CinemaWatchStore.normalizeTitle(s.title());
-                    String sQuery = CinemaPosters.query(v, false).title().toLowerCase(Locale.ROOT);
-                    if ((!sNorm.isEmpty() && seenKeys.contains("norm:" + sNorm))
-                            || (!sQuery.isEmpty() && seenKeys.contains("q:" + sQuery))) continue;
                     if (!sNorm.isEmpty()) seenKeys.add("norm:" + sNorm);
-                    if (!sQuery.isEmpty()) seenKeys.add("q:" + sQuery);
+                    items.add(new Item(v, null, s));
                 }
-                items.add(new Item(v,null,s));
-            }
-            for (var ti : CinemaWatchStore.listTraktItems(requireContext(), "continue")) {
-                if (("episode".equals(ti.mediaType()) || "show".equals(ti.mediaType()))
-                        && !CinemaWatchStore.isEpisodePlayback(ti.season(), ti.episode(), ti.positionMs(), ti.durationMs())) continue;
-                if (ti.durationMs() > 0 && ti.positionMs() * 100L >= ti.durationMs() * 85L) {
-                    continue;
-                }
-                if (ti.episode() > 0) {
-                    String episodeKey = continueEpisodeKey(ti.title(), ti.season(), ti.episode());
-                    if (!episodeKey.isEmpty() && !seenKeys.add(episodeKey)) continue;
-                } else {
+                for (var ti : CinemaWatchStore.listTraktItems(app, "watched")) {
                     String sNorm = CinemaWatchStore.normalizeTitle(ti.title());
-                    if (!sNorm.isEmpty() && (seenKeys.contains("q:" + sNorm) || !seenKeys.add("norm:" + sNorm))) continue;
+                    if (!sNorm.isEmpty() && !seenKeys.add("norm:" + sNorm)) continue;
+                    String vPath = "trakt://" + ti.listType() + "/" + Uri.encode(ti.itemKey());
+                    long synthId = 900_000_000L + (java.util.UUID.nameUUIDFromBytes(
+                            vPath.getBytes(java.nio.charset.StandardCharsets.UTF_8)).getMostSignificantBits() & ((1L << 52) - 1));
+                    Video v;
+                    if ("episode".equals(ti.mediaType()) || "show".equals(ti.mediaType()) || ti.season() > 0 || ti.episode() > 0) {
+                        String epLabel = ti.season() > 0 ? String.format(Locale.US, "S%02dE%02d", ti.season(), ti.episode()) : "Trakt";
+                        v = new com.archos.mediacenter.video.browser.adapters.object.Episode(
+                                synthId, synthId, Math.max(1, ti.season()), Math.max(1, ti.episode()), epLabel,
+                                CinemaPlaybackRouter.BOOKMARK_COMPLETED, 0f, "", "", ti.title(), vPath, null, null, 0, 0,
+                                0, 0, true, true, false, false, ti.tmdbId(), ti.updatedAt() / 1000L,
+                                0, 0, "", "", "", "", 0, 1, 0L);
+                    } else {
+                        v = new Movie(synthId, vPath, ti.title(), Math.max(0L, ti.tmdbId()), "", ti.year(), 0f, "", null, 0, 0,
+                                0, 0, true, true, false, false, ti.tmdbId(), ti.updatedAt() / 1000L,
+                                0, 0, "", "", "", "", 0, 1, CinemaPlaybackRouter.BOOKMARK_COMPLETED, 0L);
+                    }
+                    items.add(new Item(v, null, null, ti.updatedAt() / 1000L, ti));
                 }
-                String vPath = "trakt://" + ti.listType() + "/" + Uri.encode(ti.itemKey());
-                long synthId = 900_000_000L + (java.util.UUID.nameUUIDFromBytes(
-                        vPath.getBytes(java.nio.charset.StandardCharsets.UTF_8)).getMostSignificantBits() & ((1L << 52) - 1));
-                Video v;
-                if ("episode".equals(ti.mediaType()) || "show".equals(ti.mediaType()) || ti.season() > 0 || ti.episode() > 0) {
-                    String epLabel = ti.season() > 0 ? String.format(Locale.US, "S%02dE%02d", ti.season(), ti.episode()) : "Trakt";
-                    v = new com.archos.mediacenter.video.browser.adapters.object.Episode(
-                            synthId, synthId, Math.max(1, ti.season()), Math.max(1, ti.episode()), epLabel,
-                            Math.max(1L, ti.positionMs()), 0f, "", "", ti.title(), vPath, null, null, 0, 0,
-                            0, 0, false, true, false, false, ti.tmdbId(), ti.updatedAt() / 1000L,
-                            0, 0, "", "", "", "", 0, 1, Math.max(1000L, ti.durationMs()));
-                } else {
-                    v = new Movie(synthId, vPath, ti.title(), Math.max(0L, ti.tmdbId()), "", ti.year(), 0f, "", null, 0, 0,
-                            0, 0, false, true, false, false, ti.tmdbId(), ti.updatedAt() / 1000L,
-                            0, 0, "", "", "", "", 0, 1, Math.max(1L, ti.positionMs()), Math.max(1000L, ti.durationMs()));
-                }
-                CinemaMediaTime.rememberState(synthId, Uri.parse(vPath),
-                        Math.max(1000L, ti.durationMs()), Math.max(1L, ti.positionMs()));
-                items.add(new Item(v, null, null, ti.updatedAt() / 1000L, ti));
             }
-        }else if(loader.getId()==6){
-            for(var s:CinemaWatchStore.listWatchedStreams(requireContext())){
-                Uri u=Uri.parse(s.streamUri());
-                var v=new com.archos.mediacenter.video.browser.adapters.object.NonIndexedVideo(u,u,s.title(),null);
-                String sNorm = CinemaWatchStore.normalizeTitle(s.title());
-                if (!sNorm.isEmpty()) seenKeys.add("norm:" + sNorm);
-                items.add(new Item(v,null,s));
+
+            List<Item> sortedItems = loaderId != 1 ? applyRowSortWithApp(loaderId, items, app, lang, arabicMode) : items;
+            for (Item it : sortedItems) {
+                populateCachedItemFields(it, app, lang, arabicMode, uiArabic, cardWidth);
             }
-            for (var ti : CinemaWatchStore.listTraktItems(requireContext(), "watched")) {
-                String sNorm = CinemaWatchStore.normalizeTitle(ti.title());
-                if (!sNorm.isEmpty() && !seenKeys.add("norm:" + sNorm)) continue;
-                String vPath = "trakt://" + ti.listType() + "/" + Uri.encode(ti.itemKey());
-                long synthId = 900_000_000L + (java.util.UUID.nameUUIDFromBytes(
-                        vPath.getBytes(java.nio.charset.StandardCharsets.UTF_8)).getMostSignificantBits() & ((1L << 52) - 1));
-                Video v;
-                if ("episode".equals(ti.mediaType()) || "show".equals(ti.mediaType()) || ti.season() > 0 || ti.episode() > 0) {
-                    String epLabel = ti.season() > 0 ? String.format(Locale.US, "S%02dE%02d", ti.season(), ti.episode()) : "Trakt";
-                    v = new com.archos.mediacenter.video.browser.adapters.object.Episode(
-                            synthId, synthId, Math.max(1, ti.season()), Math.max(1, ti.episode()), epLabel,
-                            com.archos.mediacenter.video.player.PlayerActivity.LAST_POSITION_END, 0f, "", "", ti.title(), vPath, null, null, 0, 0,
-                            0, 0, true, true, false, false, ti.tmdbId(), ti.updatedAt() / 1000L,
-                            0, 0, "", "", "", "", 0, 1, 0L);
-                } else {
-                    v = new Movie(synthId, vPath, ti.title(), Math.max(0L, ti.tmdbId()), "", ti.year(), 0f, "", null, 0, 0,
-                            0, 0, true, true, false, false, ti.tmdbId(), ti.updatedAt() / 1000L,
-                            0, 0, "", "", "", "", 0, 1, com.archos.mediacenter.video.player.PlayerActivity.LAST_POSITION_END, 0L);
-                }
-                items.add(new Item(v, null, null, ti.updatedAt() / 1000L, ti));
-            }
-        }
-        if (loader.getId() != 1) {
-            items = applyRowSort(loader.getId(), items);
-        }
-        List<Item> previousItems = data.put(loader.getId(),items);
-        RecyclerView list=lists.get(loader.getId());
-        if(list!=null&&list.getAdapter() instanceof Posters){((Posters)list.getAdapter()).replace(items);updateVisibility();}
-        if (loader.getId() == 1 && pendingContinueFocusPos >= 0) {
-            final int targetPos = pendingContinueFocusPos;
-            pendingContinueFocusPos = -1;
-            rows.post(() -> {
-                if (!isAdded() || root == null) return;
-                RecyclerView cwList = lists.get(1);
-                if (cwList != null && cwList.getAdapter() != null && cwList.getAdapter().getItemCount() > 0
-                        && cwList.getParent() instanceof View pv && pv.getVisibility() == View.VISIBLE) {
-                    int clamped = Math.min(targetPos, cwList.getAdapter().getItemCount() - 1);
-                    focusPoster(cwList, clamped);
-                } else {
-                    if (!focusAdjacentSection(HomePreferences.KEY_CONTINUE, 1, 0)) {
-                        focusFirstVisibleSection();
+
+            androidx.recyclerview.widget.DiffUtil.DiffResult precomputedDiff = null;
+            if (adapterOldSnapshot != null && !adapterOldSnapshot.isEmpty()) {
+                for (Item oldIt : adapterOldSnapshot) {
+                    if (oldIt.cachedPosterKey == null) {
+                        populateCachedItemFields(oldIt, app, lang, arabicMode, uiArabic, cardWidth);
                     }
                 }
-            });
-        } else if(contentLoaded&&selectedRow==loader.getId()){
-            View current=root.findFocus();
-            if(current==null||current==root)rows.post(()->{
-                if(root!=null&&(root.findFocus()==null||root.findFocus()==root))focusContent();
-            });
-        }
-        boolean listMembershipChanged = previousItems == null || previousItems.size() != items.size();
-        if (!listMembershipChanged) {
-            for (int idx = 0; idx < items.size(); idx++) {
-                if (!itemKey(previousItems.get(idx)).equals(itemKey(items.get(idx)))) {
-                    listMembershipChanged = true;
-                    break;
-                }
+                precomputedDiff = computePostersDiff(adapterOldSnapshot, sortedItems);
             }
-        }
-        if (listMembershipChanged) {
-            for (Item item : items) if (item.stream == null) queuePoster(item, false);
-            warmHeroArtwork(loader.getId(), items);
-        }
-        boolean readyToReveal = librariesLoaded
-                ? data.keySet().containsAll(rowOrder())
-                : data.keySet().containsAll(List.of(1,2,3,4));
-        if(!contentLoaded && readyToReveal){
-            contentLoaded=true;
-            rows.post(()->{
-                if(root==null)return;
-                if(returningPoster!=null){
-                    PosterLocation location=returningPoster;
-                    returningPoster=null;
-                    restorePoster(location);
-                }else if(root.findFocus()==root||root.findFocus()==null){
-                    focusContent();
+
+            final List<Item> finalItems = sortedItems;
+            final androidx.recyclerview.widget.DiffUtil.DiffResult finalDiff = precomputedDiff;
+            final boolean hadRelocated = !newlyRelocatedShows.isEmpty();
+
+            handler.post(() -> {
+                if (root == null || !isAdded() || viewGeneration != viewToken
+                        || !Integer.valueOf(loadToken).equals(rowLoadTokens.get(loaderId))) {
+                    return;
+                }
+                if (hadRelocated) {
+                    int showsRowId = findShowsRowId();
+                    if (showsRowId != loaderId && data.containsKey(showsRowId)) {
+                        List<Item> existingShows = new ArrayList<>(data.getOrDefault(showsRowId, List.of()));
+                        java.util.Set<String> existingKeys = new java.util.HashSet<>();
+                        for (Item it : existingShows) {
+                            existingKeys.add(mediaKey(it.value));
+                            existingKeys.add(CinemaPosters.query(it.value).title().toLowerCase(Locale.ROOT));
+                        }
+                        boolean changed = false;
+                        synchronized (relocatedShows) {
+                            for (Item rel : relocatedShows.values()) {
+                                String tKey = CinemaPosters.query(rel.value).title().toLowerCase(Locale.ROOT);
+                                if (existingKeys.add(mediaKey(rel.value)) && (tKey.isEmpty() || existingKeys.add(tKey))) {
+                                    populateCachedItemFields(rel, app, lang, arabicMode, uiArabic, cardWidth);
+                                    existingShows.add(rel);
+                                    changed = true;
+                                }
+                            }
+                        }
+                        if (changed) {
+                            data.put(showsRowId, existingShows);
+                            RecyclerView sList = lists.get(showsRowId);
+                            if (sList != null && sList.getAdapter() instanceof Posters p) {
+                                p.replace(existingShows);
+                                updateVisibility();
+                            }
+                            for (Item it : existingShows) if (it.stream == null) queuePoster(it, false);
+                            warmHeroArtwork(showsRowId, existingShows);
+                        }
+                    }
+                }
+
+                List<Item> previousItems = data.put(loaderId, finalItems);
+                RecyclerView list = lists.get(loaderId);
+                if (list != null && list.getAdapter() instanceof Posters posters) {
+                    posters.applyPrecomputed(adapterOldSnapshot, finalItems, finalDiff);
+                    updateVisibility();
+                }
+                if (loaderId == 1 && pendingContinueFocusPos >= 0) {
+                    final int targetPos = pendingContinueFocusPos;
+                    pendingContinueFocusPos = -1;
+                    rows.post(() -> {
+                        if (!isAdded() || root == null) return;
+                        RecyclerView cwList = lists.get(1);
+                        if (cwList != null && cwList.getAdapter() != null && cwList.getAdapter().getItemCount() > 0
+                                && cwList.getParent() instanceof View pv && pv.getVisibility() == View.VISIBLE) {
+                            int clamped = Math.min(targetPos, cwList.getAdapter().getItemCount() - 1);
+                            focusPoster(cwList, clamped);
+                        } else {
+                            if (!focusAdjacentSection(HomePreferences.KEY_CONTINUE, 1, 0)) {
+                                focusFirstVisibleSection();
+                            }
+                        }
+                    });
+                } else if (contentLoaded && selectedRow == loaderId) {
+                    View current = root.findFocus();
+                    if (current == null || current == root) rows.post(() -> {
+                        if (root != null && (root.findFocus() == null || root.findFocus() == root)) focusContent();
+                    });
+                }
+                boolean listMembershipChanged = previousItems == null || previousItems.size() != finalItems.size();
+                if (!listMembershipChanged) {
+                    for (int idx = 0; idx < finalItems.size(); idx++) {
+                        if (!itemKey(previousItems.get(idx)).equals(itemKey(finalItems.get(idx)))) {
+                            listMembershipChanged = true;
+                            break;
+                        }
+                    }
+                }
+                if (listMembershipChanged) {
+                    for (Item item : finalItems) queuePoster(item, false);
+                    warmHeroArtwork(loaderId, finalItems);
+                }
+                boolean readyToReveal = librariesLoaded && data.keySet().containsAll(rowOrder());
+                if (!contentLoaded && readyToReveal) {
+                    contentLoaded = true;
+                    rows.post(() -> {
+                        if (root == null) return;
+                        if (returningPoster != null) {
+                            PosterLocation location = returningPoster;
+                            if (restorePoster(location)) returningPoster = null;
+                        } else if (persistedRestore != null) {
+                            PosterLocation location = persistedRestore;
+                            if (resolveRowForLocation(location) != null) {
+                                persistedRestore = null;
+                                restorePoster(location);
+                            } else if (root.findFocus() == root || root.findFocus() == null) {
+                                focusContent();
+                            }
+                        } else if (persistedDiscoverRestore != null) {
+                            DiscoverLocation dLoc = persistedDiscoverRestore;
+                            if (focusDiscover(dLoc)) persistedDiscoverRestore = null;
+                            else if (root.findFocus() == root || root.findFocus() == null) focusContent();
+                        } else if (root.findFocus() == root || root.findFocus() == null) {
+                            focusContent();
+                        }
+                    });
+                } else if (contentLoaded && persistedRestore != null && resolveRowForLocation(persistedRestore) == lists.get(loaderId)) {
+                    PosterLocation location = persistedRestore;
+                    persistedRestore = null;
+                    rows.post(() -> { if (root != null) restorePoster(location); });
                 }
             });
-        }
+        });
     }
     private void warmHeroArtwork(int rowId,List<Item> items){
         java.util.concurrent.Future<?> previous=posterTasks.get(rowId);if(previous!=null)previous.cancel(true);
@@ -1687,11 +2205,25 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             headerRow.addView(header, new LinearLayout.LayoutParams(-2,-2));
             group.addView(headerRow);
 
-            RecyclerView list=new RecyclerView(c);list.setLayoutManager(new LinearLayoutManager(c,RecyclerView.HORIZONTAL,false));
+            RecyclerView list=new RecyclerView(c);
+            LinearLayoutManager lm = new LinearLayoutManager(c,RecyclerView.HORIZONTAL,false);
+            lm.setInitialPrefetchItemCount(7);
+            list.setLayoutManager(lm);
+            list.setRecycledViewPool(sharedPosterPool);
+            list.setItemViewCacheSize(10);
             list.setLayoutDirection(rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);
             list.setClipChildren(false);list.setClipToPadding(false);list.setPaddingRelative(rowEdgePad,dp(c,12),dp(c,28),dp(c,15));
             list.setItemAnimator(null);list.setPreserveFocusAfterLayout(true);list.setFocusable(false);
-            list.setAdapter(new Posters(id, sortRowItemsForBind(id, data.getOrDefault(id, List.of()))));
+            List<Item> initialItems = sortRowItemsForBind(id, data.getOrDefault(id, List.of()));
+            Context appCtx = c.getApplicationContext();
+            String lang = MetadataLanguage.resolve(appCtx);
+            boolean arMode = lang.startsWith("ar");
+            boolean uiAr = CinemaUi.arabic(c);
+            int cardW = posterWidth();
+            for (Item it : initialItems) {
+                populateCachedItemFields(it, appCtx, lang, arMode, uiAr, cardW);
+            }
+            list.setAdapter(new Posters(id, initialItems));
             group.addView(list,new LinearLayout.LayoutParams(-1,posterHeight()+dp(c,27)));
             rows.addView(group);lists.put(id,list);
             renderedSectionKeys.add(sectionKey);
@@ -1700,6 +2232,7 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         rows.addView(empty);bindDiscoverData();appendOtherVideos();updateVisibility();
         if(restoreFocus)rows.post(this::focusContent);
         if(returningDiscover!=null&&isResumed()&&focusDiscover(returningDiscover))returningDiscover=null;
+        else if(persistedDiscoverRestore!=null&&isResumed()&&focusDiscover(persistedDiscoverRestore))persistedDiscoverRestore=null;
     }
     /** Hides poster rows while "other videos" is focused so no poster fragments peek above its cards. */
     private void setPosterRowsShown(boolean shown){
@@ -1800,6 +2333,7 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         fillStrip(2,discover.comingSoon,true);
         updateVisibility();
         if(returningDiscover!=null&&isResumed()&&focusDiscover(returningDiscover))returningDiscover=null;
+        else if(persistedDiscoverRestore!=null&&isResumed()&&focusDiscover(persistedDiscoverRestore))persistedDiscoverRestore=null;
         else if(restore)focusDiscover(selectedDiscover);
     }
     private void fillStrip(int s,List<com.meedx.providers.OpenTrailersProvider.TrailerItem> entries,boolean wide){
@@ -2099,7 +2633,7 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
 
             card.setOnClickListener(v -> {
                 if (item == 0) chooseVideo();
-                else if (item == 1) startActivity(new Intent(c, NetworkRootActivity.class));
+                else if (item == 1) startActivity(new Intent(c, CinemaNetworkActivity.class));
                 else if (item == 2) CinemaPhoneLink.show(c);
                 else if (item == 4) startActivity(new Intent(c, CinemaAddonsActivity.class));
                 else if (item == 5) CinemaAmbientLauncherDialog.show(c);
@@ -2201,7 +2735,19 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         TvRemotePermissionKeeper.RemoteLed remoteLed = TvRemotePermissionKeeper.evaluateRemoteLed(c);
         setLedColor(tileRemoteLed, TvRemotePermissionKeeper.remoteLedColor(remoteLed));
         boolean synced = c.getSharedPreferences("cinema_addon_state", 0).getBoolean("from_phone", false);
-        setLedColor(tileAddonsLed, synced && com.meedx.providers.StremioAddons.hasEnabled(c) ? 0xff22c55e : 0xff554d3f);
+        setLedColor(tileAddonsLed, synced && cachedAddonsEnabled ? 0xff22c55e : 0xff554d3f);
+        Context app = c.getApplicationContext();
+        io.execute(() -> {
+            boolean hasEnabled = com.meedx.providers.StremioAddons.hasEnabled(app);
+            if (hasEnabled != cachedAddonsEnabled) {
+                cachedAddonsEnabled = hasEnabled;
+                handler.post(() -> {
+                    if (!isAdded() || root == null) return;
+                    boolean syn = app.getSharedPreferences("cinema_addon_state", 0).getBoolean("from_phone", false);
+                    setLedColor(tileAddonsLed, syn && cachedAddonsEnabled ? 0xff22c55e : 0xff554d3f);
+                });
+            }
+        });
         if (otherRemoteCard != null && otherRemoteCard.hasFocus() && otherDescription != null) {
             otherDescription.setText(otherTileDescription(c, 3,
                     c.getString(com.archos.mediacenter.video.R.string.cinema_choose_a_file_from_storage_or_your_network_to_play_manually)));
@@ -2227,7 +2773,7 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             if(choice.activityInfo.name.contains("Stub")||choice.activityInfo.packageName.contains("frameworkpackagestubs"))continue;
             try{pick.setComponent(new android.content.ComponentName(choice.activityInfo.packageName,choice.activityInfo.name));startActivityForResult(pick,71);return;}catch(android.content.ActivityNotFoundException ignored){}
         }
-        startActivity(new Intent(requireContext(),NetworkRootActivity.class));
+        startActivity(new Intent(requireContext(),CinemaNetworkActivity.class));
     }
     @Override public void onActivityResult(int request,int result,Intent intent){
         super.onActivityResult(request,result,intent);
@@ -2412,20 +2958,38 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             });
         }catch(Exception ignored){handler.post(()->{if(root!=null&&viewGeneration==viewToken&&pending==item){title.setText(cleanName);title.setVisibility(View.VISIBLE);}});}});
     }
+    private void applyBackdropTint(int tint) {
+        if (root == null) return;
+        GradientDrawable.Orientation shadeOrient = root.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL
+                ? GradientDrawable.Orientation.RIGHT_LEFT : GradientDrawable.Orientation.LEFT_RIGHT;
+        horizontalShade.setBackground(new GradientDrawable(shadeOrient, new int[]{
+                tint,
+                androidx.core.graphics.ColorUtils.setAlphaComponent(tint, 190),
+                androidx.core.graphics.ColorUtils.setAlphaComponent(tint, 20)}));
+        bottomShade.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{
+                0x00000000,
+                androidx.core.graphics.ColorUtils.setAlphaComponent(tint, 100),
+                tint}));
+    }
+
     private void loadBackdrop(Uri uri,int width,Item selected){
         int viewToken=viewGeneration;
+        String uriKey = uri.toString();
         Picasso.get().load(uri).resize(width,width*9/16).centerCrop().into(backdrop,new com.squareup.picasso.Callback(){
             @Override public void onError(Exception e){if(root!=null&&viewGeneration==viewToken&&pending==selected&&selected.background!=null&&!selected.background.equals(uri))loadBackdrop(selected.background,width,selected);}
             @Override public void onSuccess(){
                 if(root==null||viewGeneration!=viewToken||pending!=selected||!(backdrop.getDrawable() instanceof android.graphics.drawable.BitmapDrawable))return;
+                Integer cachedTint = backdropTintCache.get(uriKey);
+                if (cachedTint != null) {
+                    applyBackdropTint(cachedTint);
+                    return;
+                }
                 android.graphics.Bitmap bitmap=((android.graphics.drawable.BitmapDrawable)backdrop.getDrawable()).getBitmap();
                 androidx.palette.graphics.Palette.from(bitmap).maximumColorCount(8).generate(palette->{
                     if(root==null||viewGeneration!=viewToken||pending!=selected||palette==null)return;
                     int tint=androidx.core.graphics.ColorUtils.blendARGB(palette.getDominantColor(CinemaTokens.CANVAS),CinemaTokens.CANVAS,0.82f);
-                    GradientDrawable.Orientation shadeOrient=root.getLayoutDirection()==View.LAYOUT_DIRECTION_RTL
-                            ?GradientDrawable.Orientation.RIGHT_LEFT:GradientDrawable.Orientation.LEFT_RIGHT;
-                    horizontalShade.setBackground(new GradientDrawable(shadeOrient,new int[]{tint,androidx.core.graphics.ColorUtils.setAlphaComponent(tint,190),androidx.core.graphics.ColorUtils.setAlphaComponent(tint,20)}));
-                    bottomShade.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0x00000000,androidx.core.graphics.ColorUtils.setAlphaComponent(tint,100),tint}));
+                    backdropTintCache.put(uriKey, tint);
+                    applyBackdropTint(tint);
                 });
             }
         });
@@ -2437,52 +3001,63 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         Context c = requireContext();
         Context app = c.getApplicationContext();
         boolean isSeries = "show".equals(ti.mediaType()) || "episode".equals(ti.mediaType()) || ti.season() > 0;
-        java.util.List<String> labels = new java.util.ArrayList<>();
-        java.util.List<Runnable> actions = new java.util.ArrayList<>();
+        java.util.List<CinemaContextDialog.Option> options = new java.util.ArrayList<>();
         if (com.meedx.providers.StremioAddons.hasEnabled(c) && ti.imdbId() != null && ti.imdbId().matches("tt[0-9]+")) {
-            labels.add(label(c, "تشغيل عبر الإضافات (Nuvio / Stremio)", "Stream via Addons"));
-            actions.add(() -> {
-                var meta = new com.meedx.providers.OpenMetadata.Item(ti.title(), ti.year() > 0 ? String.valueOf(ti.year()) : "",
-                        "", "", "", ti.imdbId(), null, null, "");
-                CinemaAddonPicker.show(requireActivity(), io, handler, video, meta, Math.max(1, ti.season()), Math.max(1, ti.episode()));
-            });
+            options.add(new CinemaContextDialog.Option(
+                    com.archos.mediacenter.video.R.drawable.cinema_addons,
+                    label(c, "تشغيل عبر الإضافات (Nuvio / Stremio)", "Stream via Add-ons"),
+                    label(c, "جلب مصادر البث المباشر للعمل", "Browse streams from installed add-ons"),
+                    () -> {
+                        var meta = new com.meedx.providers.OpenMetadata.Item(ti.title(), ti.year() > 0 ? String.valueOf(ti.year()) : "",
+                                "", "", "", ti.imdbId(), null, null, "");
+                        CinemaAddonPicker.show(requireActivity(), io, handler, video, meta, Math.max(1, ti.season()), Math.max(1, ti.episode()));
+                    }));
         }
         boolean isWatchedRow = rowId == 6;
-        labels.add(isWatchedRow
-                ? label(c, "إزالة من تمت المشاهدة في Trakt", "Mark as Unwatched on Trakt")
-                : label(c, "تحديد كمُشاهَد في Trakt", "Mark as Watched on Trakt"));
-        actions.add(() -> {
-            if (rowId == 1 && !isWatchedRow) captureContinueFocusPosition(rowId, null);
-            io.execute(() -> {
-                com.meedx.providers.TraktSyncClient.syncHistoryItem(app, isSeries, ti.imdbId(), ti.tmdbId(),
-                        Math.max(1, ti.season()), Math.max(1, ti.episode()), !isWatchedRow);
-                if (!isWatchedRow) {
-                    com.meedx.providers.TraktSyncClient.removePlaybackProgress(app, ti.imdbId(), ti.tmdbId(), ti.season(), ti.episode());
-                }
-                try { CinemaWatchStore.syncWithTrakt(app); } catch (Exception ignored) {}
-                handler.post(() -> {
-                    if (!isAdded() || root == null) return;
-                    for (int i : new int[]{1, 6}) LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(i, null, CinemaHomeFragment.this);
-                });
-            });
-        });
-        if (!isWatchedRow) {
-            labels.add(c.getString(com.archos.mediacenter.video.R.string.cinema_remove_from_continue_watching));
-            actions.add(() -> {
-                captureContinueFocusPosition(rowId, null);
-                io.execute(() -> {
-                    CinemaWatchStore.removeTraktContinue(app, ti);
-                    handler.post(() -> {
-                        if (!isAdded() || root == null) return;
-                        for (int i : new int[]{1, 6}) LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(i, null, CinemaHomeFragment.this);
+        Item syntheticItem = new Item(video, null, null, ti.updatedAt() / 1000L, ti);
+        options.add(new CinemaContextDialog.Option(
+                com.archos.mediacenter.video.R.drawable.cinema_ic_trakt,
+                isWatchedRow
+                        ? label(c, "تحديد كغير مُشاهَد في Trakt", "Mark as Unwatched on Trakt")
+                        : label(c, "تحديد كمُشاهَد في Trakt", "Mark as Watched on Trakt"),
+                null,
+                () -> {
+                    applyOptimisticWatchedToggle(rowId, syntheticItem, !isWatchedRow);
+                    watchActionIo.execute(() -> {
+                        if (!isWatchedRow) {
+                            CinemaWatchStore.recordContinueTombstone(app, ti.itemKey(), "", "", ti.title(),
+                                    ti.imdbId(), ti.tmdbId(), ti.season(), ti.episode());
+                        }
+                        com.meedx.providers.TraktSyncClient.syncHistoryItem(app, isSeries, ti.imdbId(), ti.tmdbId(),
+                                Math.max(1, ti.season()), Math.max(1, ti.episode()), !isWatchedRow);
+                        if (!isWatchedRow) {
+                            com.meedx.providers.TraktSyncClient.removePlaybackProgress(
+                                    app, ti.imdbId(), ti.tmdbId(), ti.season(), ti.episode(), ti.title());
+                        }
+                        try { CinemaWatchStore.syncWithTrakt(app); } catch (Exception ignored) {}
+                        handler.post(this::restartActiveLoaders);
                     });
-                });
-            });
+                }));
+        if (!isWatchedRow) {
+            options.add(new CinemaContextDialog.Option(
+                    com.archos.mediacenter.video.R.drawable.cinema_restart,
+                    c.getString(com.archos.mediacenter.video.R.string.cinema_remove_from_continue_watching),
+                    null,
+                    () -> {
+                        applyOptimisticRemoveFromContinue(rowId, syntheticItem);
+                        Toast.makeText(c, c.getString(com.archos.mediacenter.video.R.string.cinema_removed_from_continue_watching), Toast.LENGTH_SHORT).show();
+                        watchActionIo.execute(() -> {
+                            CinemaWatchStore.removeTraktContinue(app, ti);
+                            handler.post(this::restartActiveLoaders);
+                        });
+                    }));
         }
-        showContextActionDialog(c, ti.title(), labels, actions);
+        CinemaContextDialog.show(c, com.archos.mediacenter.video.R.drawable.cinema_ic_trakt,
+                ti.title(), label(c, "خيارات العرض", "Media Options"), options);
     }
 
     private void open(Item item,int rowId){
+        clearOptimisticRemovedForPlay(item);
         if (item.value instanceof Video v && v.getFilePath() != null && v.getFilePath().startsWith("trakt://")) {
             CinemaWatchStore.TraktItem ti = item.trakt;
             if (ti != null) {
@@ -2509,10 +3084,8 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             return;
         }
         if (rowId == 1 && item.value instanceof Video video && !isSeriesRowItem(video, rowId)) {
-            com.archos.mediacenter.video.utils.PlayUtils.startVideo(requireActivity(), video,
-                    com.archos.mediacenter.video.player.PlayerActivity.RESUME_FROM_LAST_POS, false,
-                    (int) Math.max(0, CinemaMediaTime.knownResume(video.getId(), video.getFilePath(), video.getResumeMs())),
-                    null, -1);
+            CinemaPlaybackRouter.playVideo(requireActivity(), video, false,
+                    CinemaMediaTime.knownResume(video.getId(), video.getFilePath(), video.getResumeMs()));
             return;
         }
         Intent intent;
@@ -2579,17 +3152,17 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             }, this::isAdded);
             return;
         }
-        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(stream.streamUri()), requireContext(), CinemaHlsActivity.class)
-                .putExtra("format", stream.format())
-                .putExtra("title", stream.title())
-                .putExtra("stream_key", stream.streamKey())
-                .putExtra("media_type", stream.mediaType())
-                .putExtra("imdb_id", stream.imdbId())
-                .putExtra("tmdb_id", stream.tmdbId())
-                .putExtra("season", stream.season())
-                .putExtra("episode", stream.episode())
-                .putExtra("resume_ms", stream.watched() ? 0L : stream.positionMs());
-        startActivity(intent);
+        CinemaPlaybackRouter.playStream(requireContext(), CinemaPlaybackRouter.StreamRequest.basicVod(
+                Uri.parse(stream.streamUri()),
+                stream.format(),
+                stream.title(),
+                stream.streamKey(),
+                stream.mediaType(),
+                stream.imdbId(),
+                stream.tmdbId(),
+                stream.season(),
+                stream.episode(),
+                stream.positionMs() > 0 && !stream.removedFromContinue() ? stream.positionMs() : 0L));
     }
 
     private void playEpisodeDirectlyFromContinueWatching(Video video) {
@@ -2702,19 +3275,28 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                     : CinemaPosters.query(video, true).title();
             handler.post(() -> {
                 if (!isAdded() || root == null) return;
-                com.archos.mediacenter.video.utils.PlayUtils.startEpisodeWithContext(
-                        requireContext(), launchEp, seasonList, showTitle,
-                        resumeMs > 0 ? com.archos.mediacenter.video.player.PlayerActivity.RESUME_FROM_LAST_POS
-                                : com.archos.mediacenter.video.player.PlayerActivity.RESUME_NO,
-                        false, (int) Math.max(0L, resumeMs), -1L);
+                CinemaPlaybackRouter.playEpisode(
+                        requireContext(), launchEp, seasonList, showTitle, null,
+                        resumeMs <= 0L, false, resumeMs, -1);
             });
         });
     }
     private boolean isItemWatched(Item item){
+        if (item == null) return false;
+        if (!optimisticWatchedState.isEmpty()) {
+            for (String k : matchKeysForItem(item)) {
+                Boolean ov = optimisticWatchedState.get(k);
+                if (ov != null) return ov;
+            }
+        }
         if(item.stream!=null)return item.stream.watched();
+        if(item.trakt!=null&&"watched".equals(item.trakt.listType()))return true;
         if(item.value instanceof Video v){
             long res=CinemaMediaTime.knownResume(v.getId(),v.getFilePath(),v.getResumeMs());
-            return v.isWatched()||res==com.archos.mediacenter.video.player.PlayerActivity.LAST_POSITION_END;
+            return v.isWatched()||CinemaPlaybackRouter.isCompletedBookmark(res);
+        }
+        if(item.value instanceof Tvshow s){
+            return s.isWatched();
         }
         return false;
     }
@@ -2729,188 +3311,181 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         if(item.stream!=null){
             var s=item.stream;
             Context c=requireContext();
-            boolean w=s.watched();
-            java.util.List<String> labels=new java.util.ArrayList<>();
-            labels.add(c.getString(w?com.archos.mediacenter.video.R.string.cinema_mark_as_unwatched:com.archos.mediacenter.video.R.string.cinema_mark_as_watched_cinemadetailsactivity));
-            if(rowId==1||!w)labels.add(c.getString(com.archos.mediacenter.video.R.string.cinema_remove_from_continue_watching));
-            showContextActionDialog(c, s.title(), labels, java.util.List.of(
+            boolean w=isItemWatched(item);
+            java.util.List<CinemaContextDialog.Option> options = new java.util.ArrayList<>();
+            options.add(new CinemaContextDialog.Option(
+                    w ? com.archos.mediacenter.video.R.drawable.cinema_restart : com.archos.mediacenter.video.R.drawable.cinema_check,
+                    c.getString(w?com.archos.mediacenter.video.R.string.cinema_mark_as_unwatched:com.archos.mediacenter.video.R.string.cinema_mark_as_watched_cinemadetailsactivity),
+                    null,
                     () -> {
-                        if (rowId == 1 && !w) captureContinueFocusPosition(rowId, item);
-                        io.execute(() -> {
+                        applyOptimisticWatchedToggle(rowId, item, !w);
+                        watchActionIo.execute(() -> {
                             Context app = c.getApplicationContext();
                             CinemaWatchStore.markStreamWatched(app, s.streamKey(), !w);
+                            if (!w) {
+                                CinemaWatchStore.removePlaybackProgressFromTraktAsync(
+                                        app, 0L, s.streamUri(), s.title(), s.imdbId(), s.tmdbId(), s.season(), s.episode());
+                            }
                             CinemaLinkServer.broadcastWatchSync(CinemaWatchStore.buildSyncRecordForStream(
                                     CinemaWatchStore.getStream(app, s.streamKey())));
                             CinemaWatchStore.syncWithTraktAsync(app);
-                            handler.post(() -> {
-                                if (!isAdded() || root == null) return;
-                                for (int i : new int[]{1, 6}) LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(i, null, CinemaHomeFragment.this);
-                            });
+                            handler.post(this::restartActiveLoaders);
                         });
-                    },
-                    () -> {
-                        captureContinueFocusPosition(rowId, item);
-                        io.execute(() -> {
-                            Context app = c.getApplicationContext();
-                            CinemaWatchStore.removeStreamFromContinue(app, s.streamKey());
-                            CinemaWatchStore.clearMatchingContinue(app, s.imdbId(), s.tmdbId(), s.season(), s.episode());
-                            CinemaLinkServer.broadcastWatchSync(CinemaWatchStore.buildSyncRecordForStream(
-                                    CinemaWatchStore.getStream(app, s.streamKey())));
-                            CinemaWatchStore.removePlaybackProgressFromTraktAsync(
-                                    app, 0L, s.streamUri(), s.title(), s.imdbId(), s.tmdbId(), s.season(), s.episode());
-                            handler.post(() -> {
-                                if (!isAdded() || root == null) return;
-                                for (int i : new int[]{1, 6}) LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(i, null, CinemaHomeFragment.this);
+                    }));
+            if (rowId == 1 || (!s.removedFromContinue() && s.positionMs() > 0)) {
+                options.add(new CinemaContextDialog.Option(
+                        com.archos.mediacenter.video.R.drawable.cinema_restart,
+                        c.getString(com.archos.mediacenter.video.R.string.cinema_remove_from_continue_watching),
+                        null,
+                        () -> {
+                            applyOptimisticRemoveFromContinue(rowId, item);
+                            Toast.makeText(c, c.getString(com.archos.mediacenter.video.R.string.cinema_removed_from_continue_watching), Toast.LENGTH_SHORT).show();
+                            watchActionIo.execute(() -> {
+                                Context app = c.getApplicationContext();
+                                CinemaWatchStore.removeStreamFromContinue(app, s.streamKey());
+                                CinemaWatchStore.clearMatchingContinue(app, s.imdbId(), s.tmdbId(), s.season(), s.episode());
+                                CinemaLinkServer.broadcastWatchSync(CinemaWatchStore.buildSyncRecordForStream(
+                                        CinemaWatchStore.getStream(app, s.streamKey())));
+                                CinemaWatchStore.removePlaybackProgressFromTraktAsync(
+                                        app, 0L, s.streamUri(), s.title(), s.imdbId(), s.tmdbId(), s.season(), s.episode());
+                                handler.post(this::restartActiveLoaders);
                             });
-                        });
-                    }
-            ));
+                        }));
+            }
+            CinemaContextDialog.show(c, com.archos.mediacenter.video.R.drawable.cinema_more,
+                    s.title(), label(c, "خيارات العرض", "Media Options"), options);
             return;
         }
         if(!(item.value instanceof Video video)){
             Context c=requireContext();
-            java.util.List<String> labels=new java.util.ArrayList<>();
-            java.util.List<Runnable> actions=new java.util.ArrayList<>();
-            labels.add(c.getString(com.archos.mediacenter.video.R.string.cinema_open_details));
-            actions.add(()->open(item,rowId));
-            labels.add(c.getString(com.archos.mediacenter.video.R.string.cinema_refresh_poster_choose_another_poster));
-            actions.add(()->choosePoster(item,rowId));
+            java.util.List<CinemaContextDialog.Option> options = new java.util.ArrayList<>();
+            options.add(new CinemaContextDialog.Option(
+                    com.archos.mediacenter.video.R.drawable.cinema_play_movie,
+                    c.getString(com.archos.mediacenter.video.R.string.cinema_open_details),
+                    label(c, "عرض المواسم والحلقات والتقييمات", "Browse seasons, episodes & ratings"),
+                    () -> open(item, rowId)));
+            options.add(new CinemaContextDialog.Option(
+                    com.archos.mediacenter.video.R.drawable.cinema_ic_posters,
+                    c.getString(com.archos.mediacenter.video.R.string.cinema_refresh_poster_choose_another_poster),
+                    label(c, "اختيار بوستر بديل وتحديث الغلاف", "Choose another poster artwork"),
+                    () -> choosePoster(item, rowId)));
             if (rowId != 1) {
                 LibraryRow source = libraryRows.get(rowId);
                 String rowTitle = source == null ? rowTitle(c, rowId) : source.name();
-                labels.add(label(c, "🔀  فرز حسب...", "🔀  Sort By..."));
-                actions.add(() -> showSortDialog(rowId, rowTitle));
+                options.add(new CinemaContextDialog.Option(
+                        com.archos.mediacenter.video.R.drawable.cinema_ic_sort,
+                        label(c, "فرز الصف", "Sort By"),
+                        sortPillLabel(c, rowSortMode(rowId)),
+                        () -> showSortDialog(rowId, rowTitle)));
             }
-            showContextActionDialog(c, CinemaPosters.cleanDisplayTitle(item.value, CinemaUi.arabic(c)), labels, actions);
+            CinemaContextDialog.show(c, com.archos.mediacenter.video.R.drawable.cinema_more,
+                    CinemaPosters.cleanDisplayTitle(item.value, CinemaUi.arabic(c)),
+                    label(c, "خيارات العرض", "Media Options"), options);
             return;
         }
         Context c=requireContext();
         boolean currentlyWatched=isItemWatched(item);
         long res=CinemaMediaTime.knownResume(video.getId(),video.getFilePath(),video.getResumeMs());
-        boolean canRemoveContinue=rowId==1||res>0;
-        java.util.List<String> labels=new java.util.ArrayList<>();
-        java.util.List<Runnable> actions=new java.util.ArrayList<>();
-        labels.add(c.getString(currentlyWatched?com.archos.mediacenter.video.R.string.cinema_mark_as_unwatched:com.archos.mediacenter.video.R.string.cinema_mark_as_watched_cinemadetailsactivity));
-        actions.add(()->{
-            if (rowId == 1 && !currentlyWatched) captureContinueFocusPosition(rowId, item);
-            Context app=c.getApplicationContext();
-            io.execute(()->{
-                try{
-                    if(currentlyWatched)com.archos.mediacenter.video.utils.DbUtils.markAsNotRead(app,video);
-                    else com.archos.mediacenter.video.utils.DbUtils.markAsRead(app,video);
-                    CinemaLinkServer.broadcastWatchSync(CinemaWatchStore.buildSyncRecordForVideo(
-                            app,video,0L,!currentlyWatched,currentlyWatched));
-                    CinemaWatchStore.pushVideoWatchedToTraktAsync(app, video, !currentlyWatched);
-                    CinemaWatchStore.syncWithTraktAsync(app);
-                }catch(Exception ignored){}
-                handler.post(()->{
-                    if(!isAdded()||root==null)return;
-                    for(int i:new int[]{1,2,3,6})LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(i,null,CinemaHomeFragment.this);
-                });
-            });
-        });
-        if(canRemoveContinue){
-            labels.add(c.getString(com.archos.mediacenter.video.R.string.cinema_remove_from_continue_watching));
-            actions.add(()->{
-                captureContinueFocusPosition(rowId, item);
-                Context app=c.getApplicationContext();
-                io.execute(()->{
-                    try{
-                        com.archos.mediacenter.video.utils.DbUtils.markAsNotRead(app,video);
-                        android.content.ContentValues values=new android.content.ContentValues();
-                        values.put(VideoStore.Video.VideoColumns.BOOKMARK,com.archos.mediacenter.video.player.PlayerActivity.LAST_POSITION_UNKNOWN);
-                        values.put(VideoStore.Video.VideoColumns.ARCHOS_BOOKMARK,0);
-                        values.put(VideoStore.Video.VideoColumns.ARCHOS_LAST_TIME_PLAYED,0);
-                        values.put(VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN,0);
-                        values.put(VideoStore.Video.VideoColumns.ARCHOS_TRAKT_RESUME,0);
-                        app.getContentResolver().update(VideoStore.Video.Media.EXTERNAL_CONTENT_URI,values,"_id=?",new String[]{Long.toString(video.getId())});
-                        CinemaMediaTime.clearResume(video.getId(),video.getFilePath(),video.getFileUri());
-                        CinemaLinkServer.broadcastWatchSync(CinemaWatchStore.buildSyncRecordForVideo(
-                                app,video,0L,false,true));
-                        var identity = CinemaWatchStore.resolvePlaybackDescriptor(
-                                app, video.getId(), video.getFilePath(), video.getName());
-                        CinemaWatchStore.clearMatchingContinue(app, identity.imdbId(), identity.tmdbId(),
-                                identity.season(), identity.episode());
-                        CinemaWatchStore.removePlaybackProgressFromTraktAsync(app, video.getId(),
-                                video.getFilePath(), video.getName(), identity.imdbId(), identity.tmdbId(),
-                                identity.season(), identity.episode());
-                    }catch(Exception ignored){}
-                    handler.post(()->{
-                        if(!isAdded()||root==null)return;
-                        for(int i:new int[]{1,2,3,6})LoaderManager.getInstance(CinemaHomeFragment.this).restartLoader(i,null,CinemaHomeFragment.this);
-                        Toast.makeText(c,c.getString(com.archos.mediacenter.video.R.string.cinema_removed_from_continue_watching),Toast.LENGTH_SHORT).show();
+        boolean canRemoveContinue=rowId==1||(res>0&&!CinemaPlaybackRouter.isCompletedBookmark(res));
+        java.util.List<CinemaContextDialog.Option> options = new java.util.ArrayList<>();
+        options.add(new CinemaContextDialog.Option(
+                com.archos.mediacenter.video.R.drawable.cinema_play_movie,
+                c.getString(com.archos.mediacenter.video.R.string.cinema_open_details),
+                label(c, "عرض القصة وطاقم التمثيل وخيارات التشغيل", "Synopsis, cast, ratings & playback options"),
+                () -> open(item, rowId)));
+        options.add(new CinemaContextDialog.Option(
+                currentlyWatched ? com.archos.mediacenter.video.R.drawable.cinema_restart : com.archos.mediacenter.video.R.drawable.cinema_check,
+                c.getString(currentlyWatched?com.archos.mediacenter.video.R.string.cinema_mark_as_unwatched:com.archos.mediacenter.video.R.string.cinema_mark_as_watched_cinemadetailsactivity),
+                null,
+                () -> {
+                    applyOptimisticWatchedToggle(rowId, item, !currentlyWatched);
+                    Context app=c.getApplicationContext();
+                    watchActionIo.execute(()->{
+                        try{
+                            if(currentlyWatched)com.archos.mediacenter.video.utils.DbUtils.markAsNotRead(app,video);
+                            else {
+                                com.archos.mediacenter.video.utils.DbUtils.markAsRead(app,video);
+                                CinemaWatchStore.removePlaybackProgressFromTraktAsync(
+                                        app, video.getId(), video.getFilePath(), video.getName(), "", 0L, 0, 0);
+                            }
+                            CinemaLinkServer.broadcastWatchSync(CinemaWatchStore.buildSyncRecordForVideo(
+                                    app,video,0L,!currentlyWatched,currentlyWatched));
+                            CinemaWatchStore.pushVideoWatchedToTraktAsync(app, video, !currentlyWatched);
+                        }catch(Exception ignored){}
+                        handler.post(this::restartActiveLoaders);
                     });
-                });
-            });
+                }));
+        if(canRemoveContinue){
+            options.add(new CinemaContextDialog.Option(
+                    com.archos.mediacenter.video.R.drawable.cinema_restart,
+                    c.getString(com.archos.mediacenter.video.R.string.cinema_remove_from_continue_watching),
+                    label(c, "مسح نقطة التوقف الحالية وإعادة الوقت للبداية", "Clear saved progress and reset playback time"),
+                    () -> {
+                        boolean preserveWatched = currentlyWatched;
+                        applyOptimisticRemoveFromContinue(rowId, item);
+                        Toast.makeText(c,c.getString(com.archos.mediacenter.video.R.string.cinema_removed_from_continue_watching),Toast.LENGTH_SHORT).show();
+                        Context app=c.getApplicationContext();
+                        watchActionIo.execute(()->{
+                            try{
+                                CinemaWatchStore.recordContinueTombstone(
+                                        app, "", video.getId() > 0 ? "v:" + video.getId() : "",
+                                        video.getFilePath(), video.getName(), "",
+                                        video instanceof Movie m ? m.getOnlineId() : 0L,
+                                        video instanceof com.archos.mediacenter.video.browser.adapters.object.Episode ep ? ep.getSeasonNumber() : 0,
+                                        video instanceof com.archos.mediacenter.video.browser.adapters.object.Episode ep ? ep.getEpisodeNumber() : 0);
+                                com.archos.mediacenter.video.utils.DbUtils.clearResumeOnly(app, video);
+                                CinemaLinkServer.broadcastWatchSync(CinemaWatchStore.buildSyncRecordForVideo(
+                                        app,video,0L,preserveWatched,true));
+                                var identity = CinemaWatchStore.resolvePlaybackDescriptor(
+                                        app, video.getId(), video.getFilePath(), video.getName());
+                                CinemaWatchStore.recordContinueTombstone(
+                                        app, identity.canonicalKey(), identity.streamKey(),
+                                        video.getFilePath(), video.getName(), identity.imdbId(), identity.tmdbId(),
+                                        identity.season(), identity.episode());
+                                CinemaWatchStore.clearMatchingContinue(app, identity.imdbId(), identity.tmdbId(),
+                                        identity.season(), identity.episode());
+                                CinemaWatchStore.removePlaybackProgressFromTraktAsync(app, video.getId(),
+                                        video.getFilePath(), video.getName(), identity.imdbId(), identity.tmdbId(),
+                                        identity.season(), identity.episode());
+                            }catch(Exception ignored){}
+                            handler.post(this::restartActiveLoaders);
+                        });
+                    }));
         }
-        labels.add(c.getString(com.archos.mediacenter.video.R.string.cinema_open_details));
-        actions.add(()->open(item,rowId));
-        labels.add(c.getString(com.archos.mediacenter.video.R.string.cinema_refresh_poster_choose_another_poster));
-        actions.add(()->choosePoster(item,rowId));
+        options.add(new CinemaContextDialog.Option(
+                com.archos.mediacenter.video.R.drawable.cinema_more,
+                c.getString(com.archos.mediacenter.video.R.string.cinema_more_details_and_advanced_actions),
+                label(c, "مواصفات الملف والمسارات والإجراءات المتقدمة", "Codec info, tracks, add-on streams & file actions"),
+                () -> {
+                    if (!isAdded() || getActivity() == null) return;
+                    CinemaMediaMoreDialog.with(requireActivity())
+                            .video(video)
+                            .displayTitle(CinemaPosters.cleanDisplayTitle(video, CinemaUi.arabic(c)))
+                            .onOpenDetails(() -> open(item, rowId))
+                            .onPlayResume(() -> CinemaPlaybackRouter.playVideo(requireActivity(), video, false,
+                                    CinemaMediaTime.knownResume(video.getId(), video.getFilePath(), video.getResumeMs())))
+                            .onPlayFromBeginning(() -> CinemaPlaybackRouter.playVideo(requireActivity(), video, true, 0L))
+                            .onChangePoster(() -> choosePoster(item, rowId))
+                            .onStateChanged(this::restartActiveLoaders)
+                            .show();
+                }));
+        options.add(new CinemaContextDialog.Option(
+                com.archos.mediacenter.video.R.drawable.cinema_ic_posters,
+                c.getString(com.archos.mediacenter.video.R.string.cinema_refresh_poster_choose_another_poster),
+                label(c, "اختيار بوستر بديل وتحديث الغلاف", "Choose another poster artwork"),
+                () -> choosePoster(item, rowId)));
         if (rowId != 1) {
             LibraryRow source = libraryRows.get(rowId);
             String rowTitle = source == null ? rowTitle(c, rowId) : source.name();
-            labels.add(label(c, "🔀  فرز حسب...", "🔀  Sort By..."));
-            actions.add(() -> showSortDialog(rowId, rowTitle));
+            options.add(new CinemaContextDialog.Option(
+                    com.archos.mediacenter.video.R.drawable.cinema_ic_sort,
+                    label(c, "فرز الصف", "Sort By"),
+                    sortPillLabel(c, rowSortMode(rowId)),
+                    () -> showSortDialog(rowId, rowTitle)));
         }
-        showContextActionDialog(c, CinemaPosters.cleanDisplayTitle(video, CinemaUi.arabic(c)), labels, actions);
-    }
-
-    private void showContextActionDialog(Context c, String dialogTitle, List<String> labels, List<Runnable> actions) {
-        boolean rtl = CinemaUi.arabic(c);
-        LinearLayout box = new LinearLayout(c);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
-        box.setBackground(rounded(0xff1c1d22, dp(c, 16), 0xff3a3322));
-        box.setPadding(dp(c, 18), dp(c, 16), dp(c, 18), dp(c, 18));
-
-        TextView head = text(c, 18, true);
-        head.setText(dialogTitle);
-        head.setTextColor(CinemaTokens.TEXT);
-        head.setGravity(Gravity.CENTER_VERTICAL | (rtl ? Gravity.RIGHT : Gravity.LEFT));
-        head.setPadding(dp(c, 4), 0, dp(c, 4), dp(c, 12));
-        box.addView(head, new LinearLayout.LayoutParams(-1, -2));
-
-        androidx.appcompat.app.AlertDialog dlg = CinemaUi.dialog(c).setView(box).create();
-        int count = Math.min(labels.size(), actions.size());
-        for (int i = 0; i < count; i++) {
-            final int idx = i;
-            TextView btn = text(c, 15, true);
-            btn.setText(labels.get(i));
-            btn.setGravity(Gravity.CENTER);
-            btn.setTextAlignment(View.TEXT_ALIGNMENT_CENTER);
-            btn.setPadding(dp(c, 16), dp(c, 11), dp(c, 16), dp(c, 11));
-            focusable(btn);
-            btn.setOnClickListener(v -> {
-                dlg.dismiss();
-                actions.get(idx).run();
-            });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-            lp.bottomMargin = dp(c, 8);
-            box.addView(btn, lp);
-        }
-
-        TextView cancelBtn = text(c, 15, true);
-        cancelBtn.setText(label(c, "إلغاء", "Cancel"));
-        cancelBtn.setGravity(Gravity.CENTER);
-        cancelBtn.setTextAlignment(View.TEXT_ALIGNMENT_CENTER);
-        cancelBtn.setPadding(dp(c, 16), dp(c, 11), dp(c, 16), dp(c, 11));
-        focusable(cancelBtn);
-        cancelBtn.setBackground(rounded(0xff26272e, dp(c, CinemaTokens.CONTROL_RADIUS), 0xff3a3322));
-        cancelBtn.setOnFocusChangeListener((v, hasFocus) -> {
-            cancelBtn.setBackground(rounded(hasFocus ? CinemaTokens.FOCUS : 0xff26272e, dp(c, CinemaTokens.CONTROL_RADIUS), 0xff3a3322));
-            cancelBtn.setTextColor(hasFocus ? CinemaTokens.ON_FOCUS : CinemaTokens.TEXT);
-        });
-        cancelBtn.setOnClickListener(v -> dlg.dismiss());
-        box.addView(cancelBtn, new LinearLayout.LayoutParams(-1, -2));
-
-        dlg.show();
-        if (dlg.getWindow() != null) {
-            dlg.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
-        }
-        box.post(() -> {
-            if (box.getChildCount() > 1) box.getChildAt(1).requestFocus();
-        });
+        CinemaContextDialog.show(c, com.archos.mediacenter.video.R.drawable.cinema_more,
+                CinemaPosters.cleanDisplayTitle(video, CinemaUi.arabic(c)),
+                label(c, "خيارات العرض", "Media Options"), options);
     }
 
     private String rowSortPrefKey(int id) {
@@ -2924,10 +3499,14 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
 
     private String sortPillLabel(Context c, String mode) {
         return switch (mode) {
-            case SORT_NAME -> label(c, "🔤 الاسم (أ–ي)", "🔤 Name (A–Z)");
-            case SORT_YEAR -> label(c, "📅 سنة الإصدار", "📅 Release Year");
-            case SORT_RATING -> label(c, "⭐ الأعلى تقييماً", "⭐ Top Rated");
-            default -> label(c, "🕒 الأحدث تنزيلاً", "🕒 Latest Downloaded");
+            case SORT_OLDEST -> label(c, "الأقدم إضافةً", "Oldest Added");
+            case SORT_NAME -> label(c, "الاسم (أ – ي)", "Title (A–Z)");
+            case SORT_NAME_DESC -> label(c, "الاسم (ي – أ)", "Title (Z–A)");
+            case SORT_YEAR -> label(c, "سنة الإصدار (الأحدث)", "Release Year (Newest)");
+            case SORT_YEAR_OLDEST -> label(c, "سنة الإصدار (الأقدم)", "Release Year (Oldest)");
+            case SORT_RATING -> label(c, "الأعلى تقييماً", "Top Rated");
+            case SORT_WATCHED -> label(c, "الأعمال المشاهدة", "Watched First");
+            default -> label(c, "الأحدث إضافةً", "Newest Added");
         };
     }
 
@@ -2936,56 +3515,159 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
     }
 
     private List<Item> applyRowSort(int id, List<Item> input) {
+        Context c = getContext();
+        if (c == null) return input == null ? List.of() : input;
+        Context app = c.getApplicationContext();
+        String lang = MetadataLanguage.resolve(app);
+        return applyRowSortWithApp(id, input, app, lang, lang.startsWith("ar"));
+    }
+
+    private List<Item> applyRowSortWithApp(int id, List<Item> input, Context app, String lang, boolean arabicMode) {
         if (input == null || input.size() <= 1) return input == null ? List.of() : input;
         String mode = rowSortMode(id);
-        Context c = getContext();
         List<Item> sorted = new ArrayList<>(input);
         switch (mode) {
             case SORT_OLDEST -> sorted.sort((a, b) -> Long.compare(a.dateAdded, b.dateAdded));
-            case SORT_NAME -> sorted.sort((a, b) -> itemDisplaySortTitle(c, a).compareToIgnoreCase(itemDisplaySortTitle(c, b)));
-            case SORT_NAME_DESC -> sorted.sort((a, b) -> itemDisplaySortTitle(c, b).compareToIgnoreCase(itemDisplaySortTitle(c, a)));
-            case SORT_YEAR -> sorted.sort((a, b) -> {
-                int yCmp = Integer.compare(itemYearForSort(c, b), itemYearForSort(c, a));
-                return yCmp != 0 ? yCmp : Long.compare(b.dateAdded, a.dateAdded);
-            });
-            case SORT_YEAR_OLDEST -> sorted.sort((a, b) -> {
-                int ya = itemYearForSort(c, a);
-                int yb = itemYearForSort(c, b);
-                if (ya <= 0 && yb > 0) return 1;
-                if (yb <= 0 && ya > 0) return -1;
-                int yCmp = Integer.compare(ya, yb);
-                return yCmp != 0 ? yCmp : Long.compare(b.dateAdded, a.dateAdded);
-            });
-            case SORT_RATING -> sorted.sort((a, b) -> {
-                int rCmp = Double.compare(itemRatingForSort(c, b), itemRatingForSort(c, a));
-                return rCmp != 0 ? rCmp : Long.compare(b.dateAdded, a.dateAdded);
+            case SORT_NAME, SORT_NAME_DESC -> {
+                Map<Item, String> titles = new java.util.IdentityHashMap<>(sorted.size());
+                for (Item it : sorted) {
+                    String pk = lang + ":" + mediaKey(it.value);
+                    CinemaArtwork.Art art = app != null ? CinemaArtwork.getCachedHero(app, pk) : null;
+                    String t = (art != null && art.title() != null && !art.title().isBlank())
+                            ? art.title() : CinemaPosters.cleanDisplayTitle(it.value, arabicMode);
+                    titles.put(it, t == null ? "" : t);
+                }
+                boolean desc = SORT_NAME_DESC.equals(mode);
+                sorted.sort((a, b) -> desc
+                        ? titles.get(b).compareToIgnoreCase(titles.get(a))
+                        : titles.get(a).compareToIgnoreCase(titles.get(b)));
+            }
+            case SORT_YEAR, SORT_YEAR_OLDEST -> {
+                Map<Item, Integer> years = new java.util.IdentityHashMap<>(sorted.size());
+                for (Item it : sorted) {
+                    String pk = lang + ":" + mediaKey(it.value);
+                    CinemaArtwork.Art art = app != null ? CinemaArtwork.getCachedHero(app, pk) : null;
+                    int y = (art != null && art.year() > 0) ? art.year()
+                            : (it.value instanceof Movie m && m.getYear() > 0 ? m.getYear()
+                            : (it.value instanceof Tvshow s && s.getYear() > 0 ? s.getYear()
+                            : CinemaPosters.query(it.value).year()));
+                    years.put(it, y);
+                }
+                if (SORT_YEAR.equals(mode)) {
+                    sorted.sort((a, b) -> {
+                        int yCmp = Integer.compare(years.get(b), years.get(a));
+                        return yCmp != 0 ? yCmp : Long.compare(b.dateAdded, a.dateAdded);
+                    });
+                } else {
+                    sorted.sort((a, b) -> {
+                        int ya = years.get(a);
+                        int yb = years.get(b);
+                        if (ya <= 0 && yb > 0) return 1;
+                        if (yb <= 0 && ya > 0) return -1;
+                        int yCmp = Integer.compare(ya, yb);
+                        return yCmp != 0 ? yCmp : Long.compare(b.dateAdded, a.dateAdded);
+                    });
+                }
+            }
+            case SORT_RATING -> {
+                Map<Item, Double> ratings = new java.util.IdentityHashMap<>(sorted.size());
+                for (Item it : sorted) {
+                    String pk = lang + ":" + mediaKey(it.value);
+                    CinemaArtwork.Art art = app != null ? CinemaArtwork.getCachedHero(app, pk) : null;
+                    double r = (art != null && art.rating() > 0) ? art.rating()
+                            : (it.value instanceof Movie m && m.getRating() > 0 ? m.getRating()
+                            : (it.value instanceof Tvshow s && s.getRating() > 0 ? s.getRating() : 0.0));
+                    ratings.put(it, r);
+                }
+                sorted.sort((a, b) -> {
+                    int rCmp = Double.compare(ratings.get(b), ratings.get(a));
+                    return rCmp != 0 ? rCmp : Long.compare(b.dateAdded, a.dateAdded);
+                });
+            }
+            case SORT_WATCHED -> sorted.sort((a, b) -> {
+                int wCmp = Boolean.compare(isItemWatched(b), isItemWatched(a));
+                return wCmp != 0 ? wCmp : Long.compare(b.dateAdded, a.dateAdded);
             });
             default -> sorted.sort((a, b) -> Long.compare(b.dateAdded, a.dateAdded));
         }
         return sorted;
     }
 
-    private String itemDisplaySortTitle(Context c, Item it) {
-        boolean ar = c != null && MetadataLanguage.resolve(c).startsWith("ar");
-        CinemaArtwork.Art art = c != null ? CinemaArtwork.getCachedHero(c.getApplicationContext(), posterKey(it.value)) : null;
-        if (art != null && art.title() != null && !art.title().isBlank()) return art.title();
-        return CinemaPosters.cleanDisplayTitle(it.value, ar);
+    private void populateCachedItemFields(Item item, Context app, String lang, boolean arabicMode, boolean uiArabic, int cardWidth) {
+        String pk = lang + ":" + mediaKey(item.value);
+        item.cachedPosterKey = pk;
+        CinemaArtwork.Art art = app != null ? CinemaArtwork.getCachedHero(app, pk) : null;
+        if (item.stream != null && item.stream.episode() > 0) {
+            String episode = stripGenericEpisodeTokens(item.stream.title());
+            item.cachedCardTitle = episode.isBlank() ? item.value.getName() : episode;
+        } else if (item.stream != null) {
+            item.cachedCardTitle = item.stream.title();
+        } else {
+            item.cachedCardTitle = (art != null && art.title() != null && !art.title().isBlank())
+                    ? art.title() : CinemaPosters.cleanDisplayTitle(item.value, arabicMode);
+        }
+        item.cachedWatched = isItemWatched(item);
+        int progress = 0;
+        if (item.stream != null) {
+            if (!item.stream.removedFromContinue() && item.stream.durationMs() > 0 && item.stream.positionMs() > 0) {
+                progress = (int) Math.min(cardWidth, (long) cardWidth * item.stream.positionMs() / item.stream.durationMs());
+            }
+        } else if (item.value instanceof Video v) {
+            long dur = CinemaMediaTime.known(v.getId(), v.getFilePath(), v.getDurationMs());
+            long res = CinemaMediaTime.knownResume(v.getId(), v.getFilePath(), v.getResumeMs());
+            if (dur > 0 && res > 0 && !CinemaPlaybackRouter.isCompletedBookmark(res)) {
+                progress = (int) Math.min(cardWidth, (long) cardWidth * res / dur);
+            }
+        }
+        item.cachedProgressWidth = progress;
+        int badgeSeason = 0, badgeEp = 0;
+        if (item.stream != null && "episode".equalsIgnoreCase(item.stream.mediaType()) && item.stream.episode() > 0) {
+            badgeSeason = item.stream.season();
+            badgeEp = item.stream.episode();
+        } else if (item.value instanceof com.archos.mediacenter.video.browser.adapters.object.Episode ep) {
+            badgeSeason = ep.getSeasonNumber();
+            badgeEp = ep.getEpisodeNumber();
+        } else if (item.value instanceof Video v && isSeriesOrEpisodeFile(v, v.getFilePath())) {
+            int[] se = CinemaPosters.findSeasonEpisode(v.getFilePath(), v.getName());
+            if (se[1] > 0) {
+                badgeSeason = Math.max(1, se[0]);
+                badgeEp = se[1];
+            }
+        }
+        item.cachedEpisodeTag = badgeEp > 0
+                ? (uiArabic ? String.format(Locale.US, "م%d · ح%d", badgeSeason, badgeEp)
+                            : String.format(Locale.US, "S%02d E%02d", badgeSeason, badgeEp))
+                : null;
     }
 
-    private int itemYearForSort(Context c, Item it) {
-        CinemaArtwork.Art art = c != null ? CinemaArtwork.getCachedHero(c.getApplicationContext(), posterKey(it.value)) : null;
-        if (art != null && art.year() > 0) return art.year();
-        if (it.value instanceof Movie m && m.getYear() > 0) return m.getYear();
-        if (it.value instanceof Tvshow s && s.getYear() > 0) return s.getYear();
-        return CinemaPosters.query(it.value).year();
-    }
-
-    private double itemRatingForSort(Context c, Item it) {
-        CinemaArtwork.Art art = c != null ? CinemaArtwork.getCachedHero(c.getApplicationContext(), posterKey(it.value)) : null;
-        if (art != null && art.rating() > 0) return art.rating();
-        if (it.value instanceof Movie m && m.getRating() > 0) return m.getRating();
-        if (it.value instanceof Tvshow s && s.getRating() > 0) return s.getRating();
-        return 0.0;
+    private static androidx.recyclerview.widget.DiffUtil.DiffResult computePostersDiff(List<Item> oldItems, List<Item> newItems) {
+        return androidx.recyclerview.widget.DiffUtil.calculateDiff(
+                new androidx.recyclerview.widget.DiffUtil.Callback() {
+                    @Override public int getOldListSize() { return oldItems.size(); }
+                    @Override public int getNewListSize() { return newItems.size(); }
+                    @Override public boolean areItemsTheSame(int oldPos, int newPos) {
+                        return itemKey(oldItems.get(oldPos)).equals(itemKey(newItems.get(newPos)));
+                    }
+                    @Override public boolean areContentsTheSame(int oldPos, int newPos) {
+                        Item a = oldItems.get(oldPos);
+                        Item b = newItems.get(newPos);
+                        if (!java.util.Objects.equals(a.cachedPosterKey, b.cachedPosterKey)) return false;
+                        if (!java.util.Objects.equals(a.background, b.background)) return false;
+                        if (!java.util.Objects.equals(a.cachedCardTitle, b.cachedCardTitle)) return false;
+                        if (a.cachedWatched != b.cachedWatched) return false;
+                        if (a.cachedProgressWidth != b.cachedProgressWidth) return false;
+                        return java.util.Objects.equals(a.cachedEpisodeTag, b.cachedEpisodeTag);
+                    }
+                    @Override public Object getChangePayload(int oldPos, int newPos) {
+                        Item a = oldItems.get(oldPos);
+                        Item b = newItems.get(newPos);
+                        if (java.util.Objects.equals(a.cachedPosterKey, b.cachedPosterKey)
+                                && java.util.Objects.equals(a.background, b.background)) {
+                            return Posters.PAYLOAD_STATE;
+                        }
+                        return null;
+                    }
+                }, true);
     }
 
     private void showSortDialog(int rowId, String rowTitle) {
@@ -2993,37 +3675,66 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         String curMode = rowSortMode(rowId);
         String[] modes = {
                 SORT_LATEST, SORT_OLDEST, SORT_NAME, SORT_NAME_DESC,
-                SORT_YEAR, SORT_YEAR_OLDEST, SORT_RATING
+                SORT_YEAR, SORT_YEAR_OLDEST, SORT_RATING, SORT_WATCHED
         };
-        String[] labels = {
-                label(c, "🆕  الأحدث تنزيلاً أولاً  (الافتراضي)", "🆕  Newest Downloaded First  (Default)"),
-                label(c, "🕰️  الأقدم تنزيلاً أولاً", "🕰️  Oldest Downloaded First"),
-                label(c, "🔤  الاسم (أ – ي)", "🔤  Name (A–Z)"),
-                label(c, "🔠  الاسم تنازلياً (ي – أ)", "🔠  Name Descending (Z–A)"),
-                label(c, "📅  سنة الإصدار: الأحدث أولاً", "📅  Release Year: Newest First"),
-                label(c, "📆  سنة الإصدار: الأقدم أولاً", "📆  Release Year: Oldest First"),
-                label(c, "⭐  الأعلى تقييماً", "⭐  Highest Rated")
+        int[] icons = {
+                com.archos.mediacenter.video.R.drawable.cinema_ic_timer,
+                com.archos.mediacenter.video.R.drawable.cinema_ic_timer,
+                com.archos.mediacenter.video.R.drawable.cinema_ic_alpha,
+                com.archos.mediacenter.video.R.drawable.cinema_ic_alpha,
+                com.archos.mediacenter.video.R.drawable.cinema_ic_calendar,
+                com.archos.mediacenter.video.R.drawable.cinema_ic_calendar,
+                com.archos.mediacenter.video.R.drawable.cinema_ic_star,
+                com.archos.mediacenter.video.R.drawable.cinema_check
         };
-        List<String> dialogLabels = new ArrayList<>();
-        List<Runnable> dialogActions = new ArrayList<>();
+        String[] titles = {
+                label(c, "الأحدث إضافةً", "Newest Added"),
+                label(c, "الأقدم إضافةً", "Oldest Added"),
+                label(c, "الاسم (أ – ي)", "Title (A–Z)"),
+                label(c, "الاسم (ي – أ)", "Title (Z–A)"),
+                label(c, "سنة الإصدار: الأحدث أولاً", "Release Year: Newest First"),
+                label(c, "سنة الإصدار: الأقدم أولاً", "Release Year: Oldest First"),
+                label(c, "الأعلى تقييماً", "Top Rated"),
+                label(c, "الأعمال المشاهدة أولاً", "Watched First")
+        };
+        String[] subtitles = {
+                label(c, "أحدث الملفات المضافة أولاً (الافتراضي)", "Most recently added items first (Default)"),
+                label(c, "أقدم الملفات المضافة أولاً", "Earliest added items first"),
+                label(c, "ترتيب أبجدي تصاعدي حسب العنوان", "Alphabetical order ascending"),
+                label(c, "ترتيب أبجدي تنازلي حسب العنوان", "Alphabetical order descending"),
+                label(c, "الأعمال الأحدث إصداراً أولاً", "Newest release year first"),
+                label(c, "الأعمال الأقدم إصداراً أولاً", "Oldest release year first"),
+                label(c, "ترتيب تنازلي حسب تقييم العمل", "Highest rated titles first"),
+                label(c, "عرض الأعمال التي تمت مشاهدتها في المقدمة", "Group watched titles first with exact order")
+        };
+        List<CinemaContextDialog.Option> options = new ArrayList<>(modes.length);
         for (int i = 0; i < modes.length; i++) {
             final String chosen = modes[i];
-            dialogLabels.add((chosen.equals(curMode) ? "✓  " : "") + labels[i]);
-            dialogActions.add(() -> {
-                prefs.edit().putString(rowSortPrefKey(rowId), chosen).apply();
-                List<Item> existing = data.get(rowId);
-                if (existing != null) {
-                    List<Item> sorted = applyRowSort(rowId, existing);
-                    data.put(rowId, sorted);
-                    RecyclerView list = lists.get(rowId);
-                    if (list != null && list.getAdapter() instanceof Posters adapter) {
-                        adapter.replace(sorted);
-                        list.scrollToPosition(0);
-                    }
-                }
-            });
+            options.add(new CinemaContextDialog.Option(
+                    icons[i],
+                    titles[i],
+                    subtitles[i],
+                    chosen.equals(curMode),
+                    () -> {
+                        prefs.edit().putString(rowSortPrefKey(rowId), chosen).apply();
+                        List<Item> existing = data.get(rowId);
+                        if (existing != null) {
+                            List<Item> sorted = applyRowSort(rowId, existing);
+                            data.put(rowId, sorted);
+                            RecyclerView list = lists.get(rowId);
+                            if (list != null && list.getAdapter() instanceof Posters adapter) {
+                                adapter.replace(sorted);
+                                list.scrollToPosition(0);
+                            }
+                        }
+                    }));
         }
-        showContextActionDialog(c, label(c, "فرز حسب: ", "Sort By: ") + rowTitle, dialogLabels, dialogActions);
+        CinemaContextDialog.show(
+                c,
+                com.archos.mediacenter.video.R.drawable.cinema_ic_sort,
+                label(c, "فرز الصف", "Sort By"),
+                rowTitle,
+                options);
     }
     private void bindPoster(PosterHolder holder, Item item, Uri target, Uri fallback) {
         bindPosterWithRetry(holder, item, target, fallback, 0);
@@ -3095,9 +3806,29 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                 Uri original = item.value.getPosterUri();
                 boolean rejectOriginal = !arabicMode && hasArabicScrapedData(item.value);
                 if (!force && CinemaPosters.valid(cached)) return;
+                if (!force && item.stream != null) {
+                    var sid = CinemaWatchStore.getIdentity(app, item.stream.streamKey());
+                    if (sid == null && !item.stream.streamUri().isBlank()) {
+                        sid = CinemaWatchStore.getIdentityByUri(app, item.stream.streamUri());
+                    }
+                    if (sid != null && sid.posterUrl() != null && sid.posterUrl().startsWith("http")) {
+                        try {
+                            Uri savedFromIdentity = CinemaPosters.save(app, key, Uri.parse(sid.posterUrl()));
+                            if (savedFromIdentity != null) {
+                                posterChanged(key, savedFromIdentity, viewToken);
+                                return;
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                }
                 Uri localized = null;
                 long onlineId = posterOnlineId(app, item.value);
-                boolean isShow = item.value instanceof Tvshow || isSeriesOrEpisodeFile(item.value, null);
+                if (onlineId <= 0 && item.stream != null && item.stream.tmdbId() > 0) onlineId = item.stream.tmdbId();
+                if (onlineId <= 0 && item.trakt != null && item.trakt.tmdbId() > 0) onlineId = item.trakt.tmdbId();
+                boolean isShow = item.value instanceof Tvshow
+                        || (item.stream != null && ("episode".equalsIgnoreCase(item.stream.mediaType()) || item.stream.episode() > 0))
+                        || (item.trakt != null && ("episode".equalsIgnoreCase(item.trakt.mediaType()) || "show".equalsIgnoreCase(item.trakt.mediaType()) || item.trakt.episode() > 0))
+                        || isSeriesOrEpisodeFile(item.value, null);
                 try {
                     var art = CinemaArtwork.loadForItem(app, item.value, onlineId, isShow, language);
                     if (art != null) {
@@ -3111,14 +3842,29 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                 }
                 if (cached != null) CinemaArtwork.removeCachedPoster(app, key, cached);
                 Uri repaired = null;
-                var query = CinemaPosters.query(item.value);
+                var query = CinemaPosters.query(item.value, isShow);
+                if (query.title().isBlank() && item.stream != null) {
+                    query = CinemaPosters.parse(item.stream.title(), 0, isShow);
+                } else if (query.title().isBlank() && item.trakt != null) {
+                    query = CinemaPosters.parse(item.trakt.title(), item.trakt.year(), isShow);
+                }
                 android.util.Log.i(CinemaPosters.TAG, "Searching " + key + " " + query.title() + " (" + query.year() + ")");
                 for (var choice : CinemaPosters.search(app, query, onlineId, false)) {
-                    if (!choice.matches()) continue;
+                    if (!choice.matches() && item.stream == null && item.trakt == null) continue;
                     try {
                         repaired = CinemaPosters.save(app, key, choice);
-                        CinemaWatchStore.saveForBase(app, item.value, choice.imdbId(), choice.id(),
-                                choice.title(), choice.parsedYear(), choice.path(), choice.backdrop(), choice.provider());
+                        if (item.stream != null) {
+                            String fullPoster = choice.path().startsWith("https://")
+                                    ? choice.path() : "https://image.tmdb.org/t/p/w500" + choice.path();
+                            CinemaWatchStore.saveIdentity(app, item.stream.streamKey(), item.stream.streamUri(),
+                                    item.stream.mediaType(), !choice.imdbId().isEmpty() ? choice.imdbId() : item.stream.imdbId(),
+                                    choice.id() > 0 ? choice.id() : item.stream.tmdbId(),
+                                    item.stream.season(), item.stream.episode(),
+                                    choice.title(), choice.parsedYear(), fullPoster, choice.backdrop(), choice.provider());
+                        } else {
+                            CinemaWatchStore.saveForBase(app, item.value, choice.imdbId(), choice.id(),
+                                    choice.title(), choice.parsedYear(), choice.path(), choice.backdrop(), choice.provider());
+                        }
                         android.util.Log.i(CinemaPosters.TAG, "Saved " + key + " " + choice.title() + " (" + choice.year() + ")");
                         break;
                     } catch (java.io.IOException error) {
@@ -3194,7 +3940,7 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                     }
                 });
                 var dialog = CinemaUi.dialog(context).setTitle(context.getString(com.archos.mediacenter.video.R.string.cinema_choose_poster))
-                        .setView(list).setNegativeButton(android.R.string.cancel, null).create();
+                        .setView(list).create();
                 list.setOnItemClickListener((parent, row, position, id) -> {
                     dialog.dismiss();
                     String key = posterKey(item.value);
@@ -3222,15 +3968,16 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         int find(String key){for(int n=0;n<items.size();n++)if(itemKey(items.get(n)).equals(key))return n;return -1;}
         int findPoster(String key){for(int n=0;n<items.size();n++)if(posterKey(items.get(n).value).equals(key))return n;return -1;}
         private int computeProgressWidth(Item item) {
+            if (isOptimisticallyRemovedFromContinue(item, 0L)) return 0;
             if(item.stream!=null){
-                if(!item.stream.watched()&&item.stream.durationMs()>0&&item.stream.positionMs()>0){
+                if(!item.stream.removedFromContinue()&&item.stream.durationMs()>0&&item.stream.positionMs()>0){
                     return (int)Math.min(posterWidth(),(long)posterWidth()*item.stream.positionMs()/item.stream.durationMs());
                 }
                 return 0;
             }
             if(item.value instanceof Video v){
                 long dur=CinemaMediaTime.known(v.getId(),v.getFilePath(),v.getDurationMs()),res=CinemaMediaTime.knownResume(v.getId(),v.getFilePath(),v.getResumeMs());
-                if(dur>0&&res>0) return (int)Math.min(posterWidth(),(long)posterWidth()*res/dur);
+                if(dur>0&&res>0&&!CinemaPlaybackRouter.isCompletedBookmark(res)) return (int)Math.min(posterWidth(),(long)posterWidth()*res/dur);
             }
             return 0;
         }
@@ -3262,6 +4009,33 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             return item.stream != null ? item.stream.title()
                     : (art == null || art.title() == null || art.title().isBlank() ? cleanFallbackName : art.title());
         }
+        List<Item> snapshot() {
+            return items == null ? List.of() : List.copyOf(items);
+        }
+        void applyPrecomputed(List<Item> expectedOld, List<Item> updated,
+                              androidx.recyclerview.widget.DiffUtil.DiffResult precomputed) {
+            final List<Item> newItems = updated == null ? List.of() : updated;
+            if (this.items == null || this.items.isEmpty()) {
+                this.items = newItems;
+                notifyDataSetChanged();
+                return;
+            }
+            if (precomputed != null && expectedOld != null && expectedOld.size() == this.items.size()) {
+                boolean sameBase = true;
+                for (int i = 0; i < expectedOld.size(); i++) {
+                    if (expectedOld.get(i) != this.items.get(i)) {
+                        sameBase = false;
+                        break;
+                    }
+                }
+                if (sameBase) {
+                    this.items = newItems;
+                    precomputed.dispatchUpdatesTo(this);
+                    return;
+                }
+            }
+            replace(newItems);
+        }
         void replace(List<Item> updated){
             final List<Item> oldItems = this.items;
             final List<Item> newItems = updated == null ? List.of() : updated;
@@ -3271,35 +4045,17 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                 return;
             }
             final Context app = requireContext().getApplicationContext();
-            final boolean arabicMode = MetadataLanguage.resolve(requireContext()).startsWith("ar");
-            androidx.recyclerview.widget.DiffUtil.DiffResult diff = androidx.recyclerview.widget.DiffUtil.calculateDiff(
-                    new androidx.recyclerview.widget.DiffUtil.Callback() {
-                        @Override public int getOldListSize() { return oldItems.size(); }
-                        @Override public int getNewListSize() { return newItems.size(); }
-                        @Override public boolean areItemsTheSame(int oldPos, int newPos) {
-                            return itemKey(oldItems.get(oldPos)).equals(itemKey(newItems.get(newPos)));
-                        }
-                        @Override public boolean areContentsTheSame(int oldPos, int newPos) {
-                            Item a = oldItems.get(oldPos);
-                            Item b = newItems.get(newPos);
-                            String ka = posterKey(a.value), kb = posterKey(b.value);
-                            if (!ka.equals(kb)) return false;
-                            if (!java.util.Objects.equals(a.background, b.background)) return false;
-                            if (!java.util.Objects.equals(resolveCardTitle(a, app, ka, arabicMode), resolveCardTitle(b, app, kb, arabicMode))) return false;
-                            if (isItemWatched(a) != isItemWatched(b)) return false;
-                            if (computeProgressWidth(a) != computeProgressWidth(b)) return false;
-                            return java.util.Objects.equals(computeEpisodeTag(a), computeEpisodeTag(b));
-                        }
-                        @Override public Object getChangePayload(int oldPos, int newPos) {
-                            Item a = oldItems.get(oldPos);
-                            Item b = newItems.get(newPos);
-                            String ka = posterKey(a.value), kb = posterKey(b.value);
-                            if (ka.equals(kb) && java.util.Objects.equals(a.background, b.background)) {
-                                return PAYLOAD_STATE;
-                            }
-                            return null;
-                        }
-                    }, true);
+            final String lang = MetadataLanguage.resolve(app);
+            final boolean arabicMode = lang.startsWith("ar");
+            final boolean uiAr = CinemaUi.arabic(requireContext());
+            final int w = posterWidth();
+            for (Item it : oldItems) {
+                if (it.cachedPosterKey == null) populateCachedItemFields(it, app, lang, arabicMode, uiAr, w);
+            }
+            for (Item it : newItems) {
+                if (it.cachedPosterKey == null) populateCachedItemFields(it, app, lang, arabicMode, uiAr, w);
+            }
+            androidx.recyclerview.widget.DiffUtil.DiffResult diff = computePostersDiff(oldItems, newItems);
             this.items = newItems;
             diff.dispatchUpdatesTo(this);
         }
@@ -3311,9 +4067,9 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             RecyclerView.LayoutParams p=new RecyclerView.LayoutParams(posterWidth(),posterHeight());p.setMarginEnd(dp(c,16));card.setLayoutParams(p);
             ImageView image=new ImageView(c);image.setScaleType(ImageView.ScaleType.CENTER_CROP);card.addView(image,new FrameLayout.LayoutParams(-1,-1));
             TextView epBadge=text(c,11,true);epBadge.setTextColor(0xfff5d47a);epBadge.setPadding(dp(c,7),dp(c,3),dp(c,7),dp(c,3));epBadge.setBackground(rounded(0xe6101113,dp(c,6),CinemaTokens.GOLD));epBadge.setVisibility(View.GONE);
-            FrameLayout.LayoutParams epLp=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.START);epLp.setMargins(dp(c,6),dp(c,6),0,0);card.addView(epBadge,epLp);
+            FrameLayout.LayoutParams epLp=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.START);epLp.topMargin=dp(c,10);epLp.leftMargin=dp(c,12);epLp.rightMargin=dp(c,12);epLp.setMarginStart(dp(c,12));epLp.setMarginEnd(dp(c,12));card.addView(epBadge,epLp);
             TextView checkBadge=text(c,11,true);checkBadge.setText("✓");checkBadge.setTextColor(0xff101113);checkBadge.setGravity(Gravity.CENTER);checkBadge.setBackground(rounded(CinemaTokens.GOLD,dp(c,10),0));checkBadge.setVisibility(View.GONE);
-            FrameLayout.LayoutParams chkLp=new FrameLayout.LayoutParams(dp(c,20),dp(c,20),Gravity.TOP|Gravity.END);chkLp.setMargins(0,dp(c,6),dp(c,6),0);card.addView(checkBadge,chkLp);
+            FrameLayout.LayoutParams chkLp=new FrameLayout.LayoutParams(dp(c,20),dp(c,20),Gravity.TOP|Gravity.LEFT);chkLp.topMargin=dp(c,5);chkLp.leftMargin=dp(c,8);card.addView(checkBadge,chkLp);
             TextView name=text(c,11,true);name.setMaxLines(2);name.setPadding(dp(c,6),dp(c,4),dp(c,6),dp(c,4));name.setBackgroundColor(0xd9202020);
             card.addView(name,new FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM));
             View progress=new View(c);progress.setBackgroundColor(CinemaTokens.GOLD);FrameLayout.LayoutParams pp=new FrameLayout.LayoutParams(0,dp(c,3),Gravity.BOTTOM);card.addView(progress,pp);
@@ -3330,13 +4086,20 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
                 h.progress.getLayoutParams().width = progress;
                 h.progress.requestLayout();
             }
-            String epTag = computeEpisodeTag(item);
+            String epTag = item.cachedEpisodeTag != null || item.cachedPosterKey != null ? item.cachedEpisodeTag : computeEpisodeTag(item);
             if(epTag!=null){h.epBadge.setText(epTag);h.epBadge.setVisibility(View.VISIBLE);}
             else h.epBadge.setVisibility(View.GONE);
-            h.checkBadge.setVisibility(isItemWatched(item)?View.VISIBLE:View.GONE);
+            boolean watched = isItemWatched(item);
+            h.checkBadge.setVisibility(watched ? View.VISIBLE : View.GONE);
+            FrameLayout.LayoutParams epLp = (FrameLayout.LayoutParams) h.epBadge.getLayoutParams();
+            int episodeGravity = Gravity.TOP | (watched ? Gravity.RIGHT : Gravity.START);
+            if (epLp.gravity != episodeGravity) {
+                epLp.gravity = episodeGravity;
+                h.epBadge.setLayoutParams(epLp);
+            }
             h.itemView.setOnFocusChangeListener((v,focused)->{
                 setPosterFocus(v,focused);
-                if(focused){setPosterRowsShown(true);lastContentFocus=v;selectedRow=rowId;selectedKey=itemKey(item);select(item);
+                if(focused){setPosterRowsShown(true);lastContentFocus=v;selectedRow=rowId;selectedKey=itemKey(item);int fPos=h.getBindingAdapterPosition();if(fPos>=0)selectedPosition=fPos;select(item);
                     RecyclerView list=lists.get(rowId);if(list!=null)list.post(()->{if(root!=null&&contentScroll!=null){if(!v.hasFocus()||v.getParent()!=list)return;
                         int inset=Math.round(v.getWidth()*0.03f)+dp(requireContext(),4);
                         int right=v.getRight()-list.getWidth()+inset;
@@ -3350,7 +4113,8 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
             h.itemView.setOnClickListener(v->{
                 int current=h.getBindingAdapterPosition();
                 if(current==RecyclerView.NO_POSITION)return;
-                returningPoster=new PosterLocation(rowId,itemKey(item),current);
+                selectedPosition=current;
+                returningPoster=capturePosterLocation(rowId,itemKey(item),current);
                 open(item,rowId);
             });
             h.itemView.setOnLongClickListener(v->{
@@ -3414,54 +4178,39 @@ public class CinemaHomeFragment extends Fragment implements LoaderManager.Loader
         }
         @Override public void onBindViewHolder(@NonNull PosterHolder h,int position){
             Item item=items.get(position);
-            String key=posterKey(item.value);
+            String key=item.cachedPosterKey!=null?item.cachedPosterKey:posterKey(item.value);
             Context app = requireContext().getApplicationContext();
-            boolean arabicMode = MetadataLanguage.resolve(requireContext()).startsWith("ar");
+            boolean arabicMode = key.startsWith("ar");
             boolean rejectOriginal = !arabicMode && hasArabicScrapedData(item.value);
             Uri cached = CinemaArtwork.getCachedPosterInstant(app, key, mediaKey(item.value), null);
-            boolean exactReady = CinemaArtwork.hasExactLanguagePoster(app, key);
+            boolean exactReady = cached != null && CinemaArtwork.hasExactLanguagePoster(app, key);
             Uri fallback = rejectOriginal ? null : item.value.getPosterUri();
             Uri target = cached != null ? cached : fallback;
-            String title = resolveCardTitle(item, app, key, arabicMode);
+            String title = item.cachedCardTitle != null ? item.cachedCardTitle : resolveCardTitle(item, app, key, arabicMode);
             boolean sameDisplayedKey = key.equals(h.image.getTag()) && h.image.getDrawable() != null;
             android.graphics.Bitmap instantBmp = CinemaArtwork.getMemoryPosterBitmap(target);
             bindCardState(h, item, title, instantBmp != null || sameDisplayedKey);
             Picasso.get().cancelRequest(h.image);
             h.image.setTag(key);
-            if(item.stream==null){
-                if(instantBmp!=null){
-                    h.image.setImageBitmap(instantBmp);
-                    h.name.setVisibility(View.GONE);
-                }else{
-                    if(!sameDisplayedKey){
-                        h.image.setImageDrawable(null);
-                    }
-                    bindPoster(h, item, target, fallback);
-                }
-                if(target==null || !exactReady){
-                    long now=android.os.SystemClock.elapsedRealtime();
-                    Long prev=posterRetryAt.get(key);
-                    if(prev==null||now-prev>45_000L){
-                        posterRetryAt.put(key, now);
-                        queuePoster(item, false, false);
-                    }
-                }
-            } else if (item.stream.streamKey().startsWith("addon:")) {
-                var identity = CinemaWatchStore.getIdentity(app, item.stream.streamKey());
-                if (!sameDisplayedKey) {
+            if(instantBmp!=null){
+                h.image.setImageBitmap(instantBmp);
+                h.name.setVisibility(View.GONE);
+            }else{
+                if(!sameDisplayedKey){
                     h.image.setImageResource(com.archos.mediacenter.video.R.drawable.cinema_tr_movies_poster);
                     h.name.setVisibility(View.VISIBLE);
                 }
-                if (identity != null && !identity.posterUrl().isBlank()) {
-                    Uri artwork = Uri.parse(identity.posterUrl());
-                    if ("https".equals(artwork.getScheme()) || "http".equals(artwork.getScheme())) {
-                        bindPoster(h, item, artwork, null);
-                    }
-                } else {
-                    h.name.setVisibility(View.VISIBLE);
+                if(target!=null){
+                    bindPoster(h, item, target, fallback);
                 }
-            } else if (!sameDisplayedKey) {
-                h.image.setImageDrawable(null);
+            }
+            if(target==null || !exactReady){
+                long now=android.os.SystemClock.elapsedRealtime();
+                Long prev=posterRetryAt.get(key);
+                if(prev==null||now-prev>45_000L){
+                    posterRetryAt.put(key, now);
+                    queuePoster(item, false, false);
+                }
             }
         }
         @Override public void onViewRecycled(@NonNull PosterHolder h){Picasso.get().cancelRequest(h.image);h.itemView.animate().cancel();h.itemView.setForeground(null);h.itemView.setScaleX(1);h.itemView.setScaleY(1);super.onViewRecycled(h);}

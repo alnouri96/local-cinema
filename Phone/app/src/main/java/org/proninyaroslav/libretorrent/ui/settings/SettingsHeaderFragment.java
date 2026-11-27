@@ -72,6 +72,7 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
     private static final int CLOUD_SIGN_IN_CHECK = 0;
     private static final int CLOUD_UPLOAD = 1;
     private static final int CLOUD_RESTORE = 2;
+    private static final int CLOUD_DELETE = 3;
     private int pendingCloudMode = CLOUD_SIGN_IN_CHECK;
     private String pendingFallbackJson;
 
@@ -87,6 +88,8 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
                     if (acct != null) {
                         if (pendingCloudMode == CLOUD_SIGN_IN_CHECK) {
                             checkCloudBackupAfterSignIn(acct);
+                        } else if (pendingCloudMode == CLOUD_DELETE) {
+                            deleteCloudBackup(acct);
                         } else {
                             executeGoogleDriveTransfer(acct, pendingCloudMode == CLOUD_UPLOAD);
                         }
@@ -201,16 +204,6 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
         addPreferencesFromResource(R.xml.pref_headers);
         Context ctx = requireContext();
         PreferenceScreen screen = getPreferenceScreen();
-
-        // Collect existing XML preference pages so we can place them into clean visual categories
-        Preference appearancePref = screen.findPreference(getString(R.string.pref_key_appearance_settings));
-        Preference behaviorPref = screen.findPreference(getString(R.string.pref_key_behavior_settings));
-        Preference networkPref = screen.findPreference(getString(R.string.pref_key_network_settings));
-        Preference storagePref = screen.findPreference(getString(R.string.pref_key_storage_settings));
-        Preference limitationsPref = screen.findPreference(getString(R.string.pref_key_limitations_settings));
-        Preference schedulingPref = screen.findPreference(getString(R.string.pref_key_scheduling_settings));
-        Preference feedPref = screen.findPreference(getString(R.string.pref_key_feed_settings));
-        Preference streamingPref = screen.findPreference(getString(R.string.pref_key_streaming_settings));
         screen.removeAll();
 
         // 1. Local Cinema & Sync
@@ -230,6 +223,17 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
         });
         catSync.addPreference(tvSync);
 
+        googleAccountPref = new GoogleAccountHeaderPreference(
+                ctx,
+                this::startSettingsGoogleSignInCheck,
+                () -> startSettingsGoogleBackup(true),
+                () -> startSettingsGoogleBackup(false),
+                () -> CloudBackupDialog.confirmSignOut(requireContext(), this::signOutGoogle),
+                this::confirmDeleteCloudBackup,
+                () -> localBackupCreate.launch(LocalCinemaBackupManager.defaultLocalFilename()),
+                () -> localBackupOpen.launch(new String[]{"application/json", "text/plain", "*/*"}));
+        catSync.addPreference(googleAccountPref);
+
         var unifiedSubs = new Preference(ctx);
         unifiedSubs.setKey("unified_subtitle_settings");
         unifiedSubs.setTitle(l("الترجمة", "Subtitles"));
@@ -241,70 +245,19 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
         });
         catSync.addPreference(unifiedSubs);
 
-        googleAccountPref = new GoogleAccountHeaderPreference(
-                ctx,
-                this::startSettingsGoogleSignInCheck,
-                () -> startSettingsGoogleBackup(true),
-                () -> startSettingsGoogleBackup(false),
-                this::signOutGoogle,
-                () -> localBackupCreate.launch(LocalCinemaBackupManager.defaultLocalFilename()),
-                () -> localBackupOpen.launch(new String[]{"application/json", "text/plain", "*/*"}));
-        catSync.addPreference(googleAccountPref);
-
-        // 2. Storage & Maintenance
+        // 2. Cache Cleaner
         var catStorage = new androidx.preference.PreferenceCategory(ctx);
         catStorage.setKey("cat_storage_maintenance");
-        catStorage.setTitle(l("التخزين والكاش", "Storage & Cache"));
+        catStorage.setTitle(l("تنظيف الكاش", "Cache Cleaner"));
         screen.addPreference(catStorage);
 
         storageCachePref = new StorageCacheHeaderPreference(ctx);
         catStorage.addPreference(storageCachePref);
-        if (storagePref != null) catStorage.addPreference(storagePref);
 
-        // 3. App & Interface
-        var catInterface = new androidx.preference.PreferenceCategory(ctx);
-        catInterface.setKey("cat_app_interface");
-        catInterface.setTitle(l("التطبيق والواجهة", "App & Interface"));
-        screen.addPreference(catInterface);
-
-        if (appearancePref != null) catInterface.addPreference(appearancePref);
-
-        var language = new Preference(ctx);
-        language.setKey("app_language");
-        language.setTitle(R.string.locale_app);
-        language.setIcon(R.drawable.ic_language_24);
-        language.setOnPreferenceClickListener(p -> {
-            var current = androidx.appcompat.app.AppCompatDelegate.getApplicationLocales().toLanguageTags();
-            int checked = current.startsWith("ar") ? 1 : current.startsWith("en") ? 2 : 0;
-            var names = new String[]{getString(R.string.locale_system), getString(R.string.locale_ar), getString(R.string.locale_en)};
-            new com.google.android.material.dialog.MaterialAlertDialogBuilder(requireContext())
-                    .setTitle(R.string.locale_app)
-                    .setSingleChoiceItems(names, checked, (dialog, index) -> {
-                        dialog.dismiss();
-                        androidx.appcompat.app.AppCompatDelegate.setApplicationLocales(
-                                androidx.core.os.LocaleListCompat.forLanguageTags(new String[]{"", "ar", "en"}[index]));
-                    }).setNegativeButton(android.R.string.cancel, null).show();
-            return true;
-        });
-        catInterface.addPreference(language);
-        if (behaviorPref != null) catInterface.addPreference(behaviorPref);
-        if (streamingPref != null) catInterface.addPreference(streamingPref);
-
-        // 4. Downloads & Network
-        var catTorrent = new androidx.preference.PreferenceCategory(ctx);
-        catTorrent.setKey("cat_downloads_network");
-        catTorrent.setTitle(l("التحميلات والشبكة", "Downloads & Network"));
-        screen.addPreference(catTorrent);
-
-        if (networkPref != null) catTorrent.addPreference(networkPref);
-        if (limitationsPref != null) catTorrent.addPreference(limitationsPref);
-        if (schedulingPref != null) catTorrent.addPreference(schedulingPref);
-        if (feedPref != null) catTorrent.addPreference(feedPref);
-
-        // 5. System & Updates
+        // 3. System, Updates & About / Support
         var catSystem = new androidx.preference.PreferenceCategory(ctx);
         catSystem.setKey("cat_system_updates");
-        catSystem.setTitle(l("النظام والصلاحيات", "System & Permissions"));
+        catSystem.setTitle(l("النظام والتحديثات وحول التطبيق", "System, Updates & About"));
         screen.addPreference(catSystem);
 
         var permissions = new Preference(ctx);
@@ -330,6 +283,34 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
             return true;
         });
         catSystem.addPreference(updates);
+
+        var aboutSupport = new Preference(ctx);
+        aboutSupport.setKey("about_and_support");
+        aboutSupport.setTitle(l("حول التطبيق والدعم (Donate)", "About & Support (Donate)"));
+        aboutSupport.setSummary(l("الإصدار والمصدر المفتوح ودعم المشروع", "Version, open-source code & project support"));
+        aboutSupport.setIcon(R.drawable.ic_info_24px);
+        aboutSupport.setOnPreferenceClickListener(p -> {
+            new org.proninyaroslav.libretorrent.ui.home.AboutDialog()
+                    .show(getParentFragmentManager(), "cinema_about_dialog");
+            return true;
+        });
+        catSystem.addPreference(aboutSupport);
+
+        // 4. Isolated LibreTorrent Engine Sub-Screen
+        var catEngine = new androidx.preference.PreferenceCategory(ctx);
+        catEngine.setKey("cat_download_engine");
+        catEngine.setTitle(l("محرك التحميل", "Download Engine"));
+        screen.addPreference(catEngine);
+
+        var enginePref = new Preference(ctx);
+        enginePref.setKey(TorrentEngineSettingsFragment.KEY_ROOT);
+        enginePref.setPersistent(false);
+        enginePref.setTitle(TorrentEngineSettingsFragment.title(ctx));
+        enginePref.setSummary(l(
+                "التخزين، المظهر، اللغة، السلوك، التدفق، الشبكة، المحددات، الجدولة، وRSS",
+                "Storage, appearance, language, behavior, streaming, network, limits, scheduling & RSS"));
+        enginePref.setIcon(R.drawable.ic_tune_24px);
+        catEngine.addPreference(enginePref);
     }
 
     private void attachHeaderClicks(androidx.preference.PreferenceGroup group) {
@@ -346,7 +327,7 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
                     || "unified_subtitle_settings".equals(key)
                     || "external_api_keys".equals(key)
                     || "meedx_updates".equals(key)
-                    || "app_language".equals(key)
+                    || "about_and_support".equals(key)
                     || "permissions_wizard".equals(key)) continue;
             preference.setOnPreferenceClickListener((p) -> {
                 markAsOpen(p.getKey());
@@ -532,6 +513,41 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
         });
     }
 
+    private void confirmDeleteCloudBackup() {
+        var account = LocalCinemaBackupManager.getSignedInGoogleAccount(requireContext());
+        if (account == null || account.getAccount() == null) return;
+        CloudBackupDialog.confirmDelete(requireContext(), () -> deleteCloudBackup(account));
+    }
+
+    private void deleteCloudBackup(GoogleSignInAccount account) {
+        if (!isAdded()) return;
+        pendingCloudMode = CLOUD_DELETE;
+        Context app = requireContext().getApplicationContext();
+        setGoogleStatus(getString(R.string.cinema_delete_cloud_running), false);
+        io.execute(() -> {
+            try {
+                LocalCinemaBackupManager.deleteCloudBackups(app, account);
+                main.post(() -> {
+                    if (isAdded()) setGoogleStatus(getString(R.string.cinema_delete_cloud_success), false);
+                });
+            } catch (LocalCinemaBackupManager.DriveAuthRecoverableException error) {
+                main.post(() -> {
+                    if (!isAdded()) return;
+                    if (error.recoveryIntent != null) {
+                        pendingCloudMode = CLOUD_DELETE;
+                        googleConsentLauncher.launch(error.recoveryIntent);
+                    } else {
+                        setGoogleStatus(getString(R.string.cinema_delete_cloud_failed), true);
+                    }
+                });
+            } catch (Exception error) {
+                main.post(() -> {
+                    if (isAdded()) setGoogleStatus(getString(R.string.cinema_delete_cloud_failed), true);
+                });
+            }
+        });
+    }
+
     private void executeGoogleDriveTransfer(GoogleSignInAccount account, boolean upload) {
         if (!isAdded()) return;
         if (upload) {
@@ -540,28 +556,15 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
             io.execute(() -> {
                 try {
                     JSONObject liveTv = LocalCinemaBackupManager.fetchLiveTvBackupOverLan(requireContext(), 4500);
-                    if (liveTv == null && requireContext().getSharedPreferences("cinema_link", Context.MODE_PRIVATE)
-                            .contains("pairing")) {
-                        main.post(() -> {
-                            if (isAdded()) setGoogleStatus(l("تعذّر جلب إعدادات الشاشة. شغّل الشاشة وحاول مجددًا.",
-                                    "Could not read live TV settings. Turn on the TV and retry."), true);
-                        });
-                        return;
-                    }
                     JSONObject unified = LocalCinemaBackupManager.buildUnifiedBackup(requireContext(), liveTv);
                     String json = unified.toString(2);
                     LocalCinemaBackupManager.uploadToGoogleDrive(requireContext(), account, json);
-                    boolean hadLive = liveTv != null;
+                    int message = unified.optBoolean("includes_live_tv")
+                            ? R.string.cinema_cloud_upload_live
+                            : unified.optBoolean("includes_cached_tv")
+                                ? R.string.cinema_cloud_upload_cached : R.string.cinema_cloud_upload_phone;
                     main.post(() -> {
-                        if (isAdded()) {
-                            String msg = l("تم رفع النسخة الشاملة إلى حساب Google (" + account.getEmail() + ") بنجاح ✓"
-                                            + (hadLive ? "\n(تم تضمين أحدث إعدادات الشاشة والهاتف معاً)"
-                                            : "\n(تم تضمين إعدادات الهاتف)"),
-                                    "Uploaded unified backup to Google (" + account.getEmail() + ") ✓"
-                                            + (hadLive ? "\n(Included live TV + Phone data)"
-                                            : "\n(Included Phone data)"));
-                            setGoogleStatus(msg, false);
-                        }
+                        if (isAdded()) setGoogleStatus(getString(message), false);
                     });
                 } catch (LocalCinemaBackupManager.DriveAuthRecoverableException rec) {
                     main.post(() -> {
@@ -612,24 +615,25 @@ public class SettingsHeaderFragment extends CustomPreferenceFragment {
 
     private void applyUnifiedRestoreBlocking(String content, Context context) throws Exception {
         var result = LocalCinemaBackupManager.restoreUnifiedBackup(context, content);
-        if (result.tvRestoreCommand != null) {
-            LocalCinemaBackupManager.savePendingTvRestore(context, result.tvRestoreCommand);
-        }
-        boolean pushedLive = result.tvRestoreCommand != null
-                && LocalCinemaBackupManager.pushTvRestoreOverLan(context, result, 5500);
+        var outcome = LocalCinemaBackupManager.reconcileRestoredTvSettingsBlocking(context, result, null);
         main.post(() -> {
             if (!isAdded()) return;
+            String tvLine = switch (outcome) {
+                case PUSHED_TO_TV -> l("\nتم إرسال وتطبيق إعدادات النسخة على الشاشة مباشرة عبر الشبكة ✓",
+                        "\nRestored & pushed settings directly to TV over LAN ✓");
+                case PULLED_NEWER_FROM_TV -> l("\nإعدادات الشاشة الحية أحدث من السحابة — تم الحفاظ على إعدادات الشاشة وتحديث السحابة بها تلقائياً ✓",
+                        "\nLive TV settings were newer than cloud — preserved TV settings & queued cloud refresh ✓");
+                case ALREADY_IN_SYNC -> l("\nإعدادات الشاشة مطابقة ومحدّثة بالفعل ✓",
+                        "\nTV settings are already up to date ✓");
+                case QUEUED_FOR_OFFLINE_TV -> l("\nحُفظت إعدادات الشاشة في الانتظار وستُفحص وتُطبّق تلقائياً فور اتصال الشاشة.",
+                        "\nTV settings queued and will reconcile automatically when the TV connects.");
+                default -> "";
+            };
             String msg = l("تم استرجاع النسخة الاحتياطية بنجاح ✓ (" + result.watchRecordsRestored + " سجل مشاهدة"
                             + (result.apiKeysRestored ? " + المفاتيح والإضافات" : "") + ")",
                     "Unified backup restored ✓ (" + result.watchRecordsRestored + " watch items"
                             + (result.apiKeysRestored ? " + API keys & addons" : "") + ")")
-                    + (pushedLive
-                    ? l("\nتم إرسال وتطبيق إعدادات النسخة على الشاشة مباشرة عبر الشبكة ✓",
-                        "\nRestored & pushed settings directly to TV over LAN ✓")
-                    : (result.tvRestoreCommand != null
-                    ? l("\nتعذّر تطبيق إعدادات الشاشة. أعد المحاولة عندما تتصل الشاشة.",
-                        "\nTV settings could not be applied. Retry when the TV is online.")
-                    : ""));
+                    + tvLine;
             setGoogleStatus(msg, false);
         });
     }

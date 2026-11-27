@@ -36,6 +36,9 @@ public final class CinemaSubtitleCodec {
         if (context == null || subUrl == null || subUrl.isBlank()) {
             throw new IOException("Empty subtitle URL");
         }
+        if (com.archos.mediacenter.video.player.CinemaSubtitleText.isStoryboardTrackHint(subUrl)) {
+            throw new IOException("Storyboard thumbnail track ignored");
+        }
         String current = subUrl.trim();
         for (int hop = 0; hop < 5; hop++) {
             HttpURLConnection conn = (HttpURLConnection) new URL(current).openConnection();
@@ -128,6 +131,9 @@ public final class CinemaSubtitleCodec {
         if (!text.contains("-->") && !text.contains("Dialogue:") && !text.contains("[Script Info]")
                 && !text.trim().toUpperCase(Locale.ROOT).startsWith("WEBVTT")) {
             throw new IOException("Unrecognized subtitle content");
+        }
+        if (com.archos.mediacenter.video.player.CinemaSubtitleText.isEntirelyStoryboardVtt(text)) {
+            throw new IOException("Storyboard thumbnail VTT ignored");
         }
         return text.getBytes(StandardCharsets.UTF_8);
     }

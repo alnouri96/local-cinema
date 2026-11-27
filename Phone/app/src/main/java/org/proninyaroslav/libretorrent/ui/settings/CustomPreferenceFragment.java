@@ -82,7 +82,7 @@ public abstract class CustomPreferenceFragment extends PreferenceFragmentCompat 
                 (int) (res.getDimension(R.dimen.list_fab_padding) / res.getDisplayMetrics().density)
         );
 
-        if (Utils.isTwoPane(context) && getParentFragmentManager().getBackStackEntryCount() < 2) {
+        if (Utils.isTwoPane(context) && getParentFragmentManager().getBackStackEntryCount() < 1) {
             binding.appBar.setNavigationIcon(null);
         }
     }

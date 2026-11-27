@@ -122,7 +122,57 @@ public class FeedSettingsFragment extends CustomPreferenceFragment
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
 
+        binding.collapsingToolbarLayout.setTitleEnabled(false);
+        android.view.ViewGroup.LayoutParams ctlLp = binding.collapsingToolbarLayout.getLayoutParams();
+        if (ctlLp != null) {
+            ctlLp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+            binding.collapsingToolbarLayout.setLayoutParams(ctlLp);
+        }
         binding.appBar.setTitle(R.string.pref_header_feed);
+
+        final String btnTag = "open_rss_feeds_header_btn";
+        View existing = binding.appBar.findViewWithTag(btnTag);
+        if (existing != null) {
+            binding.appBar.removeView(existing);
+        }
+        Context ctx = requireContext();
+        var locales = androidx.core.os.ConfigurationCompat.getLocales(ctx.getResources().getConfiguration());
+        java.util.Locale loc = locales.isEmpty() ? java.util.Locale.getDefault() : locales.get(0);
+        boolean ar = loc != null && "ar".equalsIgnoreCase(loc.getLanguage());
+        float density = ctx.getResources().getDisplayMetrics().density;
+        int hPx = Math.round(38f * density);
+        int padH = Math.round(14f * density);
+        int marginEnd = Math.round(12f * density);
+
+        com.google.android.material.button.MaterialButton feedsBtn =
+                new com.google.android.material.button.MaterialButton(ctx);
+        feedsBtn.setTag(btnTag);
+        feedsBtn.setAllCaps(false);
+        feedsBtn.setSingleLine(true);
+        feedsBtn.setText(ar ? "قنوات وخلاصات RSS" : "RSS Feeds");
+        feedsBtn.setTextSize(13f);
+        feedsBtn.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        feedsBtn.setTextColor(0xFF171717);
+        feedsBtn.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFFE5A93B));
+        feedsBtn.setIconResource(R.drawable.ic_rss_feed_24px);
+        feedsBtn.setIconTint(android.content.res.ColorStateList.valueOf(0xFF171717));
+        feedsBtn.setIconSize(Math.round(18f * density));
+        feedsBtn.setIconPadding(Math.round(6f * density));
+        feedsBtn.setCornerRadius(Math.round(12f * density));
+        feedsBtn.setInsetTop(0);
+        feedsBtn.setInsetBottom(0);
+        feedsBtn.setMinHeight(hPx);
+        feedsBtn.setMinimumHeight(hPx);
+        feedsBtn.setPaddingRelative(padH, 0, padH, 0);
+        feedsBtn.setOnClickListener(v ->
+                org.proninyaroslav.libretorrent.ui.feeds.FeedsActivity.open(requireActivity()));
+
+        androidx.appcompat.widget.Toolbar.LayoutParams lp = new androidx.appcompat.widget.Toolbar.LayoutParams(
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                hPx,
+                android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL);
+        lp.setMarginEnd(marginEnd);
+        binding.appBar.addView(feedsBtn, lp);
     }
 
     @Override

@@ -56,6 +56,15 @@ public class AboutDialog extends DialogFragment {
             binding.version.setText(versionName);
         }
 
+        var locales = androidx.core.os.ConfigurationCompat.getLocales(activity.getResources().getConfiguration());
+        java.util.Locale loc = locales.isEmpty() ? java.util.Locale.getDefault() : locales.get(0);
+        boolean ar = loc != null && "ar".equalsIgnoreCase(loc.getLanguage());
+        binding.donateLink.setText(ar ? "دعم المشروع والمطور (Donate)" : "Support & Donate");
+        binding.donateLink.setOnClickListener(view -> {
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://meedx.pages.dev/")));
+            } catch (Exception ignored) {}
+        });
         binding.sourceLink.setOnClickListener(view ->
                 ProjectLinks.open(activity, ProjectLinks.SOURCE, R.string.cinema_project_link_unavailable));
         binding.licensesLink.setOnClickListener(view ->

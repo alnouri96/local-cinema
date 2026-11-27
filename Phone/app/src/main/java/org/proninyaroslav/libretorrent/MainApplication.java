@@ -81,6 +81,7 @@ public class MainApplication extends Application {
         LocaleHelper.setLocale(pref.locale());
 
         Utils.applyNightMode(this);
+        org.proninyaroslav.libretorrent.ui.LibreTorrentCinemaBridge.install(this);
     }
 
     /** @noinspection JavaReflectionMemberAccess*/

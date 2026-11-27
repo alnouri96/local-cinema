@@ -32,7 +32,7 @@ public final class CinemaHomeLoader extends VideoLoader {
         this.sourcePrefixes = (sourcePrefixes == null || sourcePrefixes.isEmpty()) ? null : List.copyOf(sourcePrefixes);
         this.category = category;
         init();
-        setUpdateThrottle(1500);
+        setUpdateThrottle(row == 1 ? 0 : 1500);
     }
 
     @Override public String getSelection() {
@@ -50,7 +50,7 @@ public final class CinemaHomeLoader extends VideoLoader {
         } else {
             filter = switch (row) {
                 case 1 -> VideoStore.Video.VideoColumns.BOOKMARK + ">1";
-                case 6 -> "(" + VideoStore.Video.VideoColumns.BOOKMARK + "=" + com.archos.mediacenter.video.player.PlayerActivity.LAST_POSITION_END
+                case 6 -> "(" + VideoStore.Video.VideoColumns.BOOKMARK + "=" + CinemaPlaybackRouter.BOOKMARK_COMPLETED
                         + " OR " + VideoStore.Video.VideoColumns.ARCHOS_TRAKT_SEEN + "=1)";
                 case 3 -> VideoStore.Video.VideoColumns.ARCHOS_MEDIA_SCRAPER_TYPE + "=" + BaseTags.MOVIE
                         + " AND (" + VideoStore.Video.VideoColumns.SCRAPER_SHOW_ID + " IS NULL OR "

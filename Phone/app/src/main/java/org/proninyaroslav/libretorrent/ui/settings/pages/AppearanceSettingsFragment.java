@@ -41,7 +41,7 @@ import androidx.preference.SwitchPreferenceCompat;
 import com.google.android.material.snackbar.Snackbar;
 
 import org.proninyaroslav.libretorrent.R;
-import org.proninyaroslav.libretorrent.cinema_hub.TvHubActivity;
+import org.proninyaroslav.libretorrent.cinema_hub.PhoneModuleBridges;
 import org.proninyaroslav.libretorrent.core.RepositoryHelper;
 import org.proninyaroslav.libretorrent.core.model.data.preferences.PrefTheme;
 import org.proninyaroslav.libretorrent.core.settings.SettingsRepository;
@@ -338,7 +338,7 @@ public class AppearanceSettingsFragment extends CustomPreferenceFragment
             activity.getSharedPreferences("cinema_link", Context.MODE_PRIVATE).edit()
                     .putBoolean("auto_hide_mini_player", (boolean) newValue)
                     .apply();
-            TvHubActivity.notifyAudioSettingsChanged(activity);
+            PhoneModuleBridges.tvHub().notifyAudioSettingsChanged(activity);
 
         } else if (preference.getKey().equals(getString(R.string.pref_key_tv_audio_hud_timeout))) {
             int ms = 5000;
@@ -346,7 +346,7 @@ public class AppearanceSettingsFragment extends CustomPreferenceFragment
             activity.getSharedPreferences("cinema_link", Context.MODE_PRIVATE).edit()
                     .putInt("audio_hud_timeout", ms)
                     .apply();
-            TvHubActivity.notifyAudioSettingsChanged(activity);
+            PhoneModuleBridges.tvHub().notifyAudioSettingsChanged(activity);
         }
 
         return true;

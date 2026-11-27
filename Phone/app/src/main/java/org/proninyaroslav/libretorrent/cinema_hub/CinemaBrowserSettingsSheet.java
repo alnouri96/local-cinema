@@ -19,9 +19,14 @@ import org.proninyaroslav.libretorrent.R;
  */
 final class CinemaBrowserSettingsSheet {
     private final CinemaBrowser host;
+    private AlertDialog activeDialog;
 
     CinemaBrowserSettingsSheet(CinemaBrowser host) {
         this.host = host;
+    }
+
+    boolean isShowing() {
+        return activeDialog != null && activeDialog.isShowing();
     }
 
     void show() {
@@ -63,13 +68,20 @@ final class CinemaBrowserSettingsSheet {
 
         addZoomControls(root);
 
-        new AlertDialog.Builder(host.context)
+        var dlg = new AlertDialog.Builder(host.context)
                 .setTitle(host.context.getString(R.string.cinema_browser_settings))
                 .setView(scroll)
                 .setNeutralButton(host.context.getString(R.string.cinema_clear_browsing_data),
                         (dialog, which) -> confirmClear())
                 .setPositiveButton(android.R.string.ok, null)
-                .show();
+                .create();
+        activeDialog = dlg;
+        dlg.setOnDismissListener(d -> {
+            if (activeDialog == dlg) activeDialog = null;
+            host.resumeBrowserRendering();
+        });
+        dlg.show();
+        CinemaBrowser.styleDarkDialog(dlg);
     }
 
     private LinearLayout buildSwitchRow(String label, boolean initialValue,
@@ -174,11 +186,11 @@ final class CinemaBrowserSettingsSheet {
     }
 
     void confirmClear() {
-        new AlertDialog.Builder(host.context)
+        CinemaBrowser.styleDarkDialog(new AlertDialog.Builder(host.context)
                 .setTitle(host.context.getString(R.string.cinema_clear_browsing_data_prompt))
                 .setMessage(org.proninyaroslav.libretorrent.R.string.cinema_browser_clear_data_notice)
                 .setNegativeButton(android.R.string.cancel, null)
                 .setPositiveButton(org.proninyaroslav.libretorrent.R.string.cinema_action_clear, (dialog, which) -> host.performClearBrowsingData())
-                .show();
+                .show());
     }
 }

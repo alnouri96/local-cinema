@@ -160,6 +160,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="stremio" />
+                <data android:scheme="stremios" />
             </intent-filter>
         </activity>
         <activity android:name=".cinema_hub.ShareMediaActivity" android:exported="true" android:theme="@android:style/Theme.NoDisplay">
@@ -174,6 +175,9 @@
         </activity>
         <activity android:name=".cinema_hub.TvQrScannerActivity"
             android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".ui.feeds.FeedsActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.NoDisplay" />
 
         <activity
             android:name=".ui.errorreport.ErrorReportActivity"

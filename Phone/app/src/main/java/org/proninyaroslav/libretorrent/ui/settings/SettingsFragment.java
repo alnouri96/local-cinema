@@ -103,17 +103,14 @@ public class SettingsFragment extends AbstractListDetailFragment {
         public void handleOnBackPressed() {
             var detailsNavController = getDetailPaneNavHostFragment().getNavController();
             var prevEntry = detailsNavController.getPreviousBackStackEntry();
-            var startDestId = detailsNavController.getGraph().getStartDestinationId();
 
-            if (prevEntry == null || prevEntry.getDestination().getId() == startDestId) {
-                if (getSlidingPaneLayout().isOpen() && getSlidingPaneLayout().isSlideable()) {
-                    getSlidingPaneLayout().closePane();
-                } else {
-                    setEnabled(false);
-                    activity.getOnBackPressedDispatcher().onBackPressed();
-                }
-            } else {
+            if (prevEntry != null) {
                 detailsNavController.navigateUp();
+            } else if (getSlidingPaneLayout().isOpen() && getSlidingPaneLayout().isSlideable()) {
+                getSlidingPaneLayout().closePane();
+            } else {
+                setEnabled(false);
+                activity.getOnBackPressedDispatcher().onBackPressed();
             }
         }
     };
@@ -127,6 +124,12 @@ public class SettingsFragment extends AbstractListDetailFragment {
     private void openPreference(String key) {
         var navController = getDetailPaneNavHostFragment().getNavController();
         var slidingPaneLayout = getSlidingPaneLayout();
+
+        if (TorrentEngineSettingsFragment.KEY_ROOT.equals(key)) {
+            navController.popBackStack(R.id.torrentEngineSettingsFragment, false);
+            slidingPaneLayout.open();
+            return;
+        }
 
         NavDirections action;
         if (key.equals(getString(R.string.pref_key_appearance_settings))) {

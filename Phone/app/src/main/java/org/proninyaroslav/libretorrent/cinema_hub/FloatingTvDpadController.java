@@ -62,12 +62,111 @@ public final class FloatingTvDpadController {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static WeakReference<Activity> currentActivity = new WeakReference<>(null);
     private static WeakReference<FloatingOverlayView> activeOverlay = new WeakReference<>(null);
+    private static WeakReference<android.app.Dialog> activeRemoteDialog = new WeakReference<>(null);
+    private static final java.util.Map<Activity, FloatingOverlayView> liveOverlays =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+    private static final java.util.Set<Activity> startedInAppHosts =
+            java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+    private static volatile boolean lifecycleRegistered = false;
     private static WeakReference<View> activeAdbDot = new WeakReference<>(null);
     private static WeakReference<TextView> activeAdbLabel = new WeakReference<>(null);
     private static WeakReference<View> activeWebDot = new WeakReference<>(null);
     private static WeakReference<TextView> activeWebLabel = new WeakReference<>(null);
 
     private FloatingTvDpadController() {}
+
+    private static boolean isAllowedInAppHost(Activity activity) {
+        return PhoneModuleBridges.hostShell().isHostShellActivity(activity)
+                || activity instanceof TvHubActivity;
+    }
+
+    private static void ensureLifecycleRegistered(Activity activity) {
+        if (lifecycleRegistered || activity == null) return;
+        android.app.Application app = activity.getApplication();
+        if (app == null) return;
+        lifecycleRegistered = true;
+        app.registerActivityLifecycleCallbacks(new android.app.Application.ActivityLifecycleCallbacks() {
+            @Override public void onActivityCreated(Activity a, android.os.Bundle b) {}
+
+            @Override public void onActivityStarted(Activity a) {
+                if (isAllowedInAppHost(a)) {
+                    startedInAppHosts.add(a);
+                    FloatingOverlayView fov = liveOverlays.get(a);
+                    if (fov != null) {
+                        fov.setVisibility(View.VISIBLE);
+                        fov.syncPositionImmediate();
+                    }
+                } else if (a instanceof TvQrScannerActivity) {
+                    hideForExternalOrCamera();
+                }
+            }
+
+            @Override public void onActivityResumed(Activity a) {
+                if (isAllowedInAppHost(a)) {
+                    currentActivity = new WeakReference<>(a);
+                    FloatingOverlayView fov = liveOverlays.get(a);
+                    if (fov != null) {
+                        activeOverlay = new WeakReference<>(fov);
+                        fov.setVisibility(View.VISIBLE);
+                        fov.syncPositionImmediate();
+                    }
+                } else {
+                    if (currentActivity.get() != null) currentActivity.clear();
+                    dismissActiveRemoteDialog();
+                }
+            }
+
+            @Override public void onActivityPaused(Activity a) {}
+
+            @Override public void onActivityStopped(Activity a) {
+                if (isAllowedInAppHost(a)) {
+                    startedInAppHosts.remove(a);
+                    if (startedInAppHosts.isEmpty()) {
+                        currentActivity.clear();
+                        dismissActiveRemoteDialog();
+                        CinemaRemoteBridge.enterIdleSleep();
+                    }
+                }
+            }
+
+            @Override public void onActivitySaveInstanceState(Activity a, android.os.Bundle b) {}
+
+            @Override public void onActivityDestroyed(Activity a) {
+                startedInAppHosts.remove(a);
+                liveOverlays.remove(a);
+                if (currentActivity.get() == a) currentActivity.clear();
+            }
+        });
+    }
+
+    public static void dismissActiveRemoteDialog() {
+        android.app.Dialog dlg = activeRemoteDialog.get();
+        activeRemoteDialog.clear();
+        if (dlg != null && dlg.isShowing()) {
+            try { dlg.dismiss(); } catch (Exception ignored) {}
+        }
+    }
+
+    public static void hideForExternalOrCamera() {
+        dismissActiveRemoteDialog();
+        synchronized (liveOverlays) {
+            for (FloatingOverlayView fov : liveOverlays.values()) {
+                if (fov != null) fov.setVisibility(View.GONE);
+            }
+        }
+    }
+
+    private static void syncAllLiveOverlays() {
+        boolean connected = isRemoteConnected();
+        synchronized (liveOverlays) {
+            for (FloatingOverlayView fov : liveOverlays.values()) {
+                if (fov != null) {
+                    fov.syncPositionImmediate();
+                    fov.updateStatusDot(connected);
+                }
+            }
+        }
+    }
 
     static Activity currentForegroundActivity() {
         return currentActivity.get();
@@ -91,8 +190,11 @@ public final class FloatingTvDpadController {
     public static void onRemoteConnectionChanged() {
         MAIN.post(() -> {
             boolean connected = isRemoteConnected();
-            FloatingOverlayView overlay = activeOverlay.get();
-            if (overlay != null) overlay.updateStatusDot(connected);
+            synchronized (liveOverlays) {
+                for (FloatingOverlayView fov : liveOverlays.values()) {
+                    if (fov != null) fov.updateStatusDot(connected);
+                }
+            }
             applyLedState(activeAdbDot.get(), activeAdbLabel.get(),
                     connected && CinemaRemoteBridge.isAdbRemoteActive(), 0xff22c55e);
             applyLedState(activeWebDot.get(), activeWebLabel.get(),
@@ -102,17 +204,33 @@ public final class FloatingTvDpadController {
     }
 
     public static void attach(Activity activity) {
-        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+        if (activity == null || activity.isFinishing() || activity.isDestroyed() || !isAllowedInAppHost(activity)) {
+            return;
+        }
+        ensureLifecycleRegistered(activity);
+        startedInAppHosts.add(activity);
         currentActivity = new WeakReference<>(activity);
         CinemaRemoteBridge.ensurePairedConnection(activity);
         View contentView = activity.findViewById(android.R.id.content);
         if (!(contentView instanceof FrameLayout root)) return;
 
         View existing = root.findViewWithTag(TAG_OVERLAY);
+        if (existing instanceof FloatingOverlayView fov) {
+            liveOverlays.put(activity, fov);
+            activeOverlay = new WeakReference<>(fov);
+            fov.setVisibility(View.VISIBLE);
+            if (root.getChildAt(root.getChildCount() - 1) != fov) {
+                fov.bringToFront();
+            }
+            fov.syncPositionImmediate();
+            onRemoteConnectionChanged();
+            return;
+        }
         if (existing != null) root.removeView(existing);
 
-        FloatingOverlayView overlay = new FloatingOverlayView(activity);
+        FloatingOverlayView overlay = new FloatingOverlayView(activity, root);
         overlay.setTag(TAG_OVERLAY);
+        liveOverlays.put(activity, overlay);
         activeOverlay = new WeakReference<>(overlay);
         root.addView(overlay, new FrameLayout.LayoutParams(-1, -1));
         onRemoteConnectionChanged();
@@ -121,12 +239,8 @@ public final class FloatingTvDpadController {
     public static void detach(Activity activity) {
         if (activity == null) return;
         if (currentActivity.get() == activity) currentActivity.clear();
-        CinemaRemoteBridge.onRemoteUiPaused();
-        View contentView = activity.findViewById(android.R.id.content);
-        if (contentView instanceof FrameLayout root) {
-            View existing = root.findViewWithTag(TAG_OVERLAY);
-            if (existing != null) root.removeView(existing);
-        }
+        // Keep FloatingOverlayView mounted inside the in-app Activity hierarchy to eliminate tab-switch blink;
+        // ActivityLifecycleCallbacks handles cleanup when all app hosts stop or destroy.
     }
 
     private static final class FloatingOverlayView extends FrameLayout {
@@ -139,7 +253,7 @@ public final class FloatingTvDpadController {
         private boolean dragging;
         private final int touchSlop;
 
-        FloatingOverlayView(Activity activity) {
+        FloatingOverlayView(Activity activity, FrameLayout hostRoot) {
             super(activity);
             this.activity = activity;
             this.prefs = activity.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
@@ -150,7 +264,6 @@ public final class FloatingTvDpadController {
             setClipToPadding(false);
 
             orbContainer = new FrameLayout(activity);
-            orbContainer.setVisibility(INVISIBLE);
             orbContainer.setElevation(dp(8));
             orbContainer.setClipChildren(false);
 
@@ -178,13 +291,22 @@ public final class FloatingTvDpadController {
             orbContainer.addView(statusDot, dotLp);
 
             orbContainer.setContentDescription(activity.getString(R.string.cinema_remote_open));
-            orbContainer.setOnClickListener(v -> showRemoteSheet(activity, this::syncLayout));
+            orbContainer.setOnClickListener(v -> showRemoteSheet(activity, FloatingTvDpadController::syncAllLiveOverlays));
             orbContainer.setFocusable(true);
             orbContainer.setOnTouchListener((v, event) -> handleTouchHandle(event));
 
-            var rootLp = new LayoutParams(dp(46), dp(46), Gravity.TOP | Gravity.LEFT);
+            int orbSize = dp(46);
+            var rootLp = new LayoutParams(orbSize, orbSize, Gravity.TOP | Gravity.LEFT);
             addView(orbContainer, rootLp);
-            addOnLayoutChangeListener((v, l, t, r, b, oldL, oldT, oldR, oldB) -> syncLayout());
+            int initW = hostRoot != null && hostRoot.getWidth() > orbSize
+                    ? hostRoot.getWidth() : getResources().getDisplayMetrics().widthPixels;
+            int initH = hostRoot != null && hostRoot.getHeight() > orbSize
+                    ? hostRoot.getHeight() : getResources().getDisplayMetrics().heightPixels;
+            applyPositionForBounds(initW, initH, orbSize);
+            orbContainer.setVisibility(VISIBLE);
+            addOnLayoutChangeListener((v, l, t, r, b, oldL, oldT, oldR, oldB) -> {
+                if (!dragging) syncLayout();
+            });
         }
 
         void updateStatusDot(boolean connected) {
@@ -218,9 +340,11 @@ public final class FloatingTvDpadController {
                     requestDisallowInterceptTouchEvent(false);
                     orbContainer.animate().scaleX(1f).scaleY(1f).setDuration(110).start();
                     if (dragging) {
+                        dragging = false;
                         float avail = Math.max(1f, getHeight() - orbContainer.getHeight());
                         float frac = Math.max(0.08f, Math.min(0.86f, orbContainer.getY() / avail));
-                        prefs.edit().putFloat(KEY_Y_FRACTION, frac).apply();
+                        prefs.edit().putFloat(KEY_Y_FRACTION, frac).commit();
+                        syncAllLiveOverlays();
                     } else {
                         orbContainer.performClick();
                     }
@@ -228,7 +352,10 @@ public final class FloatingTvDpadController {
                 }
                 case MotionEvent.ACTION_CANCEL -> {
                     requestDisallowInterceptTouchEvent(false);
-                    if (dragging) orbContainer.setY(startY);
+                    if (dragging) {
+                        dragging = false;
+                        orbContainer.setY(startY);
+                    }
                     orbContainer.animate().scaleX(1f).scaleY(1f).setDuration(110).start();
                     return true;
                 }
@@ -236,16 +363,30 @@ public final class FloatingTvDpadController {
             return false;
         }
 
-        void syncLayout() {
-            if (getWidth() <= orbContainer.getWidth() || getHeight() <= orbContainer.getHeight()
-                    || orbContainer.getWidth() == 0) return;
+        private void applyPositionForBounds(int boundW, int boundH, int orbSize) {
+            if (boundW <= orbSize || boundH <= orbSize) return;
             boolean edgeRight = prefs.getBoolean(KEY_EDGE_RIGHT, true);
             float yFrac = prefs.getFloat(KEY_Y_FRACTION, 0.72f);
-            int available = getHeight() - orbContainer.getHeight();
+            int available = boundH - orbSize;
             float targetY = Math.max(dp(64), Math.min(available - dp(76), available * yFrac));
-            float targetX = edgeRight ? getWidth() - orbContainer.getWidth() - dp(10) : dp(10);
+            float targetX = edgeRight ? boundW - orbSize - dp(10) : dp(10);
             orbContainer.setX(targetX);
             orbContainer.setY(Math.min(available, targetY));
+        }
+
+        void syncPositionImmediate() {
+            int orbSize = orbContainer.getWidth() > 0 ? orbContainer.getWidth() : dp(46);
+            int w = getWidth() > orbSize ? getWidth() : getResources().getDisplayMetrics().widthPixels;
+            int h = getHeight() > orbSize ? getHeight() : getResources().getDisplayMetrics().heightPixels;
+            applyPositionForBounds(w, h, orbSize);
+            orbContainer.setVisibility(VISIBLE);
+            updateStatusDot(isRemoteConnected());
+        }
+
+        void syncLayout() {
+            int orbSize = orbContainer.getWidth() > 0 ? orbContainer.getWidth() : dp(46);
+            if (getWidth() <= orbSize || getHeight() <= orbSize) return;
+            applyPositionForBounds(getWidth(), getHeight(), orbSize);
             orbContainer.setVisibility(VISIBLE);
             updateStatusDot(isRemoteConnected());
         }
@@ -295,7 +436,9 @@ public final class FloatingTvDpadController {
         remote.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
         remote.setBackground(remoteSurface(activity, 24, 0xff5b472f));
 
+        dismissActiveRemoteDialog();
         var remoteWindow = new android.app.Dialog(activity);
+        activeRemoteDialog = new WeakReference<>(remoteWindow);
         remoteWindow.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
         var remoteLayout = new FloatingRemoteLayout(activity, prefs, remote, remoteWindow::dismiss);
 
@@ -676,6 +819,7 @@ public final class FloatingTvDpadController {
             window.setDimAmount(0.28f);
         }
         remoteWindow.setOnDismissListener(d -> {
+            if (activeRemoteDialog.get() == d) activeRemoteDialog.clear();
             if (joystickRef[0].isPointer()) sendPointer(activity, "hide", 0, 0);
             activeAdbDot.clear();
             activeAdbLabel.clear();

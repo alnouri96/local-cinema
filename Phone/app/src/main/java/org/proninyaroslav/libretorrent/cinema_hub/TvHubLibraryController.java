@@ -2,7 +2,6 @@ package org.proninyaroslav.libretorrent.cinema_hub;
 
 import android.content.Context;
 import android.content.Intent;
-import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -15,7 +14,6 @@ final class TvHubLibraryController {
 
     LinearLayout libraryPage;
     java.io.File libraryFolder;
-    int librarySectionTab; // 0 = Files, 1 = Continue Watching, 2 = Watched
     String libraryPlaybackKey;
     String libraryPlaybackPath;
     MobileLibraryServer libraryServer;
@@ -45,12 +43,35 @@ final class TvHubLibraryController {
         return libraryPage != null;
     }
 
+    void onExternalDownloadCompleted(String filePath) {
+        if (host.isFinishing() || host.isDestroyed()) return;
+        var root = CinemaStorage.phoneLibrary();
+        host.watchSyncIo.execute(() -> {
+            CinemaStorage.migrateLegacyDownloadingFolder(host);
+            PhoneWatchStore.refreshLibraryFiles(host, root, null, null);
+            for (String path : publishedFolders()) {
+                var shared = new java.io.File(path);
+                if (shared.isDirectory()) publishFolder(shared);
+            }
+            host.main.post(() -> {
+                if (libraryPage != null && host.hubForeground && !host.isDestroyed()) {
+                    showLibrary();
+                }
+            });
+        });
+        if (libraryPage != null && host.hubForeground) {
+            showLibrary();
+        }
+    }
+
     void refreshIfReady() {
         if (libraryPage == null) return;
-        var root = new java.io.File(android.os.Environment.getExternalStorageDirectory(), "Local Cinema");
+        var root = CinemaStorage.phoneLibrary();
         host.watchSyncIo.execute(() -> {
+            CinemaStorage.migrateLegacyDownloadingFolder(host);
             PhoneWatchStore.refreshLibraryFiles(host, root, null, null);
             for (var drive : CinemaStorage.drives(host)) {
+                CinemaStorage.migrateLegacyDownloadingFolderInRoot(drive.library(), null);
                 PhoneWatchStore.refreshLibraryFiles(host, drive.library(), null, null);
             }
             host.main.post(() -> { if (host.hubForeground && !host.isDestroyed()) showLibrary(); });
@@ -92,54 +113,20 @@ final class TvHubLibraryController {
 
     void showLibrary() {
         libraryPage.removeAllViews();
-        var sectionScroll = new android.widget.HorizontalScrollView(host);
-        sectionScroll.setHorizontalScrollBarEnabled(false);
-        sectionScroll.setFillViewport(false);
-        var sectionLp = new LinearLayout.LayoutParams(-1, -2);
-        sectionLp.bottomMargin = host.dp(10);
-        libraryPage.addView(sectionScroll, sectionLp);
-        var sectionTabs = new LinearLayout(host);
-        sectionTabs.setOrientation(LinearLayout.HORIZONTAL);
-        sectionScroll.addView(sectionTabs);
-        sectionTabs.setGravity(Gravity.CENTER_VERTICAL);
-        String[] tabTitles = new String[]{
-                host.getString(org.proninyaroslav.libretorrent.R.string.cinema_files_tab),
-                host.getString(org.proninyaroslav.libretorrent.R.string.cinema_continue_watching_tab),
-                host.getString(org.proninyaroslav.libretorrent.R.string.cinema_watched_tab),
-                host.l("قائمة المشاهدة", "Watchlist")
-        };
-        for (int i = 0; i < tabTitles.length; i++) {
-            final int tabIdx = i;
-            boolean activeTab = librarySectionTab == tabIdx;
-            var btn = host.button((activeTab ? "● " : "") + tabTitles[tabIdx], () -> {
-                librarySectionTab = tabIdx;
-                showLibrary();
-            }, activeTab);
-            btn.setSingleLine(true);
-            btn.setMaxLines(1);
-            btn.setPadding(host.dp(14), host.dp(6), host.dp(14), host.dp(6));
-            btn.setMinimumWidth(0);
-            btn.setMinWidth(0);
-            var tabBtnLp = new LinearLayout.LayoutParams(-2, -2);
-            if (tabIdx > 0) tabBtnLp.setMarginStart(host.dp(8));
-            sectionTabs.addView(btn, tabBtnLp);
-        }
-        if (librarySectionTab != 0) stopObserving();
-        if (librarySectionTab == 1 || librarySectionTab == 2) {
-            showWatchSection(librarySectionTab == 2);
-            return;
-        }
-        if (librarySectionTab == 3) {
-            showWatchlistSection();
-            return;
-        }
-        var root = new java.io.File(android.os.Environment.getExternalStorageDirectory(), "Local Cinema");
+        var root = CinemaStorage.phoneLibrary();
+        CinemaStorage.prepare(root);
         var phone = root;
         var activeDrive = CinemaStorage.active(host);
         if (libraryFolder == null) libraryFolder = phone;
+        // Auto-redirect if user was viewing legacy Downloading folder before migration
+        if (CinemaStorage.LEGACY_DOWNLOADING_FOLDER_NAME.equalsIgnoreCase(libraryFolder.getName())
+                && libraryFolder.getParentFile() != null) {
+            libraryFolder = new java.io.File(libraryFolder.getParentFile(), CinemaStorage.DOWNLOAD_FOLDER_NAME);
+        }
         if (!withinLibrary(libraryFolder, phone)) {
             if (activeDrive != null && withinLibrary(libraryFolder, activeDrive.library())) {
                 root = activeDrive.library();
+                CinemaStorage.prepare(root);
             } else {
                 libraryFolder = phone;
             }
@@ -232,6 +219,7 @@ final class TvHubLibraryController {
             libraryPage.addView(host.button(host.l("تصفح USB / وحدة تخزين", "Browse USB / other storage"),
                     this::showUsbStorage, false));
             if (activeDrive != null) {
+                CinemaStorage.prepare(activeDrive.library());
                 libraryPage.addView(host.label("USB · " + activeDrive.name() + " (Local Cinema)", 20));
                 for (String section : CinemaStorage.SECTIONS) {
                     var file = new java.io.File(activeDrive.library(), section);
@@ -261,6 +249,7 @@ final class TvHubLibraryController {
     }
 
     java.util.Set<String> publishedFolders() {
+        CinemaStorage.migrateLegacyDownloadingFolder(host);
         return new java.util.HashSet<>(host.getSharedPreferences("cinema_library", 0)
                 .getStringSet("published", java.util.Collections.emptySet()));
     }
@@ -425,230 +414,21 @@ final class TvHubLibraryController {
         return file.getAbsolutePath() + "|" + file.length() + "|" + file.lastModified();
     }
 
-    void attachWatchPoster(LinearLayout row, String imdbId) {
-        var img = new android.widget.ImageView(host);
-        img.setScaleType(android.widget.ImageView.ScaleType.CENTER_CROP);
-        var bg = new GradientDrawable();
-        bg.setColor(0xff141517);
-        bg.setCornerRadius(host.dp(8));
-        bg.setStroke(host.dp(1), 0xff2c2d31);
-        img.setBackground(bg);
-        img.setClipToOutline(true);
-        var lp = new LinearLayout.LayoutParams(host.dp(54), host.dp(80));
-        lp.setMarginEnd(host.dp(12));
-        row.addView(img, lp);
-        if (imdbId != null && imdbId.matches("tt[0-9]+")) {
-            com.bumptech.glide.Glide.with(host)
-                    .load("https://images.metahub.space/poster/small/" + imdbId + "/img")
-                    .placeholder(org.proninyaroslav.libretorrent.R.drawable.cinema_tv)
-                    .error(org.proninyaroslav.libretorrent.R.drawable.cinema_tv)
-                    .centerCrop()
-                    .into(img);
-        } else {
-            img.setScaleType(android.widget.ImageView.ScaleType.CENTER_INSIDE);
-            img.setImageResource(org.proninyaroslav.libretorrent.R.drawable.cinema_tv);
-        }
-    }
-
-    void showWatchSection(boolean watchedSection) {
-        var entries = watchedSection
-                ? PhoneWatchStore.listWatched(host)
-                : PhoneWatchStore.listContinueWatching(host);
-        var headerRow = host.row(libraryPage);
-        var titleTv = host.label(host.getString(watchedSection
-                ? org.proninyaroslav.libretorrent.R.string.cinema_watched_tab
-                : org.proninyaroslav.libretorrent.R.string.cinema_continue_watching_tab), 20);
-        headerRow.addView(titleTv, new LinearLayout.LayoutParams(0, -2, 1));
-        headerRow.addView(host.button(host.l("⟳ تحديث · Trakt", "⟳ Refresh · Trakt Sync"),
-                () -> host.connection.syncTraktNowAsync(false), false),
-                new LinearLayout.LayoutParams(-2, -2));
-        if (entries.isEmpty()) {
-            libraryPage.addView(host.label(host.getString(watchedSection
-                    ? org.proninyaroslav.libretorrent.R.string.cinema_no_watched_items
-                    : org.proninyaroslav.libretorrent.R.string.cinema_no_continue_items), 15));
-            return;
-        }
-        for (var e : entries) {
-            if ("library".equals(e.kind) && e.sourceUri != null && e.sourceUri.startsWith("file:")) {
-                String path = android.net.Uri.parse(e.sourceUri).getPath();
-                if (path != null && java.nio.file.Files.notExists(java.nio.file.Paths.get(path))) continue;
-            }
-            String titleStr = (e.title == null || e.title.isBlank()) ? "Video" : e.title;
-            String header = (e.watched ? "✓ " : "") + titleStr;
-            var itemCard = host.card(libraryPage, header);
-            var bodyRow = host.row(itemCard);
-            bodyRow.setGravity(Gravity.CENTER_VERTICAL);
-            attachWatchPoster(bodyRow, e.imdbId);
-            var infoCol = host.column();
-            bodyRow.addView(infoCol, new LinearLayout.LayoutParams(0, -2, 1));
-            var meta = new java.util.ArrayList<String>();
-            if ("torrent".equals(e.kind)) meta.add(host.l("تورنت", "Torrent"));
-            else if ("trakt".equals(e.kind)) meta.add("Trakt");
-            else if ("web".equals(e.kind)) meta.add(host.l("إضافة / ويب", "Web / Addon"));
-            else meta.add(host.l("المكتبة", "Library"));
-            if (e.season > 0 || e.episode > 0) meta.add(String.format(java.util.Locale.US, "S%02dE%02d", e.season, e.episode));
-            if (!e.watched && e.durationMs > 0 && e.positionMs > 0) {
-                int pct = (int) Math.min(99, Math.max(1, e.positionMs * 100L / e.durationMs));
-                meta.add(pct + "% · " + TvHubActivity.formatTime((int) e.positionMs) + " / " + TvHubActivity.formatTime((int) e.durationMs));
-            }
-            infoCol.addView(host.label(String.join(" · ", meta), 13));
-            if (!e.watched && e.durationMs > 0 && e.positionMs > 0) {
-                var bar = new android.widget.ProgressBar(host, null, android.R.attr.progressBarStyleHorizontal);
-                bar.setMax(100);
-                bar.setProgress((int) Math.min(100, e.positionMs * 100L / e.durationMs));
-                bar.setProgressTintList(android.content.res.ColorStateList.valueOf(TvHubActivity.GOLD));
-                var bLp = new LinearLayout.LayoutParams(-1, host.dp(4));
-                bLp.topMargin = host.dp(6);
-                infoCol.addView(bar, bLp);
-            }
-            var actions = host.row(itemCard);
-            boolean hasDirectSource = (e.sourceUri != null && !e.sourceUri.isBlank())
-                    || ("torrent".equals(e.kind) && e.torrentId != null && !e.torrentId.isBlank());
-            if (hasDirectSource) {
-                host.add(actions, e.watched ? host.l("تشغيل", "Play") : host.l("استئناف", "Resume"), () -> replayWatchEntry(e));
-            }
-            host.add(actions, e.watched ? host.getString(org.proninyaroslav.libretorrent.R.string.cinema_mark_unwatched)
-                    : host.getString(org.proninyaroslav.libretorrent.R.string.cinema_mark_watched), () -> {
-                boolean newWatched = !e.watched;
-                var updated = PhoneWatchStore.markRemoteWatched(host, e, newWatched);
-                if (updated != null) {
-                    host.connection.sendWatchSyncRecord(updated);
-                    if (com.meedx.providers.TraktSyncClient.isConnected(host)
-                            && ((e.imdbId != null && e.imdbId.matches("tt[0-9]+")) || e.tmdbId > 0)) {
-                        boolean isEp = e.season > 0 || e.episode > 0 || "episode".equalsIgnoreCase(e.mediaType);
-                        host.watchSyncIo.execute(() -> {
-                            com.meedx.providers.TraktSyncClient.syncHistoryItem(
-                                    host, isEp, e.imdbId, e.tmdbId, e.season, e.episode, newWatched);
-                            PhoneWatchStore.clearPendingTraktSync(host, java.util.Collections.singletonList(updated.itemKey));
-                            host.connection.sendFullSyncStateToTv(false);
-                        });
-                    }
-                }
-                showLibrary();
-            });
-            if (!e.watched) {
-                host.add(actions, host.getString(org.proninyaroslav.libretorrent.R.string.cinema_remove_continue), () -> {
-                    var updated = PhoneWatchStore.removeFromContinue(host, e.itemKey);
-                    if ("library".equals(e.kind) && e.itemKey.startsWith("lib:")) {
-                        libraryProgress().edit().remove(e.itemKey.substring(4)).apply();
-                    }
-                    host.connection.sendWatchSyncRecord(updated);
-                    if (com.meedx.providers.TraktSyncClient.isConnected(host)
-                            && ((e.imdbId != null && e.imdbId.matches("tt[0-9]+")) || e.tmdbId > 0)) {
-                        host.watchSyncIo.execute(() -> {
-                            com.meedx.providers.TraktSyncClient.removePlaybackProgress(
-                                    host, e.imdbId, e.tmdbId, e.season, e.episode);
-                            host.connection.sendFullSyncStateToTv(false);
-                        });
-                    }
-                    showLibrary();
-                });
-            }
-        }
-    }
-
-    void showWatchlistSection() {
-        var headerRow = host.row(libraryPage);
-        headerRow.addView(host.label(host.l("قائمة المشاهدة (Watchlist)", "Watchlist"), 20),
-                new LinearLayout.LayoutParams(0, -2, 1));
-        headerRow.addView(host.button(host.l("⟳ تحديث · Trakt", "⟳ Refresh · Trakt Sync"),
-                () -> host.connection.syncTraktNowAsync(false), false),
-                new LinearLayout.LayoutParams(-2, -2));
-        var list = PhoneWatchStore.listWatchlist(host);
-        if (list.isEmpty()) {
-            libraryPage.addView(host.label(host.l(
-                    "لا توجد عناصر في قائمة المشاهدة بعد. اربط Trakt واضغط تحديث أو أضف عناصر من الشاشة.",
-                    "No Watchlist items yet. Connect Trakt and tap Refresh, or add titles on TV."), 15));
-            return;
-        }
-        for (var w : list) {
-            String titleStr = (w.title == null || w.title.isBlank()) ? w.imdbId : w.title;
-            var wlCard = host.card(libraryPage, titleStr + (w.year > 0 ? " (" + w.year + ")" : ""));
-            var bodyRow = host.row(wlCard);
-            bodyRow.setGravity(Gravity.CENTER_VERTICAL);
-            attachWatchPoster(bodyRow, w.imdbId);
-            var infoCol = host.column();
-            bodyRow.addView(infoCol, new LinearLayout.LayoutParams(0, -2, 1));
-            infoCol.addView(host.label(("show".equals(w.mediaType)
-                    ? host.l("مسلسل · Trakt Watchlist", "TV Series · Trakt Watchlist")
-                    : host.l("فيلم · Trakt Watchlist", "Movie · Trakt Watchlist"))
-                    + (w.year > 0 ? " · " + w.year : ""), 13));
-            var wlActions = host.row(wlCard);
-            host.add(wlActions, host.l("إزالة", "Remove"), () -> {
-                PhoneWatchStore.removeFromWatchlist(host, w.itemKey);
-                if (com.meedx.providers.TraktSyncClient.isConnected(host)) {
-                    host.watchSyncIo.execute(() -> {
-                        com.meedx.providers.TraktSyncClient.syncWatchlistItem(
-                                host, "show".equalsIgnoreCase(w.mediaType), w.imdbId, w.tmdbId, false);
-                        host.connection.sendFullSyncStateToTv(false);
-                    });
-                } else {
-                    host.connection.sendFullSyncStateToTv(false);
-                }
-                showLibrary();
-            });
-        }
-    }
-
-    void replayWatchEntry(PhoneWatchStore.Entry e) {
-        if ("library".equals(e.kind) && e.sourceUri != null && !e.sourceUri.isBlank()) {
-            host.castVideo(android.net.Uri.parse(e.sourceUri), e.watched ? 0 : (int) Math.max(0, e.positionMs), false);
-        } else if ("torrent".equals(e.kind) && e.torrentId != null && !e.torrentId.isBlank()) {
-            TvHubActivity.castTorrent(host, e.torrentId, e.fileIndex, e.title);
-        } else if ("web".equals(e.kind) && e.sourceUri != null && !e.sourceUri.isBlank()) {
-            if (!host.connected || host.socket == null || !host.socket.isOpen()) {
-                host.notifyStatus("Connect to the TV first");
-                return;
-            }
-            host.music.stopMusicForVideo(true);
-            host.cleanupPreviousTemporaryTorrent("");
-            host.activeWatchKey = e.itemKey;
-            host.activeWatchKind = "web";
-            host.activeWatchTitle = e.title;
-            host.activeWatchUri = e.sourceUri;
-            host.activeWatchFormat = e.format;
-            host.activeWatchImdbId = e.imdbId == null ? "" : e.imdbId;
-            host.activeWatchTmdbId = e.tmdbId;
-            host.activeWatchSeason = e.season;
-            host.activeWatchEpisode = e.episode;
-            host.browserCastTitle = e.title;
-            try {
-                host.socket.send(new org.json.JSONObject().put("type", "CAST_WEB")
-                        .put("url", e.sourceUri).put("audio_url", "")
-                        .put("format", e.format == null ? "" : e.format)
-                        .put("title", e.title == null ? "" : e.title)
-                        .put("stream_key", e.itemKey)
-                        .put("media_type", e.mediaType == null ? "movie" : e.mediaType)
-                        .put("imdb_id", host.activeWatchImdbId)
-                        .put("tmdb_id", e.tmdbId)
-                        .put("season", e.season)
-                        .put("episode", e.episode)
-                        .put("resume_ms", e.watched ? 0L : e.positionMs).toString());
-                host.showPlayback(true);
-            } catch (org.json.JSONException | org.java_websocket.exceptions.WebsocketNotConnectedException ignored) {
-                host.notifyStatus("Could not cast saved web video");
-            }
-        }
-    }
-
     void showLibraryItemMenu(java.io.File file, String watchKey, String title, String uri, boolean watched, boolean hasResume) {
         var labels = new java.util.ArrayList<String>();
         var actions = new java.util.ArrayList<Runnable>();
         labels.add(host.getString(watched ? org.proninyaroslav.libretorrent.R.string.cinema_mark_unwatched
                 : org.proninyaroslav.libretorrent.R.string.cinema_mark_watched));
         actions.add(() -> {
-            var updated = PhoneWatchStore.markWatched(host, watchKey, "library", title, uri, !watched);
+            PhoneWatchStore.markWatched(host, watchKey, "library", title, uri, !watched);
             libraryProgress().edit().remove(libraryKey(file)).apply();
-            host.connection.sendWatchSyncRecord(updated);
-            host.connection.pushPendingTraktOnlyAsync();
             showLibrary();
         });
         if (hasResume && !watched) {
             labels.add(host.getString(org.proninyaroslav.libretorrent.R.string.cinema_remove_continue));
             actions.add(() -> {
-                var updated = PhoneWatchStore.removeFromContinue(host, watchKey);
+                PhoneWatchStore.removeFromContinue(host, watchKey);
                 libraryProgress().edit().remove(libraryKey(file)).apply();
-                host.connection.sendWatchSyncRecord(updated);
                 showLibrary();
             });
         }
@@ -658,7 +438,7 @@ final class TvHubLibraryController {
     }
 
     private java.io.File libraryRoot(java.io.File file) {
-        var internal = new java.io.File(android.os.Environment.getExternalStorageDirectory(), "Local Cinema");
+        var internal = CinemaStorage.phoneLibrary();
         if (withinLibrary(file, internal)) return internal;
         for (var drive : CinemaStorage.drives(host)) {
             if (withinLibrary(file, drive.library())) return drive.library();
@@ -791,7 +571,6 @@ final class TvHubLibraryController {
         }
         showLibrary();
     }
-
 
     void confirmLibraryHide(java.io.File file) {
         new androidx.appcompat.app.AlertDialog.Builder(host)
