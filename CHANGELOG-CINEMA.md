@@ -4,65 +4,53 @@
 
 ### English
 
-#### TV — Stremio add-ons and Live TV
+#### Local Cinema TV
 
-Expanded direct playback for Live TV and channels from Stremio (tv/channel). The player forwards provider-required headers and follows redirects between HTTP and HTTPS. Catalog lookups connect Kitsu, TMDB, and IMDb identifiers (kitsu:, tmdb:, and tt). Seven new curated add-ons are available, and Add-on Settings brings installed add-ons and their logos together in one list.
+- **Stremio add-ons and Live TV**. Expanded direct playback for Live TV and channels from Stremio (tv/channel). The player forwards provider-required headers and follows redirects between HTTP and HTTPS. Catalog lookups connect Kitsu, TMDB, and IMDb identifiers (kitsu:, tmdb:, and tt). Seven new curated add-ons are available, and Add-on Settings brings installed add-ons and their logos together in one list.
 
-#### TV — Family Viewing and Skip Ads
+- **Family Viewing and Skip Ads**. Turn on Family Viewing and Skip Ads from Settings or the player. The app checks multiple sources for matching content or ad markers and shows a brief on-screen notice when a rule is applied. Availability depends on the title and source.
 
-Turn on Family Viewing and Skip Ads from Settings or the player. The app checks multiple sources for matching content or ad markers and shows a brief on-screen notice when a rule is applied. Availability depends on the title and source.
+- **Continue Watching and persistent watched marks**. Continue Watching updates on screen immediately when an item is removed or changed, and a removed item stays off the row unless playback resumes. Replaying a completed title keeps its gold checkmark at the top-left of the poster. Series with no known episodes are no longer shown as watched, and missing posters are fetched automatically.
 
-#### TV — Continue Watching and persistent watched marks
+- **Faster Home, redesigned menus, and network sources**. Return to Home without waiting for a full library reload, including in libraries of 150 or more films, with focus and scroll position restored. Home shows Continue Watching and indexed library folders. Context and sort menus use the dark-and-gold design. Browse SMB, UPnP, and WebDAV folders directly from Network & Sources, use Delete from Source in media details, and find language and audio preferences in their own sections.
 
-Continue Watching updates on screen immediately when an item is removed or changed, and a removed item stays off the row unless playback resumes. Replaying a completed title keeps its gold checkmark at the top-left of the poster. Series with no known episodes are no longer shown as watched, and missing posters are fetched automatically.
+#### Local Cinema Manager
 
-#### TV — Faster Home, redesigned menus, and network sources
+- **Video and HLS downloads and browser improvements**. A gold download button sits beside each supported detected stream quality. Save MP4 and HLS (.m3u8) streams to Local Cinema/Download with a live progress notification, including HLS sources that require request headers or AES-128 decryption. The browser filters misleading ad titles to recover the actual film or episode name, scrolls without pull-to-refresh, and offers a redesigned icon menu with a Desktop Mode switch. The RSS Feeds button is now in RSS Settings.
 
-Return to Home without waiting for a full library reload, including in libraries of 150 or more films, with focus and scroll position restored. Home shows Continue Watching and indexed library folders. Context and sort menus use the dark-and-gold design. Browse SMB, UPnP, and WebDAV folders directly from Network & Sources, use Delete from Source in media details, and find language and audio preferences in their own sections.
+- **Libraries, Trakt pairing, and cloud backup**. Libraries opens the phone’s Anime, Download, Movies, and TV Shows folders directly. The Trakt account card sends the pairing information to the TV. Backup & Restore Options uses dark-and-gold cards and includes confirmed permanent deletion of Google Drive backups. Background backup sync and restore compare settings versions to protect newer TV settings, and a combined backup can use the last saved TV snapshot if a live snapshot is unavailable.
 
-#### TV and Phone — Unified subtitles and live appearance
+#### Shared Across TV & Phone
 
-Subtitles use a rounded background fitted to the text. Live controls include nine text colors, five outline colors, background opacity from 0% to 100%, and a translucent timing overlay over the video. Smart subtitle search includes the dedicated USS and SubSense add-ons and filters out thumbnail tracks marked #xywh=.
+- **Unified Subtitles Hub**. Search and fetch subtitles in one tap from Subsource, OpenSubtitles v3 and its keyless fallback, and dedicated subtitle add-ons including USS and SubSense. Results match the title, season, episode, and release. Set Arabic as the preferred language for automatic selection, display two subtitles together, and sync subtitle preferences between TV and phone.
 
-#### Phone — Video and HLS downloads and browser improvements
-
-A gold download button sits beside each supported detected stream quality. Save MP4 and HLS (.m3u8) streams to Local Cinema/Download with a live progress notification, including HLS sources that require request headers or AES-128 decryption. The browser filters misleading ad titles to recover the actual film or episode name, scrolls without pull-to-refresh, and offers a redesigned icon menu with a Desktop Mode switch. The RSS Feeds button is now in RSS Settings.
-
-#### Phone — Libraries, Trakt pairing, and cloud backup
-
-Libraries opens the phone’s Anime, Download, Movies, and TV Shows folders directly. The Trakt account card sends the pairing information to the TV. Backup & Restore Options uses dark-and-gold cards and includes confirmed permanent deletion of Google Drive backups. Background backup sync and restore compare settings versions to protect newer TV settings, and a combined backup can use the last saved TV snapshot if a live snapshot is unavailable.
+- **Unified live subtitle appearance**. A rounded background fits around the subtitle lines. Live controls include nine text colors, five outline colors, background opacity from 0% to 100%, and a translucent timing overlay over the video. Thumbnail tracks marked #xywh= are filtered out.
 
 <div dir="rtl" align="right">
 
 ### العربية
 
-#### التلفاز — إضافات Stremio والبث المباشر
+#### تطبيق التلفاز <bdi>Local Cinema TV</bdi>
 
-توسّع دعم التشغيل المباشر لقنوات Stremio والبث الحي (tv/channel)، مع تمرير الترويسات التي تطلبها المصادر واتباع التحويلات بين HTTP وHTTPS. أصبح البحث يربط معرّفات Kitsu وTMDB وIMDb ‏(kitsu: وtmdb: وtt). أُضيفت سبع إضافات مقترحة، وتجمع «إعدادات الإضافات» الإضافات المثبّتة وشعاراتها في قائمة واحدة.
+- **إضافات Stremio والبث المباشر**. توسّع دعم التشغيل المباشر لقنوات Stremio والبث الحي (tv/channel)، مع تمرير الترويسات التي تطلبها المصادر واتباع التحويلات بين HTTP وHTTPS. أصبح البحث يربط معرّفات Kitsu وTMDB وIMDb ‏(kitsu: وtmdb: وtt). أُضيفت سبع إضافات مقترحة، وتجمع «إعدادات الإضافات» الإضافات المثبّتة وشعاراتها في قائمة واحدة.
 
-#### التلفاز — المشاهدة العائلية وتخطّي الإعلانات
+- **المشاهدة العائلية وتخطّي الإعلانات**. يمكن تفعيل «المشاهدة العائلية» و«تخطّي الإعلانات» من الإعدادات أو المشغّل. يبحث التطبيق في عدة مصادر عن قواعد المحتوى وعلامات الإعلانات المطابقة، ويعرض إشعاراً خفيفاً عند تطبيقها. يتوقّف التوفّر على العنوان والمصدر.
 
-يمكن تفعيل «المشاهدة العائلية» و«تخطّي الإعلانات» من الإعدادات أو المشغّل. يبحث التطبيق في عدة مصادر عن قواعد المحتوى وعلامات الإعلانات المطابقة، ويعرض إشعاراً خفيفاً عند تطبيقها. يتوقّف التوفّر على العنوان والمصدر.
+- **متابعة المشاهدة وثبات علامة المشاهدة**. يتحدّث صف «متابعة المشاهدة» على الشاشة فور حذف عنصر أو تغيير حالته، ويظل العنصر المحذوف خارج الصف حتى استئناف تشغيله. تبقى علامة الصح الذهبية في الركن الأعلى الأيسر من البوستر عند إعادة مشاهدة عمل مكتمل. لا تظهر المسلسلات بلا حلقات معروفة كمشاهَدة، وتُجلب البوسترات الناقصة تلقائياً.
 
-#### التلفاز — متابعة المشاهدة وثبات علامة المشاهدة
+- **عودة أسرع إلى الرئيسية وقوائم ومركز شبكة محدّثة**. تعود إلى الرئيسية من دون انتظار إعادة تحميل المكتبة كاملةً، حتى في مكتبات تضم 150 فيلماً أو أكثر، مع استعادة موضع التركيز والتمرير. تعرض الرئيسية «متابعة المشاهدة» ومجلدات المكتبة المفهرسة. أُعيد تصميم قوائم السياق والفرز بالهوية الداكنة والذهبية. يمكنك تصفّح مجلدات SMB وUPnP وWebDAV مباشرةً من «الشبكة والمصادر»، واستخدام «الحذف من المصدر» من تفاصيل الوسائط، والوصول إلى إعدادات اللغة والصوت في أقسامها المخصّصة.
 
-يتحدّث صف «متابعة المشاهدة» على الشاشة فور حذف عنصر أو تغيير حالته، ويظل العنصر المحذوف خارج الصف حتى استئناف تشغيله. تبقى علامة الصح الذهبية في الركن الأعلى الأيسر من البوستر عند إعادة مشاهدة عمل مكتمل. لا تظهر المسلسلات بلا حلقات معروفة كمشاهَدة، وتُجلب البوسترات الناقصة تلقائياً.
+#### تطبيق الهاتف <bdi>Local Cinema Manager</bdi>
 
-#### التلفاز — عودة أسرع إلى الرئيسية وقوائم ومركز شبكة محدّثة
+- **تنزيل الفيديو وHLS وتطوير المتصفح**. أُضيف زر تنزيل ذهبي بجانب كل جودة مدعومة يكتشفها المتصفح. تُحفَظ بثوث MP4 وHLS ‏(.m3u8) في Local Cinema/Download مع إشعار مباشر بالتقدّم، بما في ذلك مصادر HLS التي تتطلّب ترويسات الطلب أو فك تشفير AES-128. يستبعد المتصفح عناوين الإعلانات المموّهة لاستخراج اسم الفيلم أو الحلقة، ويدعم التمرير من دون السحب للتحديث، ويعرض قائمة أيقونات جديدة مع مفتاح وضع سطح المكتب. انتقل زر خلاصات RSS إلى إعدادات RSS.
 
-تعود إلى الرئيسية من دون انتظار إعادة تحميل المكتبة كاملةً، حتى في مكتبات تضم 150 فيلماً أو أكثر، مع استعادة موضع التركيز والتمرير. تعرض الرئيسية «متابعة المشاهدة» ومجلدات المكتبة المفهرسة. أُعيد تصميم قوائم السياق والفرز بالهوية الداكنة والذهبية. يمكنك تصفّح مجلدات SMB وUPnP وWebDAV مباشرةً من «الشبكة والمصادر»، واستخدام «الحذف من المصدر» من تفاصيل الوسائط، والوصول إلى إعدادات اللغة والصوت في أقسامها المخصّصة.
+- **المكتبات وربط Trakt والنسخ الاحتياطي السحابي**. تفتح «المكتبات» مجلدات Anime وDownload وMovies وTV Shows على الهاتف مباشرةً. ترسل بطاقة حساب Trakt بيانات الربط إلى التلفاز. تعرض نافذة «خيارات النسخ الاحتياطي والاستعادة» بطاقات داكنة وذهبية وتتيح الحذف النهائي للنسخ من Google Drive بعد التأكيد. تقارن المزامنة في الخلفية والاستعادة إصدارات الإعدادات لحماية إعدادات التلفاز الأحدث، ويمكن للنسخة المشتركة استخدام آخر لقطة محفوظة للتلفاز إذا تعذّرت القراءة الحية.
 
-#### التلفاز والهاتف — الترجمة الموحدة والمظهر الحي
+#### التحديثات المشتركة بين التلفاز والهاتف
 
-أصبحت خلفية الترجمة صندوقاً مستديراً يحيط بسطور النص. تشمل إعدادات المظهر الحي تسعة ألوان للنص وخمسة ألوان للحدود وشفافية من 0% إلى 100% وشريط توقيت شبه شفاف فوق الفيديو. يدعم البحث الذكي إضافتَي USS وSubSense، ويستبعد مسارات الصور المصغّرة التي تحمل ‎#xywh=‎.
+- **قسم الترجمة الموحدة الذكية**. ابحث عن الترجمات واجلبها بضغطة واحدة عبر Subsource وOpenSubtitles v3 ومصدره الاحتياطي بلا مفتاح، وإضافات الترجمة المتخصصة مثل USS وSubSense. تُطابَق النتائج بحسب العنوان والموسم والحلقة والنسخة. يمكنك اختيار العربية كلغة مفضّلة ليُعطيها التطبيق الأولوية تلقائياً، وعرض ترجمتين معاً، ومزامنة تفضيلات الترجمة بين التلفاز والهاتف.
 
-#### الهاتف — تنزيل الفيديو وHLS وتطوير المتصفح
-
-أُضيف زر تنزيل ذهبي بجانب كل جودة مدعومة يكتشفها المتصفح. تُحفَظ بثوث MP4 وHLS ‏(.m3u8) في Local Cinema/Download مع إشعار مباشر بالتقدّم، بما في ذلك مصادر HLS التي تتطلّب ترويسات الطلب أو فك تشفير AES-128. يستبعد المتصفح عناوين الإعلانات المموّهة لاستخراج اسم الفيلم أو الحلقة، ويدعم التمرير من دون السحب للتحديث، ويعرض قائمة أيقونات جديدة مع مفتاح وضع سطح المكتب. انتقل زر خلاصات RSS إلى إعدادات RSS.
-
-#### الهاتف — المكتبات وربط Trakt والنسخ الاحتياطي السحابي
-
-تفتح «المكتبات» مجلدات Anime وDownload وMovies وTV Shows على الهاتف مباشرةً. ترسل بطاقة حساب Trakt بيانات الربط إلى التلفاز. تعرض نافذة «خيارات النسخ الاحتياطي والاستعادة» بطاقات داكنة وذهبية وتتيح الحذف النهائي للنسخ من Google Drive بعد التأكيد. تقارن المزامنة في الخلفية والاستعادة إصدارات الإعدادات لحماية إعدادات التلفاز الأحدث، ويمكن للنسخة المشتركة استخدام آخر لقطة محفوظة للتلفاز إذا تعذّرت القراءة الحية.
+- **المظهر الحي الموحّد للترجمة**. أصبحت خلفية الترجمة صندوقاً مستديراً يحيط بسطور النص. تشمل إعدادات المظهر الحي تسعة ألوان للنص وخمسة ألوان للحدود وشفافية من 0% إلى 100% وشريط توقيت شبه شفاف فوق الفيديو. تُستبعد مسارات الصور المصغّرة التي تحمل ‎#xywh=‎.
 
 </div>
 
